@@ -15,6 +15,7 @@ from typing import Any
 import pikepdf
 
 from app.config import settings
+from app.core.system_memory import memory_tier_mb
 
 logger = logging.getLogger(__name__)
 
@@ -30,22 +31,29 @@ _INVENTORY_CACHE: OrderedDict[tuple[str, int, int], dict[str, Any]] = OrderedDic
 _INVENTORY_CACHE_LOCK = threading.RLock()
 
 
-def inventory_cache_capacity_for_ram(total_ram_mb: float | None) -> int:
+def inventory_cache_capacity_for_ram(
+    total_ram_mb: float | None, *, tier_ram_mb: float | None = None,
+) -> int:
     """Số tài liệu metadata giữ nóng; máy mạnh tăng theo RAM, không trần cố định."""
     if total_ram_mb is None or total_ram_mb <= 0:
         return 8
-    if total_ram_mb < 8 * 1024:
+    # PERF (audit 2026-09-28 §PERF28.03 B2j): tier dùng installed, số lượng
+    # co giãn vẫn tính theo usable; không giữ cache bằng phần RAM reserved.
+    tier_mb = memory_tier_mb(total_ram_mb, tier_ram_mb) or total_ram_mb
+    if tier_mb < 8 * 1024:
         return 4
-    if total_ram_mb < 16 * 1024:
+    if tier_mb < 16 * 1024:
         return 12
     return max(32, int(total_ram_mb // 512))
 
 
 def _inventory_cache_capacity() -> int:
-    from app.core.system_memory import read_memory_status_mb
+    from app.core.system_memory import read_memory_status_mb, read_memory_tier_mb
 
     total_ram_mb, _available_ram_mb = read_memory_status_mb()
-    return inventory_cache_capacity_for_ram(total_ram_mb)
+    return inventory_cache_capacity_for_ram(
+        total_ram_mb, tier_ram_mb=read_memory_tier_mb(total_ram_mb),
+    )
 
 
 def _pdf_name(value: Any) -> str:

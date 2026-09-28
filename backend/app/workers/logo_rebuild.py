@@ -15,7 +15,7 @@ from xml.etree import ElementTree
 
 from PIL import Image, ImageCms, ImageOps
 
-from app.core.system_memory import read_memory_status_mb
+from app.core.system_memory import read_memory_status_mb, read_memory_tier_mb
 from app.schemas.logo_rebuild import LogoPaletteSuggestion, LogoRebuildSettings
 
 
@@ -285,7 +285,9 @@ def _plan_work_size(width: int, height: int) -> tuple[tuple[int, int], list[str]
     return _plan_work_size_for_budget(
         width,
         height,
-        total_mb,
+        # PERF (audit 2026-09-28 §PERF28.03): tier quyết định chất lượng;
+        # ngân sách thực vẫn tính từ usable/available, không cộng reserved RAM.
+        read_memory_tier_mb(total_mb),
         _usable_logo_memory_mb(total_mb, available_mb),
     )
 
@@ -327,6 +329,7 @@ def _reserve_logo_work_size(width: int, height: int):
                 )
         return
 
+    tier_mb = read_memory_tier_mb(total_mb)
     with _LOGO_MEMORY_LOCK:
         remaining_mb = max(
             0.0,
@@ -336,7 +339,7 @@ def _reserve_logo_work_size(width: int, height: int):
         planned_size, warnings = _plan_work_size_for_budget(
             width,
             height,
-            total_mb,
+            tier_mb,
             remaining_mb,
         )
         reservation_mb = _estimated_logo_memory_mb(*planned_size)
@@ -380,12 +383,13 @@ def _upscale_target_dimensions(width: int, height: int) -> tuple[int, int]:
         return width, height
 
     total_mb, _available_mb = read_memory_status_mb()
+    tier_mb = read_memory_tier_mb(total_mb)
     target_shortest_side = 1200
     # PERF (audit 2026-07-30 §LG.03): máy mạnh giữ mức chất lượng đầy đủ;
     # chỉ máy dưới 16 GB mới giảm mục tiêu để tránh tạo ảnh làm việc quá lớn.
-    if total_mb is not None and total_mb < 8 * 1024:
+    if tier_mb is not None and tier_mb < 8 * 1024:
         target_shortest_side = 600
-    elif total_mb is not None and total_mb < 16 * 1024:
+    elif tier_mb is not None and tier_mb < 16 * 1024:
         target_shortest_side = 900
 
     scale = target_shortest_side / shortest_side
@@ -636,9 +640,10 @@ def _accent_grid_pixel_budget() -> int:
     """
 
     total_mb, _available_mb = read_memory_status_mb()
-    if total_mb is None or total_mb < 8 * 1024:
+    tier_mb = read_memory_tier_mb(total_mb)
+    if tier_mb is None or tier_mb < 8 * 1024:
         return 1_000_000
-    if total_mb < 16 * 1024:
+    if tier_mb < 16 * 1024:
         return 4_000_000
     return 16_000_000
 

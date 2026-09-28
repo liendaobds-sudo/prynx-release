@@ -5,14 +5,41 @@ use crate::ink::InkSpace;
 #[path = "retained_pattern.rs"]
 mod pattern;
 
+/// MEMORY (audit 2026-09-28 §KNOCK.R2): replay resource dùng budget suy từ công
+/// việc, không phải cap chất lượng. Mesh còn cần owner/UV, lưới patch tạm và mọi
+/// capacity raw đang sống; công thức raster cũ không đủ ngay cả với ảnh 2×2.
+fn shading_replay_memory_bytes(shading:&Shading,width:u32,height:u32,channels:usize)->PpeResult<usize> {
+    let overflow=||PpeError::Unsupported("Kích thước shading vượt địa chỉ bộ nhớ".into());
+    let pixels=(width as usize).checked_mul(height as usize).ok_or_else(overflow)?;
+    let base=pixels.checked_mul(channels.checked_add(8).ok_or_else(overflow)?)
+        .and_then(|v|v.checked_mul(std::mem::size_of::<f32>())).ok_or_else(overflow)?;
+    let resource=match &shading.kind {
+        ShadingKind::Mesh{triangles}=>{
+            let mut bytes=triangles.capacity().checked_mul(std::mem::size_of::<crate::shading::mesh::MeshTriangle>()).ok_or_else(overflow)?;
+            for triangle in triangles {for values in &triangle.c {
+                bytes=bytes.checked_add(values.capacity().checked_mul(std::mem::size_of::<f32>()).ok_or_else(overflow)?).ok_or_else(overflow)?;
+            }}bytes
+        },
+        ShadingKind::Patches{patches}=>{
+            let mut bytes=patches.capacity().checked_mul(std::mem::size_of::<crate::shading::mesh::MeshPatch>()).ok_or_else(overflow)?;
+            for patch in patches {for values in &patch.c {
+                bytes=bytes.checked_add(values.capacity().checked_mul(std::mem::size_of::<f32>()).ok_or_else(overflow)?).ok_or_else(overflow)?;
+            }}bytes
+        },
+        _=>return Ok(base),
+    };
+    // Owner usize + ba tọa độ và padding: dự phòng 32 byte/pixel, không giảm DPI.
+    pixels.checked_mul(32).and_then(|v|v.checked_add(std::mem::size_of::<crate::shading::mesh::MeshPatchGrid>()))
+        .and_then(|v|v.checked_add(resource)).and_then(|v|v.checked_add(base)).ok_or_else(overflow)
+}
+
 impl<'a> Renderer<'a> {
     /// PERF (audit 2026-09-25 §R25.GPU.24): fallback chỉ replay resource đã
     /// phân giải, không parse/render lại trang. Kết quả còn nguyên các kênh mực.
     pub fn replay_shading_resource(shading:&Shading,matrix:Matrix,width:u32,height:u32,
         space:InkSpace,color:&ColorManager)->PpeResult<(InkBuffer,RenderWarnings)> {
         let doc=Document::new();
-        let bytes=(width as usize).checked_mul(height as usize).and_then(|v|v.checked_mul((space.len()+8)*4))
-            .ok_or_else(||PpeError::Unsupported("Kích thước shading vượt địa chỉ bộ nhớ".into()))?;
+        let bytes=shading_replay_memory_bytes(shading,width,height,space.len())?;
         let opts=RenderOptions::viewer().with_memory_budget_bytes(bytes);
         let buffer=InkBuffer::new_with_memory_budget(width,height,space,bytes)?;
         let mut renderer=Renderer::new(&doc,buffer,opts,Some(color),BlendSpace::DeviceCmyk)?;
@@ -276,6 +303,48 @@ fn matrix_from_floats(v: &[f32]) -> Option<Matrix> {
 mod tests {
     use super::*;
     use lopdf::{dictionary, Stream};
+
+    #[test]
+    fn compact_mesh_replay_budget_counts_spare_capacity_and_rejects_overflow() {
+        use crate::shading::mesh::{MeshPatch,MeshPatchGrid,MeshTriangle};
+        let raw_values=||{let mut values=Vec::with_capacity(8);values.push(0.);values};
+        let mut patches=Vec::with_capacity(4);
+        patches.push(MeshPatch{grid:[[0.,0.];16],c:std::array::from_fn(|_|raw_values())});
+        let resource_bytes=patches.capacity()*std::mem::size_of::<MeshPatch>()
+            +patches[0].c.iter().map(|values|values.capacity()*std::mem::size_of::<f32>()).sum::<usize>();
+        let shading=Shading{kind:ShadingKind::Patches{patches},colorspace:ColorSpace::DeviceGray,
+            function:None,bbox:None,background:None};
+        let raster_bytes=4*((4+8)*4+32)+std::mem::size_of::<MeshPatchGrid>();
+        assert_eq!(shading_replay_memory_bytes(&shading,2,2,4).unwrap(),raster_bytes+resource_bytes);
+        assert!(shading_replay_memory_bytes(&shading,u32::MAX,u32::MAX,64).is_err());
+        let mut triangles=Vec::with_capacity(3);
+        triangles.push(MeshTriangle{p:[[0.,0.];3],c:std::array::from_fn(|_|raw_values())});
+        let resource_bytes=triangles.capacity()*std::mem::size_of::<MeshTriangle>()
+            +triangles[0].c.iter().map(|values|values.capacity()*std::mem::size_of::<f32>()).sum::<usize>();
+        let shading=Shading{kind:ShadingKind::Mesh{triangles},colorspace:ColorSpace::DeviceGray,
+            function:None,bbox:None,background:None};
+        assert_eq!(shading_replay_memory_bytes(&shading,2,2,4).unwrap(),raster_bytes+resource_bytes);
+    }
+
+    #[test]
+    fn two_pixel_patch_replay_evaluates_nonlinear_function_after_raw_interpolation() {
+        use crate::color::{PdfFunction,RenderIntent};
+        use crate::shading::mesh::MeshPatch;
+        let shading=Shading{kind:ShadingKind::Patches{patches:vec![MeshPatch{
+            grid:std::array::from_fn(|i|[(i%4) as f32/3.,(i/4) as f32/3.]),
+            c:[vec![0.],vec![1.],vec![1.],vec![0.]],
+        }]},colorspace:ColorSpace::DeviceCMYK,function:Some(PdfFunction::Exponential{
+            domain:vec![0.,1.],c0:vec![0.;4],c1:vec![0.,0.,0.,1.],n:2.,range:None,
+        }),bbox:None,background:None};
+        let profile=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../backend/app/assets/icc/FOGRA39.icc");
+        let cm=ColorManager::from_cmyk_profile(&profile,RenderIntent::RelativeColorimetric).unwrap();
+        let (buffer,warnings)=Renderer::replay_shading_resource(&shading,Matrix::scale(2.,2.),2,2,InkSpace::preview(),&cm).unwrap();
+        assert!(!warnings.ink_unsound(),"{warnings:?}");
+        for (index,expected) in [0.0625,0.5625,0.0625,0.5625].into_iter().enumerate(){
+            assert!((buffer.plane(3)[index]-expected).abs()<1e-5);
+            assert_eq!(buffer.alpha_plane()[index],1.);
+        }
+    }
 
     fn document(content: &[u8], resources: Dictionary) -> Document {
         let mut doc = Document::with_version("1.7");

@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use lcms2::{Flags, Intent, PixelFormat, Profile, Transform};
+use lcms2::{ColorSpaceSignature, Flags, Intent, PixelFormat, Profile, Transform};
 use rayon::prelude::*;
 
 use crate::cancel::CancelToken;
@@ -426,8 +426,16 @@ impl ColorManager {
         let res = entry
             .get_or_init(|| {
                 let p = Profile::new_icc(profile).ok()?;
-                self.build_lut(&p, PixelFormat::RGB_FLT, |i, j, k| [i, j, k])
-                    .map(Arc::new)
+                // COLOR (audit 2026-09-28 §KNOCK.04): ICC3kênh có thể là Lab;
+                // dùng RGB_FLT sẽ làm Pantone Lab mất màu hoặc thành giấy trắng.
+                match p.color_space() {
+                    ColorSpaceSignature::RgbData =>
+                        self.build_lut(&p, PixelFormat::RGB_FLT, |i, j, k| [i, j, k]),
+                    ColorSpaceSignature::LabData =>
+                        self.build_lut(&p, PixelFormat::Lab_FLT, |i, j, k|
+                            [i * 100.0, j * 255.0 - 128.0, k * 255.0 - 128.0]),
+                    _ => None,
+                }.map(Arc::new)
             })
             .clone();
         *self.last_embedded.borrow_mut() = Some((ptr, len, res.clone()));
@@ -440,7 +448,13 @@ impl ColorManager {
     /// không được lặng lẽ coi như sRGB.
     pub fn embedded_to_cmyk(&self, profile: &[u8], a: f32, b: f32, c: f32) -> Option<[f32; 4]> {
         let lut = self.embedded_lut(profile)?;
-        Some(lut.sample(a, b, c))
+        // ICC header offset16 là chữ ký không gian nguồn (không phải PCS).
+        // Profile đã được LCMS xác thực khi tạo LUT; tọa độ LUT luôn0..1.
+        Some(if profile.get(16..20) == Some(b"Lab ") {
+            lut.sample(a / 100.0, (b + 128.0) / 255.0, (c + 128.0) / 255.0)
+        } else {
+            lut.sample(a, b, c)
+        })
     }
 
     /// CMYK → sRGB, cho soft-proof. Biến đổi theo lô cả trang.

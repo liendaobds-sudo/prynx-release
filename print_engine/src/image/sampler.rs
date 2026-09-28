@@ -39,6 +39,17 @@ fn check_cancelled(cancel_token: Option<&CancelToken>) -> PpeResult<()> {
     }
 }
 
+/// COLOR (audit 2026-09-28 §KNOCK.C2b): cùng plane alpha cũ nhưng phải biết
+/// /Mask là shape nội tại, còn /SMask là nguồn alpha chịu AIS. Metadata này
+/// đi cùng retained resource; không đổi layout nhị phân ba plane ảnh hiện có.
+#[derive(Default, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+enum ImageMaskSource {
+    #[default]
+    None,
+    Explicit,
+    Soft,
+}
+
 /// Ảnh đã giải mã, sẵn sàng lấy mẫu.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct SampledImage {
@@ -63,9 +74,13 @@ pub struct SampledImage {
     /// Ảnh stencil `/ImageMask`: `true` tại pixel **được** tô.
     #[serde(skip)]
     pub stencil: Option<Vec<bool>>,
-    /// Alpha 0..1 từ `/SMask`, cùng kích thước ảnh gốc (đã lấy mẫu lại nếu lệch).
+    /// Mẫu 0..1 từ `/Mask` hoặc `/SMask`, cùng kích thước ảnh gốc.
+    /// Compositor legacy vẫn dùng plane này như trước; compositor knockout phải
+    /// đọc `intrinsic_shape_at` / `soft_mask_at` để không mất nguồn gốc alpha.
     #[serde(skip)]
     pub alpha: Option<Vec<f32>>,
+    #[serde(default)]
+    mask_source: ImageMaskSource,
     /// Màu nền `/Matte` đã dùng để preblend mẫu ảnh trước khi ghi PDF.
     ///
     /// Khi có, mẫu màu phải được khử preblend trước ICC rồi mới composite bằng
@@ -82,32 +97,85 @@ impl SampledImage {
     /// PERF (audit 2026-09-25 §R25.GPU.18): pixel/alpha truyền thẳng nhị phân.
     /// Metadata serde không chứa ba plane này và phải đi cùng payload.
     pub fn write_retained_payload(&self, mut w: impl std::io::Write) -> std::io::Result<()> {
-        for n in [self.samples.len(),self.stencil.as_ref().map_or(0,Vec::len),self.alpha.as_ref().map_or(0,Vec::len)] {w.write_all(&(n as u64).to_le_bytes())?;}
+        for n in [
+            self.samples.len(),
+            self.stencil.as_ref().map_or(0, Vec::len),
+            self.alpha.as_ref().map_or(0, Vec::len),
+        ] {
+            w.write_all(&(n as u64).to_le_bytes())?;
+        }
         w.write_all(&self.samples)?;
-        if let Some(stencil)=&self.stencil {for chunk in stencil.chunks(8192) {let bytes:Vec<u8>=chunk.iter().map(|v|*v as u8).collect();w.write_all(&bytes)?;}}
-        if let Some(alpha)=&self.alpha {for chunk in alpha.chunks(8192) {let bytes:Vec<u8>=chunk.iter().flat_map(|v|v.to_le_bytes()).collect();w.write_all(&bytes)?;}}
+        if let Some(stencil) = &self.stencil {
+            for chunk in stencil.chunks(8192) {
+                let bytes: Vec<u8> = chunk.iter().map(|v| *v as u8).collect();
+                w.write_all(&bytes)?;
+            }
+        }
+        if let Some(alpha) = &self.alpha {
+            for chunk in alpha.chunks(8192) {
+                let bytes: Vec<u8> = chunk.iter().flat_map(|v| v.to_le_bytes()).collect();
+                w.write_all(&bytes)?;
+            }
+        }
         Ok(())
     }
-    pub fn read_retained_payload(&mut self,mut r:impl std::io::Read,budget:&mut u64)->Result<(),String>{
-        let pixels=self.width as u64*self.height as u64;
-        if pixels==0 || pixels>MAX_IMAGE_PIXELS || !(1..=64).contains(&self.n_comps){return Err("Kích thước resource ảnh sai".into());}
-        let mut lengths=[0u64;3];for len in &mut lengths {let mut b=[0;8];r.read_exact(&mut b).map_err(|e|e.to_string())?;*len=u64::from_le_bytes(b);}
-        let [samples,stencil,alpha]=lengths;
-        if samples!=pixels*self.n_comps as u64 || (stencil!=0 && stencil!=pixels) || (alpha!=0 && alpha!=pixels){return Err("Độ dài plane ảnh sai".into());}
-        let size=samples+stencil+4*alpha;
-        if size>*budget || size>usize::MAX as u64{return Err("Plane ảnh vượt ngân sách RAM host".into());}*budget-=size;
-        self.samples=vec![0;samples as usize];r.read_exact(&mut self.samples).map_err(|e|e.to_string())?;
-        self.stencil=if stencil==0{None}else{
-            let mut data=vec![0;stencil as usize];r.read_exact(&mut data).map_err(|e|e.to_string())?;
-            if data.iter().any(|v|*v>1){return Err("Stencil nhị phân sai".into());}Some(data.into_iter().map(|v|v!=0).collect())
+    pub fn read_retained_payload(
+        &mut self,
+        mut r: impl std::io::Read,
+        budget: &mut u64,
+    ) -> Result<(), String> {
+        let pixels = self.width as u64 * self.height as u64;
+        if pixels == 0 || pixels > MAX_IMAGE_PIXELS || !(1..=64).contains(&self.n_comps) {
+            return Err("Kích thước resource ảnh sai".into());
+        }
+        let mut lengths = [0u64; 3];
+        for len in &mut lengths {
+            let mut b = [0; 8];
+            r.read_exact(&mut b).map_err(|e| e.to_string())?;
+            *len = u64::from_le_bytes(b);
+        }
+        let [samples, stencil, alpha] = lengths;
+        if samples != pixels * self.n_comps as u64
+            || (stencil != 0 && stencil != pixels)
+            || (alpha != 0 && alpha != pixels)
+        {
+            return Err("Độ dài plane ảnh sai".into());
+        }
+        let size = samples + stencil + 4 * alpha;
+        if size > *budget || size > usize::MAX as u64 {
+            return Err("Plane ảnh vượt ngân sách RAM host".into());
+        }
+        *budget -= size;
+        self.samples = vec![0; samples as usize];
+        r.read_exact(&mut self.samples).map_err(|e| e.to_string())?;
+        self.stencil = if stencil == 0 {
+            None
+        } else {
+            let mut data = vec![0; stencil as usize];
+            r.read_exact(&mut data).map_err(|e| e.to_string())?;
+            if data.iter().any(|v| *v > 1) {
+                return Err("Stencil nhị phân sai".into());
+            }
+            Some(data.into_iter().map(|v| v != 0).collect())
         };
-        self.alpha=if alpha==0{None}else{
-            let mut values=vec![0.;alpha as usize];let mut bytes=[0u8;32768];
-            for chunk in values.chunks_mut(8192){let bytes=&mut bytes[..chunk.len()*4];r.read_exact(bytes).map_err(|e|e.to_string())?;
-                for (v,b) in chunk.iter_mut().zip(bytes.chunks_exact(4)){*v=f32::from_le_bytes(b.try_into().unwrap());}}
+        self.alpha = if alpha == 0 {
+            None
+        } else {
+            let mut values = vec![0.; alpha as usize];
+            let mut bytes = [0u8; 32768];
+            for chunk in values.chunks_mut(8192) {
+                let bytes = &mut bytes[..chunk.len() * 4];
+                r.read_exact(bytes).map_err(|e| e.to_string())?;
+                for (v, b) in chunk.iter_mut().zip(bytes.chunks_exact(4)) {
+                    *v = f32::from_le_bytes(b.try_into().unwrap());
+                }
+            }
             Some(values)
         };
-        if !self.validate_retained_payload(){return Err("Payload ảnh worker sai".into());}Ok(())
+        if !self.validate_retained_payload() {
+            return Err("Payload ảnh worker sai".into());
+        }
+        Ok(())
     }
     /// Kiểm hợp đồng worker trước khi sampler chạm payload ảnh.
     pub fn validate_retained_payload(&self) -> bool {
@@ -119,6 +187,9 @@ impl SampledImage {
             && self.decode.iter().all(|x| x.is_finite())
             && self.stencil.as_ref().is_none_or(|x| x.len() as u64 == pixels)
             && self.alpha.as_ref().is_none_or(|x| x.len() as u64 == pixels && x.iter().all(|v| v.is_finite() && (0.0..=1.0).contains(v)))
+            // Payload cũ có alpha nhưng thiếu provenance không được âm thầm
+            // coi thành ảnh đục. Ảnh cũ không mask vẫn tương thích.
+            && (self.alpha.is_none() || self.mask_source != ImageMaskSource::None)
             && self.matte.as_ref().is_none_or(|x| x.len() == self.n_comps && x.iter().all(|v| v.is_finite()))
     }
     /// Giá trị thành phần đã áp `/Decode`, trong khoảng của colorspace.
@@ -207,7 +278,11 @@ impl SampledImage {
     pub(crate) fn rgb_raw_at(&self, x: u32, y: u32) -> [u8; 3] {
         let base = (y as usize * self.width as usize + x as usize) * self.n_comps;
         if base + 3 <= self.samples.len() {
-            [self.samples[base], self.samples[base + 1], self.samples[base + 2]]
+            [
+                self.samples[base],
+                self.samples[base + 1],
+                self.samples[base + 2],
+            ]
         } else {
             [0, 0, 0]
         }
@@ -275,7 +350,7 @@ impl SampledImage {
             (Some(d0), Some(d1)) => d0 + unit * (d1 - d0),
             _ => match &self.colorspace {
                 // Lab có khoảng riêng, không phải 0..1.
-                Some(ColorSpace::Lab) => {
+                Some(cs) if cs.uses_lab_components() => {
                     if c == 0 {
                         unit * 100.0
                     } else {
@@ -296,6 +371,33 @@ impl SampledImage {
                 .unwrap_or(1.0),
             None => 1.0,
         }
+    }
+
+    /// Shape nội tại theo ISO 11.6.4.2: stencil và explicit Mask luôn cắt
+    /// hình học, kể cả AIS=false. Soft mask không được nhân vào đây.
+    #[inline]
+    pub fn intrinsic_shape_at(&self, x: u32, y: u32) -> f32 {
+        if !self.stencil_at(x, y) {
+            0.0
+        } else if self.mask_source == ImageMaskSource::Explicit {
+            self.alpha_at(x, y)
+        } else {
+            1.0
+        }
+    }
+
+    /// Chỉ /SMask của image tạo nguồn soft alpha chịu AIS. Mask lỗi vẫn
+    /// trả Some(1) cùng warning, không lấy nhầm SMask từ graphics state.
+    #[inline]
+    pub fn soft_mask_at(&self, x: u32, y: u32) -> Option<f32> {
+        (self.mask_source == ImageMaskSource::Soft).then(|| self.alpha_at(x, y))
+    }
+
+    /// ISO 11.6.4.3: cả hai loại mask trong image đều thắng SMask của state;
+    /// /SMask thắng /Mask. Giữ quyết định cả khi decoder không đọc được mask.
+    #[inline]
+    pub fn overrides_graphics_soft_mask(&self) -> bool {
+        self.mask_source != ImageMaskSource::None
     }
 
     pub(crate) fn has_matte(&self) -> bool {
@@ -333,12 +435,20 @@ impl<'a> ImageSampler<'a> {
     ) -> PpeResult<Self> {
         let mut lut = None;
         let mut lut3 = None;
+        if image.colorspace.as_ref().is_some_and(|cs|
+            matches!(cs, ColorSpace::IccBased { .. }) && cs.uses_lab_components()) {
+            // COLOR (audit 2026-09-28 §KNOCK.04): schema hiện chưa giữ /Range
+            // ICC cho image Decode; vẫn hiển thị nhưng không gắn nhãn proof.
+            warn.note_approximated_colorspace("Ảnh ICC Lab: chưa chứng nhận miền Range");
+        }
         if matches!(image.colorspace, Some(ColorSpace::DeviceCMYK)) {
             // Ghi nhận một lần khi dựng sampler; làm lại phép tìm chuỗi này cho
             // từng pixel của ảnh lớn chiếm đáng kể hot path Viewer.
             warn.note_colorspace_used("DeviceCMYK");
         }
-        if image.n_comps == 1 {
+        // COLOR (audit 2026-09-28 §KNOCK.C2b): /Matte phụ thuộc alpha từng
+        // pixel; LUT chỉ theo mẫu Gray sẽ bỏ khử preblend và pha nền hai lần.
+        if image.n_comps == 1 && !image.has_matte() {
             if let Some(cs) = &image.colorspace {
                 let indexed = matches!(cs, ColorSpace::Indexed { .. });
                 let mut table = Vec::with_capacity(256);
@@ -689,6 +799,13 @@ fn decode_image_inner(
             Some("None")
         )
     });
+    let mask_source = if has_soft_mask {
+        ImageMaskSource::Soft
+    } else if dict.get(b"Mask").is_ok() {
+        ImageMaskSource::Explicit
+    } else {
+        ImageMaskSource::None
+    };
     let (alpha, explicit_mask_decode_failed) = if has_soft_mask {
         decode_soft_mask(doc, dict, width, height, warn, cancel_token, guard)?
     } else {
@@ -711,12 +828,13 @@ fn decode_image_inner(
         bpc,
         stencil,
         alpha,
+        mask_source,
         matte,
         explicit_mask_decode_failed,
     })
 }
 
-/// Giải explicit `/Mask` dạng stream thành opacity nhị phân trên lưới ảnh cha.
+/// Giải explicit `/Mask` dạng stream thành shape nhị phân trên lưới ảnh cha.
 ///
 /// `/Mask` mảng vẫn thuộc taxonomy color-key chưa hỗ trợ. Lỗi stream được giữ
 /// trong [`SampledImage`] để renderer chỉ cảnh báo khi invocation có coverage.
@@ -804,7 +922,7 @@ fn decode_soft_mask_matte(
     };
     let matte_obj = pdf::dict_get(doc, &mask_stream.dict, "Matte")?;
     let values = pdf::num_array(doc, matte_obj).unwrap_or_default();
-    let normalized = matches!(
+    let normalized = !colorspace.is_some_and(ColorSpace::uses_lab_components) && matches!(
         colorspace,
         Some(ColorSpace::DeviceGray | ColorSpace::DeviceRGB | ColorSpace::DeviceCMYK)
             | Some(ColorSpace::IccBased { .. })
@@ -1226,6 +1344,7 @@ fn bool_key(doc: &Document, dict: &Dictionary, keys: &[&str]) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lopdf::{dictionary, Stream};
 
     #[test]
     fn unpack_8bit_is_a_straight_copy() {
@@ -1310,6 +1429,7 @@ mod tests {
             bpc: 8,
             stencil: None,
             alpha: None,
+            mask_source: ImageMaskSource::None,
             matte: None,
             explicit_mask_decode_failed: false,
         }
@@ -1346,6 +1466,7 @@ mod tests {
             bpc: 8,
             stencil: None,
             alpha: None,
+            mask_source: ImageMaskSource::None,
             matte: None,
             explicit_mask_decode_failed: false,
         };
@@ -1369,6 +1490,7 @@ mod tests {
             bpc: 8,
             stencil: None,
             alpha: None,
+            mask_source: ImageMaskSource::None,
             matte: None,
             explicit_mask_decode_failed: false,
         };
@@ -1395,6 +1517,7 @@ mod tests {
             bpc: 8,
             stencil: None,
             alpha: None,
+            mask_source: ImageMaskSource::None,
             matte: None,
             explicit_mask_decode_failed: false,
         };
@@ -1425,6 +1548,7 @@ mod tests {
             bpc: 8,
             stencil: None,
             alpha: None,
+            mask_source: ImageMaskSource::None,
             matte: None,
             explicit_mask_decode_failed: false,
         };
@@ -1454,6 +1578,7 @@ mod tests {
             bpc: 8,
             stencil: None,
             alpha: None,
+            mask_source: ImageMaskSource::None,
             matte: None,
             explicit_mask_decode_failed: false,
         };
@@ -1491,6 +1616,7 @@ mod tests {
             bpc: 8,
             stencil: None,
             alpha: Some(vec![128.0 / 255.0]),
+            mask_source: ImageMaskSource::Soft,
             matte: Some(vec![1.0, 1.0, 1.0]),
             explicit_mask_decode_failed: false,
         };
@@ -1529,10 +1655,158 @@ mod tests {
             bpc: 8,
             stencil: Some(vec![true, false]),
             alpha: None,
+            mask_source: ImageMaskSource::None,
             matte: None,
             explicit_mask_decode_failed: false,
         };
         assert!(img.stencil_at(0, 0));
         assert!(!img.stencil_at(1, 0));
+    }
+
+    fn decoded_mask_fixture(
+        soft: Option<Object>,
+        explicit: Option<Object>,
+    ) -> (SampledImage, RenderWarnings) {
+        let doc = Document::with_version("1.7");
+        let mut dict = dictionary! {
+            "Subtype" => "Image", "Width" => 2, "Height" => 1,
+            "ColorSpace" => "DeviceGray", "BitsPerComponent" => 8,
+        };
+        if let Some(mask) = soft {
+            dict.set("SMask", mask);
+        }
+        if let Some(mask) = explicit {
+            dict.set("Mask", mask);
+        }
+        let stream = Object::Stream(Stream::new(dict, vec![0, 0]));
+        let mut warnings = RenderWarnings::default();
+        let image = decode_image(&doc, &stream, None, &mut warnings).unwrap();
+        (image, warnings)
+    }
+
+    fn explicit_fixture() -> Object {
+        Object::Stream(Stream::new(
+            dictionary! {
+                "Subtype" => "Image", "Width" => 2, "Height" => 1,
+                "ImageMask" => true, "BitsPerComponent" => 1,
+            },
+            vec![0b0100_0000],
+        ))
+    }
+
+    fn soft_fixture() -> Object {
+        Object::Stream(Stream::new(
+            dictionary! {
+                "Subtype" => "Image", "Width" => 2, "Height" => 1,
+                "ColorSpace" => "DeviceGray", "BitsPerComponent" => 8,
+            },
+            vec![0, 255],
+        ))
+    }
+
+    #[test]
+    fn c2_explicit_image_mask_is_intrinsic_shape_not_soft_alpha() {
+        let (image, warnings) = decoded_mask_fixture(None, Some(explicit_fixture()));
+        assert!(!warnings.ink_unsound(), "{warnings:?}");
+        assert!(image.overrides_graphics_soft_mask());
+        assert_eq!(image.intrinsic_shape_at(0, 0), 1.0);
+        assert_eq!(image.intrinsic_shape_at(1, 0), 0.0);
+        assert_eq!(image.soft_mask_at(0, 0), None);
+        assert_eq!(image.soft_mask_at(1, 0), None);
+        assert_eq!(image.alpha_at(0, 0), 1.0);
+        assert_eq!(image.alpha_at(1, 0), 0.0);
+    }
+
+    #[test]
+    fn c2_image_soft_mask_overrides_explicit_mask_but_leaves_intrinsic_rectangle() {
+        let (image, warnings) =
+            decoded_mask_fixture(Some(soft_fixture()), Some(explicit_fixture()));
+        assert!(!warnings.ink_unsound(), "{warnings:?}");
+        assert!(image.overrides_graphics_soft_mask());
+        for x in 0..2 {
+            assert_eq!(image.intrinsic_shape_at(x, 0), 1.0);
+        }
+        assert_eq!(image.soft_mask_at(0, 0), Some(0.0));
+        assert_eq!(image.soft_mask_at(1, 0), Some(1.0));
+        assert_eq!(image.alpha_at(0, 0), 0.0);
+        assert_eq!(image.alpha_at(1, 0), 1.0);
+    }
+
+    #[test]
+    fn c2_mask_presence_survives_decode_failure_but_smask_none_does_not_override_state() {
+        let (plain, _) = decoded_mask_fixture(Some(Object::Name(b"None".to_vec())), None);
+        assert!(!plain.overrides_graphics_soft_mask());
+        assert_eq!(plain.soft_mask_at(0, 0), None);
+        let (explicit, _) = decoded_mask_fixture(
+            Some(Object::Name(b"None".to_vec())),
+            Some(explicit_fixture()),
+        );
+        assert!(explicit.overrides_graphics_soft_mask());
+        assert_eq!(explicit.intrinsic_shape_at(1, 0), 0.0);
+        let (broken_soft, warnings) =
+            decoded_mask_fixture(Some(Object::Integer(17)), Some(explicit_fixture()));
+        assert!(warnings.ink_unsound());
+        assert!(broken_soft.overrides_graphics_soft_mask());
+        assert_eq!(broken_soft.soft_mask_at(1, 0), Some(1.0));
+        assert_eq!(broken_soft.intrinsic_shape_at(1, 0), 1.0);
+        let (broken_explicit, _) = decoded_mask_fixture(None, Some(Object::Integer(17)));
+        assert!(broken_explicit.explicit_mask_decode_failed);
+        assert!(broken_explicit.overrides_graphics_soft_mask());
+        assert_eq!(broken_explicit.soft_mask_at(0, 0), None);
+    }
+
+    #[test]
+    fn c2_retained_image_roundtrip_keeps_mask_provenance_and_rejects_ambiguous_old_alpha() {
+        for soft in [false, true] {
+            let (image, _) = if soft {
+                decoded_mask_fixture(Some(soft_fixture()), None)
+            } else {
+                decoded_mask_fixture(None, Some(explicit_fixture()))
+            };
+            let metadata = serde_json::to_value(&image).unwrap();
+            let mut payload = Vec::new();
+            image.write_retained_payload(&mut payload).unwrap();
+            let mut roundtrip: SampledImage = serde_json::from_value(metadata.clone()).unwrap();
+            roundtrip
+                .read_retained_payload(payload.as_slice(), &mut 1024)
+                .unwrap();
+            assert!(roundtrip.validate_retained_payload());
+            for x in 0..2 {
+                assert_eq!(
+                    roundtrip.intrinsic_shape_at(x, 0),
+                    image.intrinsic_shape_at(x, 0)
+                );
+                assert_eq!(roundtrip.soft_mask_at(x, 0), image.soft_mask_at(x, 0));
+                assert_eq!(roundtrip.alpha_at(x, 0), image.alpha_at(x, 0));
+            }
+            let mut old_metadata = metadata;
+            old_metadata.as_object_mut().unwrap().remove("mask_source");
+            let mut old: SampledImage = serde_json::from_value(old_metadata).unwrap();
+            assert!(
+                old.read_retained_payload(payload.as_slice(), &mut 1024)
+                    .is_err(),
+                "Alpha thiếu provenance không được tự nhận là shape hay opacity"
+            );
+        }
+    }
+
+    #[test]
+    fn c2_gray_matte_is_unblended_before_the_one_component_sampler() {
+        let mut image = gray_image(vec![128], 1, 1, vec![]);
+        image.alpha = Some(vec![128.0 / 255.0]);
+        image.mask_source = ImageMaskSource::Soft;
+        image.matte = Some(vec![1.0]);
+        let mut space = InkSpace::new();
+        let mut warnings = RenderWarnings::default();
+        let sampler = ImageSampler::new(&image, &mut space, &mut warnings, None).unwrap();
+        let (ink, _) = sampler
+            .ink_at(0, 0, &mut space, &mut warnings, None)
+            .unwrap()
+            .unwrap();
+        assert!(
+            (ink[3] - (1.0 - image.components_at(0, 0)[0])).abs() < 1e-6,
+            "LUT Gray không được bỏ khử Matte; kẽm K={}",
+            ink[3]
+        );
     }
 }

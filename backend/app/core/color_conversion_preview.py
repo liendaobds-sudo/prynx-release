@@ -21,7 +21,7 @@ from typing import Any, Awaitable, Callable
 import numpy as np
 from PIL import Image, ImageCms
 
-from app.core.system_memory import read_memory_status_mb
+from app.core.system_memory import memory_tier_mb, read_memory_status_mb, read_memory_tier_mb
 
 
 PROCESS_PLATE_NAMES = ("Cyan", "Magenta", "Yellow", "Black")
@@ -62,14 +62,25 @@ class _Candidate:
 
 def effective_preview_dpi(
     requested_dpi: int,
-    memory_reader: Callable[[], tuple[float | None, float | None]] = read_memory_status_mb,
+    memory_reader: Callable[[], tuple[float | None, float | None]] | None = None,
+    *,
+    tier_reader: Callable[[float | None], float | None] | None = None,
 ) -> int:
     """Chỉ hạ DPI trên máy yếu; máy từ 16 GB giữ nguyên yêu cầu."""
 
-    total_mb, _available_mb = memory_reader()
-    if total_mb is not None and 0 < total_mb < 8 * 1024:
+    reader = read_memory_status_mb if memory_reader is None else memory_reader
+    total_mb, _available_mb = reader()
+    # PERF (audit 2026-09-28 §PERF28.03 B2i): chỉ default runtime đọc installed;
+    # caller truyền reader riêng không được lẫn hạng máy host vào snapshot đó.
+    if tier_reader is not None:
+        tier_mb = memory_tier_mb(total_mb, tier_reader(total_mb))
+    elif memory_reader is None:
+        tier_mb = read_memory_tier_mb(total_mb)
+    else:
+        tier_mb = total_mb
+    if tier_mb is not None and 0 < tier_mb < 8 * 1024:
         return min(int(requested_dpi), 72)
-    if total_mb is not None and total_mb < 16 * 1024:
+    if tier_mb is not None and tier_mb < 16 * 1024:
         return min(int(requested_dpi), 100)
     return int(requested_dpi)
 

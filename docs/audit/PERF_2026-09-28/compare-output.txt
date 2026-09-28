@@ -1,0 +1,24 @@
+PRYNX_AUDIT_SAMPLE={"workers": 1, "elapsed_s": 3.7751399999833666, "first_page_s": 0.48601789999520406, "peak_working_set_mib": 265.4609375, "artifact_bytes": 9498432, "stages": {"render_s": 0.927, "render_n": 40, "compare_s": 2.335, "compare_n": 20, "save_s": 0.209, "save_n": 14, "commit_s": 0.143, "commit_n": 9, "main_serial_s": 1.28, "unaccounted_s": 2.496}}
+workers= 1 run=1: elapsed=3.775s, first=0.486s, peak=265.5MiB
+  stages: render=0.927s (n=40) | compare(Σworker)=2.335s (n=20) | save=0.209s (n=14) | commit=0.143s (n=9) | main_serial=1.280s | unaccounted=2.496s
+PRYNX_AUDIT_SAMPLE={"workers": 15, "elapsed_s": 1.6338432999909855, "first_page_s": 0.47571319999406114, "peak_working_set_mib": 413.609375, "artifact_bytes": 9498432, "stages": {"render_s": 0.946, "render_n": 40, "compare_s": 2.56, "compare_n": 20, "save_s": 0.018, "save_n": 14, "commit_s": 0.07, "commit_n": 8, "main_serial_s": 1.034, "unaccounted_s": 0.6}}
+workers=15 run=1: elapsed=1.634s, first=0.476s, peak=413.6MiB
+  stages: render=0.946s (n=40) | compare(Σworker)=2.560s (n=20) | save=0.018s (n=14) | commit=0.070s (n=8) | main_serial=1.034s | unaccounted=0.600s
+PRYNX_AUDIT_SAMPLE={"workers": 15, "elapsed_s": 1.6666011000052094, "first_page_s": 0.47683780000079423, "peak_working_set_mib": 410.59375, "artifact_bytes": 9498432, "stages": {"render_s": 0.973, "render_n": 40, "compare_s": 2.51, "compare_n": 20, "save_s": 0.024, "save_n": 14, "commit_s": 0.078, "commit_n": 8, "main_serial_s": 1.074, "unaccounted_s": 0.593}}
+workers=15 run=2: elapsed=1.667s, first=0.477s, peak=410.6MiB
+  stages: render=0.973s (n=40) | compare(Σworker)=2.510s (n=20) | save=0.024s (n=14) | commit=0.078s (n=8) | main_serial=1.074s | unaccounted=0.593s
+PRYNX_AUDIT_SAMPLE={"workers": 1, "elapsed_s": 3.404195500013884, "first_page_s": 0.39398190000792965, "peak_working_set_mib": 268.50390625, "artifact_bytes": 9498432, "stages": {"render_s": 0.823, "render_n": 40, "compare_s": 2.204, "compare_n": 20, "save_s": 0.203, "save_n": 14, "commit_s": 0.064, "commit_n": 8, "main_serial_s": 1.09, "unaccounted_s": 2.314}}
+workers= 1 run=2: elapsed=3.404s, first=0.394s, peak=268.5MiB
+  stages: render=0.823s (n=40) | compare(Σworker)=2.204s (n=20) | save=0.203s (n=14) | commit=0.064s (n=8) | main_serial=1.090s | unaccounted=2.314s
+PRYNX_AUDIT_SAMPLE={"workers": 1, "elapsed_s": 3.47510300000431, "first_page_s": 0.4132521999999881, "peak_working_set_mib": 265.73828125, "artifact_bytes": 9498432, "stages": {"render_s": 0.859, "render_n": 40, "compare_s": 2.211, "compare_n": 20, "save_s": 0.196, "save_n": 14, "commit_s": 0.091, "commit_n": 8, "main_serial_s": 1.147, "unaccounted_s": 2.328}}
+workers= 1 run=3: elapsed=3.475s, first=0.413s, peak=265.7MiB
+  stages: render=0.859s (n=40) | compare(Σworker)=2.211s (n=20) | save=0.196s (n=14) | commit=0.091s (n=8) | main_serial=1.147s | unaccounted=2.328s
+PRYNX_AUDIT_SAMPLE={"workers": 15, "elapsed_s": 1.655707900004927, "first_page_s": 0.4803073999937624, "peak_working_set_mib": 376.4296875, "artifact_bytes": 9498432, "stages": {"render_s": 0.942, "render_n": 40, "compare_s": 2.51, "compare_n": 20, "save_s": 0.027, "save_n": 14, "commit_s": 0.096, "commit_n": 8, "main_serial_s": 1.065, "unaccounted_s": 0.591}}
+workers=15 run=3: elapsed=1.656s, first=0.480s, peak=376.4MiB
+  stages: render=0.942s (n=40) | compare(Σworker)=2.510s (n=20) | save=0.027s (n=14) | commit=0.096s (n=8) | main_serial=1.065s | unaccounted=0.591s
+
+TỔNG HỢP
+workers | elapsed median | first-page median | peak max | artifact | speedup | parity
+      1 |          3.475s |             0.413s |    268.5MiB |    9.1MiB |   1.000x | True
+     15 |          1.656s |             0.477s |    413.6MiB |    9.1MiB |   2.099x | True
+PRYNX_BENCH_SUMMARY=[{"workers": 1, "median_elapsed_s": 3.47510300000431, "median_first_page_s": 0.4132521999999881, "max_peak_working_set_mib": 268.50390625, "artifact_bytes": 9498432, "speedup_vs_1": 1.0, "parity": true}, {"workers": 15, "median_elapsed_s": 1.655707900004927, "median_first_page_s": 0.47683780000079423, "max_peak_working_set_mib": 413.609375, "artifact_bytes": 9498432, "speedup_vs_1": 2.0988623657554384, "parity": true}]

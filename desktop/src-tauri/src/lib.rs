@@ -1839,8 +1839,11 @@ fn tile_disk_path(cache_key: &str) -> std::path::PathBuf {
     tile_cache_dir().join(format!("{:016x}.png", h.finish()))
 }
 
-// [AUDIT 2026-09-24 §R24.02]: Đổi sang v10 View semantics (bỏ FPDF_PRINTING để hiển thị đầy đủ OCG View và annotations).
-const TILE_RENDER_CACHE_VERSION: &str = "v10_view_semantics_opaque_white_png";
+// COLOR (audit 2026-09-28 §KNOCK.R3): giữ View semantics của v10, tách cache
+// pixel mới sau thay đổi shape knockout và nội suy mesh của PPE.
+// UIUX (audit 2026-09-28 §DARK-BG-PNG): Đổi sang v12 nền trong suốt để khôi phục chế độ
+// nền tối (viewerDarkBackground), soi viền tem trắng và kênh alpha của ảnh PNG/PDF trong suốt.
+const TILE_RENDER_CACHE_VERSION: &str = "v12_view_semantics_transparent_bg_png";
 
 #[allow(clippy::too_many_arguments)]
 fn tile_render_cache_key(
@@ -4387,10 +4390,11 @@ pub fn render_tile_with_options(
                 let safe_w = w.clamp(1, 4000) as i32;
                 let safe_h = h.clamp(1, 4000) as i32;
                 PdfRenderConfig::new()
-                    // [ACROBAT-SHARP-FIX 2026-09-24]: BẮT BUỘC nền Opaque White (255,255,255,255).
-                    // PDFium/FreeType tự động vô hiệu hóa Sub-pixel LCD Anti-Aliasing (ClearType)
-                    // và rơi về Grayscale nếu nền có alpha=0. Nền trắng đục kích hoạt nét đanh thép như Adobe CoolType.
-                    .set_clear_color(PdfColor::new(255, 255, 255, 255))
+                    // UIUX (audit 2026-09-28 §DARK-BG-PNG): Nền trong suốt (0, 0, 0, 0) bảo toàn
+                    // kênh alpha của file PNG và trang PDF trong suốt, cho phép chế độ nền tối
+                    // (viewerDarkBackground) hoạt động tức thì (soi viền tem trắng / đường bế).
+                    // Nền trắng/đen do CSS LivePageFrame và ThumbSidebar quản lý.
+                    .set_clear_color(PdfColor::new(0, 0, 0, 0))
                     .set_fixed_size(safe_w, safe_h)
                     .translate(
                         PdfPoints::new(-(x as f32) / render_scale),
@@ -4426,10 +4430,11 @@ pub fn render_tile_with_options(
                 let safe_w = (width_pt * effective_scale).max(1.0) as i32;
 
                 PdfRenderConfig::new()
-                    // [ACROBAT-SHARP-FIX 2026-09-24]: BẮT BUỘC nền Opaque White (255,255,255,255).
-                    // PDFium/FreeType tự động vô hiệu hóa Sub-pixel LCD Anti-Aliasing (ClearType)
-                    // và rơi về Grayscale nếu nền có alpha=0. Nền trắng đục kích hoạt nét đanh thép như Adobe CoolType.
-                    .set_clear_color(PdfColor::new(255, 255, 255, 255))
+                    // UIUX (audit 2026-09-28 §DARK-BG-PNG): Nền trong suốt (0, 0, 0, 0) bảo toàn
+                    // kênh alpha của file PNG và trang PDF trong suốt, cho phép chế độ nền tối
+                    // (viewerDarkBackground) hoạt động tức thì (soi viền tem trắng / đường bế).
+                    // Nền trắng/đen do CSS LivePageFrame và ThumbSidebar quản lý.
+                    .set_clear_color(PdfColor::new(0, 0, 0, 0))
                     .set_target_width(safe_w)
                     // LCD subpixel text → chữ sắc nét kiểu Acrobat.
                     .use_lcd_text_rendering(true)

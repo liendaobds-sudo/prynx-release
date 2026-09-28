@@ -66,8 +66,11 @@ def _background_zlib_lane_count() -> int:
         forced = 0
     if forced > 0:
         return 1 if forced == 1 else 2
+    # PERF (audit 2026-09-28 §PERF28.03): tier lắp đặt ở biên runtime,
+    # giữ policy thuần và hai buffer nén độc lập/bit-identical.
+    from app.core.system_memory import read_memory_tier_mb
     total_ram_mb, _available_ram_mb = read_memory_status_mb()
-    return _plan_background_zlib_lanes(total_ram_mb, os.cpu_count())
+    return _plan_background_zlib_lanes(read_memory_tier_mb(total_ram_mb), os.cpu_count())
 
 
 def _compress_background_streams(

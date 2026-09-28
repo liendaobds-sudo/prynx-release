@@ -230,6 +230,7 @@ export interface UsePdfLoaderResult {
     viewerShadowEnabled: boolean;
     renderDocumentToken: string | null;
     numPages: number;
+    sourcePageCount: number;
     pageOrder: number[];
     setPageOrder: React.Dispatch<React.SetStateAction<number[]>>;
     pageInstanceIds: string[];
@@ -260,6 +261,7 @@ export function usePdfLoader({
 }: UsePdfLoaderProps) {
     const [pdfRef, setPdfRef] = useState<PDFDocumentProxy | null>(null);
     const [thumbPdfRef, setThumbPdfRef] = useState<PDFDocumentProxy | null>(null);
+    const [sourcePageCount, setSourcePageCount] = useState<number>(0);
     const [pageDim, setPageDim] = useState<{ w: number; h: number } | null>(null);
     const [allPageDims, setAllPageDims] = useState<Record<number, { w: number; h: number; widthPt: number }>>({});
     const [pageWidthPt, setPageWidthPt] = useState<number>(595);
@@ -322,6 +324,7 @@ export function usePdfLoader({
         setLoadError(null);
         setLoadStatus('cancelled');
         setNumPages(0);
+        setSourcePageCount(0);
         setLoadRevision(value => value + 1);
     }, [setNumPages, sourceKey]);
 
@@ -396,6 +399,7 @@ export function usePdfLoader({
         setViewerEngineMode('current');
         setViewerShadowEnabled(false);
         setNumPages(0);
+        setSourcePageCount(0);
         setNativeRenderIdentity(null);
         if (!file?.__editCommit && !file?.__pathRebaseOnly) {
             setPageOrder([]);
@@ -517,6 +521,7 @@ export function usePdfLoader({
             setPageWidthPt(wPt);
             setPageDim({ w, h });
             setNumPages(count);
+            setSourcePageCount(count);
             const dims: Record<number, { w: number; h: number; widthPt: number }> = {};
             for (let i = 1; i <= count; i++) dims[i] = { w, h, widthPt: wPt };
             setAllPageDims(dims);
@@ -557,6 +562,7 @@ export function usePdfLoader({
                 setPageWidthPt(w);
                 setPageDim({ w, h });
                 setNumPages(1);
+                setSourcePageCount(1);
                 setAllPageDims({ 1: { w, h, widthPt: w } });
                 setPageOrder([1]);
                 setPageInstanceIds(genPageIds(1));
@@ -753,6 +759,7 @@ export function usePdfLoader({
                     setPageWidthPt(widthPt);
                     setPageDim({ w: widthPt * (96 / 72), h: heightPt * (96 / 72) });
                     setNumPages(numPagesFromEngine);
+                    setSourcePageCount(numPagesFromEngine);
                     setAllPageDims(buildPageDims(bootstrap, numPagesFromEngine, widthPt, heightPt));
 
                     // Cross-file copy/move: order scoped theo pdfUrl đích (tránh tab khác nuốt).
@@ -877,6 +884,7 @@ export function usePdfLoader({
                     setPdfRef(doc);
                     setThumbPdfRef(doc);
                     setNumPages(doc.numPages);
+                    setSourcePageCount(doc.numPages);
                     const cfPayload2 = (window as LoaderWindow).__prynx_cross_file_page_order;
                     const cfOrder2: number[] | null = Array.isArray(cfPayload2)
                         ? cfPayload2
@@ -1066,6 +1074,8 @@ export function usePdfLoader({
     return {
         pdfRef,
         thumbPdfRef,
+        sourcePageCount,
+        numPages: sourcePageCount,
         pageDim,
         allPageDims,
         pageWidthPt,

@@ -533,7 +533,7 @@ def reconstruct_cut_coords(
     mode = normalize_shape_mode(mode)
     meta: dict[str, Any] = {"shape_mode": mode, "reconstructed": False}
     pts = _pts_xy(contour_pts)
-    if len(pts) < 5:
+    if len(pts) < 3:
         return None, meta
 
     # τ hiệu dụng: nới theo răng cưa raster (mm/px = 1/px_per_mm).

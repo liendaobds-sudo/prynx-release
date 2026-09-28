@@ -400,3 +400,70 @@ def test_diecut_preview_fallback_only_applies_inking_to_rectangle(shape_type, ex
     result = preview_layout(request, PRO_LICENSE)
 
     assert [bool(cell.get("isRotated180", False)) for cell in result["cells"]] == expected
+
+
+def test_normalize_alternate_rotation_alignment():
+    norm = nup_layout_solver.normalize_alternate_rotation_alignment
+    assert norm("foot_to_foot") == "foot_to_foot"
+    assert norm("head_to_head") == "head_to_head"
+    assert norm("HEAD_TO_HEAD") == "head_to_head"
+    assert norm(" FOOT_TO_FOOT ") == "foot_to_foot"
+    assert norm(None) == "foot_to_foot"
+    assert norm("invalid") == "foot_to_foot"
+
+    with pytest.raises(ValueError, match="Kiểu tiếp xúc phải là foot_to_foot hoặc head_to_head"):
+        norm("invalid", strict=True)
+
+
+@pytest.mark.parametrize(
+    ("alignment", "expected_row", "expected_col"),
+    [
+        ("foot_to_foot", [False, False, True, True], [False, True, False, True]),
+        ("head_to_head", [True, True, False, False], [True, False, True, False]),
+    ],
+)
+def test_inking_alignment_phase_inversion(alignment, expected_row, expected_col):
+    layout_2x2 = {
+        "strategyUsed": "optimal_auto",
+        "cells": [
+            {"c": 0, "r": 0, "x": 0.0, "y": 0.0, "width": 20.0, "height": 10.0, "isRotated": False},
+            {"c": 1, "r": 0, "x": 20.0, "y": 0.0, "width": 20.0, "height": 10.0, "isRotated": False},
+            {"c": 0, "r": 1, "x": 0.0, "y": 10.0, "width": 20.0, "height": 10.0, "isRotated": False},
+            {"c": 1, "r": 1, "x": 20.0, "y": 10.0, "width": 20.0, "height": 10.0, "isRotated": False},
+        ],
+    }
+
+    res_row = nup_layout_solver.apply_alternate_rotation(layout_2x2, "row", alignment=alignment)
+    assert [cell["isRotated180"] for cell in res_row["cells"]] == expected_row
+
+    res_col = nup_layout_solver.apply_alternate_rotation(layout_2x2, "column", alignment=alignment)
+    assert [cell["isRotated180"] for cell in res_col["cells"]] == expected_col
+
+
+def test_preview_layout_head_to_head():
+    from app.api.routes.imposition import PreviewLayoutRequest, preview_layout
+    from tests.license_helpers import PRO_LICENSE
+
+    request = PreviewLayoutRequest(
+        usable_w=100.0,
+        usable_h=100.0,
+        item_w=20.0,
+        item_h=10.0,
+        gap_x=0.0,
+        gap_y=0.0,
+        strategy="manual",
+        alternate_rotation="row",
+        alternate_rotation_alignment="head_to_head",
+        cols=2,
+        rows=2,
+        task_mode="nup",
+        is_die_cut=False,
+    )
+
+    result = preview_layout(request, PRO_LICENSE)
+
+    assert result["totalItems"] == 4
+    # Với head_to_head: hàng 0 xoay 180°, hàng 1 giữ 0°
+    assert [cell["isRotated180"] for cell in result["cells"]] == [
+        True, True, False, False,
+    ]

@@ -341,6 +341,10 @@ def test_transparency_gaps_are_declared_separately():
     caps = pdfcompare_native.ppe_capabilities()
     assert caps["transparency_groups"] is True
     assert caps["transparency_knockout_groups"] is False
+    assert caps["transparency_knockout_vector_preview"] is True
+    assert caps["transparency_knockout_vector_preview_scope"] == (
+        "nonisolated-device-cmyk-normal-solid-paths-no-smask-ais-overprint"
+    )
     assert caps["soft_mask"] is True
     assert set(caps["soft_mask_types"]) == {"Luminosity", "Alpha"}
     assert caps["blend_modes"] is True
@@ -349,6 +353,42 @@ def test_transparency_gaps_are_declared_separately():
     assert "Multiply" in separable
     assert approximated == {"Hue", "Saturation", "Color", "Luminosity"}
     assert not (separable & approximated), "một mode không thể vừa đúng vừa xấp xỉ"
+
+
+@pytest.mark.parametrize("isolated", [False, True])
+def test_knockout_preview_certificate_stays_separate_from_measurement(tmp_path, isolated):
+    """COLOR (audit 2026-09-28 §KNOCK.PREVIEW): kiểm binding thật, không mock guard."""
+    import pikepdf
+
+    with pikepdf.Pdf.new() as pdf:
+        page = pdf.add_blank_page(page_size=(40, 40))
+        group = pdf.make_stream(b"0 1 0 0 k 4 4 32 32 re f")
+        group.Type = pikepdf.Name.XObject
+        group.Subtype = pikepdf.Name.Form
+        group.BBox = pikepdf.Array([0, 0, 40, 40])
+        group.Resources = pikepdf.Dictionary()
+        group.Group = pikepdf.Dictionary(
+            S=pikepdf.Name.Transparency, CS=pikepdf.Name.DeviceCMYK, I=isolated, K=True,
+        )
+        page.Resources = pikepdf.Dictionary(XObject=pikepdf.Dictionary(K=group))
+        page.Contents = pdf.make_stream(b"1 0 0 0 k 0 0 40 40 re f /K Do")
+        path = tmp_path / "vector-knockout.pdf"
+        pdf.save(path)
+
+    assets = Path(__file__).parent.parent / "app" / "assets" / "icc"
+    preview = pdfcompare_native.ppe_softproof(
+        str(path), page=1, dpi=72., cmyk_profile=str(assets / "FOGRA39.icc"),
+    )
+    assert preview["ink_unsound"] is isolated
+    measured = pdfcompare_native.ppe_separations(str(path), page=1, dpi=72., ink_accurate=True)
+    assert measured["unsupported_transparency"] is True
+    assert measured["ink_unsound"] is True
+    session = pdfcompare_native.PpeRenderSession(
+        str(path), "pytest-knockout", str(assets / "FOGRA39.icc"), str(assets / "sRGB.icc"),
+    )
+    cached = session.render_softproof("pytest-knockout", 1, page=1, dpi=72.)
+    assert cached["ink_unsound"] is isolated
+    assert cached["rgb"] == preview["rgb"]
 
 
 def test_shading_type_gaps_are_declared_separately():

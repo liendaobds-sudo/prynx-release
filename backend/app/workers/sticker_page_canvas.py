@@ -301,3 +301,106 @@ def normalize_sticker_tight_crop_origin(pdf_path: str | os.PathLike) -> bool:
             except OSError:
                 pass
 
+
+def split_or_normalize_sticker_tight_crop(
+    pdf_path: str | os.PathLike,
+    meta: dict | None = None,
+) -> bool:
+    """Chuẩn hóa tight crop hoặc tách thành từng trang tem riêng nếu tờ chứa nhiều tem.
+
+    - Nếu tài liệu chỉ có 1 tem mỗi trang: chuẩn hóa gốc tọa độ về (0, 0) qua
+      ``normalize_sticker_tight_crop_origin``.
+    - Nếu trang chứa nhiều tem (> 1 sticker_boxes): tách trang đó thành N trang
+      riêng biệt, mỗi trang chứa đúng 1 con tem với MediaBox, CropBox, TrimBox
+      chuẩn hóa về gốc (0, 0), kèm lệnh clip để không lẫn chi tiết từ các tem khác
+      trên cùng tờ.
+    """
+    path_str = str(pdf_path)
+    if not os.path.isfile(path_str):
+        return False
+
+    pages_meta = []
+    if isinstance(meta, dict):
+        pages_meta = meta.get("pages") or []
+
+    has_multi = any(
+        isinstance(p, dict) and len(p.get("sticker_boxes") or []) > 1
+        for p in pages_meta
+    )
+    if not has_multi:
+        return normalize_sticker_tight_crop_origin(pdf_path)
+
+    output_dir = os.path.dirname(os.path.abspath(path_str)) or "."
+    temp_path: str | None = None
+
+    try:
+        with pikepdf.Pdf.open(path_str) as pdf:
+            new_pdf = pikepdf.Pdf.new()
+            for page_idx, page in enumerate(pdf.pages):
+                p_meta = pages_meta[page_idx] if page_idx < len(pages_meta) and isinstance(pages_meta[page_idx], dict) else {}
+                sticker_boxes = p_meta.get("sticker_boxes") or []
+
+                if len(sticker_boxes) <= 1:
+                    new_pdf.pages.append(page)
+                    continue
+
+                page_obj = page.obj
+                if "/Contents" in page_obj and page_obj.Contents is not None:
+                    if isinstance(page_obj.Contents, pikepdf.Array):
+                        raw_stream = b"\n".join(s.read_bytes() for s in page_obj.Contents)
+                    else:
+                        raw_stream = page_obj.Contents.read_bytes()
+                else:
+                    raw_stream = b""
+
+                for box in sticker_boxes:
+                    crop = box["crop_box"]
+                    trim = box["trim_box"]
+                    shift_x = float(crop[0])
+                    shift_y = float(crop[1])
+                    norm_w = float(crop[2] - crop[0])
+                    norm_h = float(crop[3] - crop[1])
+                    if norm_w <= 0.01 or norm_h <= 0.01:
+                        continue
+
+                    new_pdf.pages.append(page)
+                    new_p = new_pdf.pages[-1]
+                    new_obj = new_p.obj
+
+                    norm_box = (0.0, 0.0, norm_w, norm_h)
+                    new_obj["/MediaBox"] = _as_array(norm_box)
+                    new_obj["/CropBox"] = _as_array(norm_box)
+                    new_obj["/BleedBox"] = _as_array(norm_box)
+                    trim_rel = (
+                        float(trim[0]) - shift_x,
+                        float(trim[1]) - shift_y,
+                        float(trim[2]) - shift_x,
+                        float(trim[3]) - shift_y,
+                    )
+                    new_obj["/TrimBox"] = _as_array(trim_rel)
+                    new_obj["/ArtBox"] = _as_array(trim_rel)
+
+                    if raw_stream:
+                        shifted_stream = (
+                            f"q 0 0 {norm_w:.4f} {norm_h:.4f} re W n 1 0 0 1 {-shift_x:.4f} {-shift_y:.4f} cm\n".encode("ascii")
+                            + raw_stream
+                            + b"\nQ\n"
+                        )
+                        new_obj.Contents = new_pdf.make_stream(shifted_stream)
+
+            fd, temp_path = tempfile.mkstemp(suffix=".pdf", dir=output_dir)
+            os.close(fd)
+            new_pdf.save(temp_path)
+
+        normalize_sticker_tight_crop_origin(temp_path)
+        os.replace(temp_path, path_str)
+        temp_path = None
+        return True
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+
+

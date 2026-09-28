@@ -289,10 +289,23 @@ def _render_canonical_classic_page(source_path, page_number, preview_size, geome
     identity = (str(source_path), digest)
     if _classic_baseline_cache.get("source") != identity:
         _classic_baseline_cache.clear()
-        _classic_baseline_cache.update(source=identity, entries={})
+        _classic_baseline_cache.update(source=identity, entries={}, base_dielines={})
     entries = _classic_baseline_cache["entries"]
+    base_dielines = _classic_baseline_cache.setdefault("base_dielines", {})
     baseline = entries.get(baseline_key)
-    if baseline is None:
+    if baseline is not None:
+        log_cutline("CLASSIC_PREVIEW", "CACHE_HIT", f"Trúng cache baseline hoàn toàn page={page_number}", count=baseline["count"])
+    else:
+        shape_mode = str(geometry.get("shape_mode") or "auto_safe")
+        is_round = (geometry.get("corner_style") == "round")
+        min_detail = float(geometry.get("min_detail_area_mm2") or 0.0)
+        denoise = float(geometry.get("cutline_denoise") or 0.0)
+        remove_white = bool(geometry.get("remove_white_bg", True))
+        base_key = (page_number, shape_mode, is_round, min_detail, denoise, remove_white)
+        cached_dieline = base_dielines.get(base_key)
+        cached_dict = {page_number - 1: cached_dieline} if cached_dieline is not None else None
+        log_cutline("CLASSIC_PREVIEW", "CACHE_MISS", f"Tính mới baseline page={page_number} (base_dieline={'HIT' if cached_dieline is not None else 'MISS'})", cached_dieline=bool(cached_dieline), simplify=requested_simplify)
+
         # CUT đã đọc ngược từ PDF là tọa độ Y-up, .4f; Simplify riêng trên nó
         # không khớp frame/nhánh góc của Execute. Dùng chính engine xuất và thu
         # memo trước writer; cache nóng bỏ solver mà không đổi quỹ đạo.
@@ -301,10 +314,16 @@ def _render_canonical_classic_page(source_path, page_number, preview_size, geome
                 result = StickerEngine(dpi=300).process_pdf(
                     input_path=source_path, output_path="", _page_subset=[page_number-1],
                     remove_white_bg=True, draw_cut_contour=True, alpha_corner_policy="adaptive",
+                    _cutline_only=True,
+                    _cached_page_dielines=cached_dict,
                     **geometry,
                 )
         if not isinstance(result[0], bytes):
             raise StickerSheetExportError("Không dựng được đường bế toàn trang.")
+        if cached_dieline is None and isinstance(result[1], list) and len(result[1]) > 0:
+            entry = result[1][0].get("_base_dieline_entry")
+            if entry is not None:
+                _remember_preview(base_dielines, base_key, entry, _preview_cache_limit())
         with pikepdf.Pdf.open(BytesIO(result[0])) as document:
             operations, count = _pdf_cut_operations(document.pages[0])
         quality = {"segment_count": count, "fit_mode": "classic-whole-page"}
@@ -330,6 +349,7 @@ def _render_canonical_classic_page(source_path, page_number, preview_size, geome
     if outer_memo is not None:
         outer_memo.update(deepcopy(baseline["memo"]))
     svg = _cut_operations_svg(baseline["operations"], width, height, *preview_size)
+    log_cutline("CLASSIC_PREVIEW", "SVG_DONE", f"Dựng SVG hoàn tất page={page_number}", count=baseline["count"], svg_len=len(svg))
     return svg, baseline["count"], deepcopy(baseline["quality"])
 
 
@@ -399,8 +419,8 @@ def build_classic_page_preview(session, *, page_number, base_revision, edits,
         if (page.stage not in {"mask-review", "mask-ready"}
                 or int(page.manifest.get("mask_revision", 0)) != base_revision):
             raise StickerSheetSessionConflict("Trang đã thay đổi; hãy chờ xem trước cập nhật.")
-        if page.boundary_source != "alpha" or edits:
-            raise StickerSheetExportError("Preview toàn trang chỉ nhận PDF Alpha gốc, chưa sửa mask.")
+        if page.boundary_source not in ("alpha", "simple-bg", "ai", "vector") or edits:
+            raise StickerSheetExportError("Preview toàn trang chỉ nhận PDF chưa sửa mask.")
         keys = ("offset_mm", "bleed_mm", "cut_mode", "corner_style", "fill_holes",
                 "cutline_smoothness", "cutline_fidelity", "curve_tension",
                 "min_detail_area_mm2", "cutline_denoise", "cutline_simplify_mm")

@@ -25,6 +25,9 @@ from app.workers.sticker_engine import (
     _fit_alpha_bezier_paths_core,
     build_bezier_segments_path_stream,
     build_alpha_cutline_geometry,
+    extract_alpha_base_geometry,
+    offset_alpha_base_geometry,
+    prepare_alpha_cutline_geometry,
     should_presmooth_cutline_alpha,
 )
 from app.workers.cutline_machine_path import (
@@ -165,9 +168,9 @@ def test_suc_cang_duoc_tu_dong_hoa_khong_lam_cung_duong_cong() -> None:
 
 def test_do_bo_cong_dieu_khien_ban_kinh_round_thuc() -> None:
     assert _cutline_round_radius_mm(0, 25.4 / 72.0) == pytest.approx(0.0)
-    assert _cutline_round_radius_mm(50, 25.4 / 72.0) == pytest.approx(1.5)
-    assert _cutline_round_radius_mm(50, 25.4 / 300.0) == pytest.approx(1.5)
-    assert _cutline_round_radius_mm(100, 25.4 / 300.0) == pytest.approx(3.0)
+    assert _cutline_round_radius_mm(50, 25.4 / 72.0) == pytest.approx(6.0)
+    assert _cutline_round_radius_mm(50, 25.4 / 300.0) == pytest.approx(6.0)
+    assert _cutline_round_radius_mm(100, 25.4 / 300.0) == pytest.approx(12.0)
 
     mask = np.zeros((240, 300), dtype=np.uint8)
     points = np.array([
@@ -1605,3 +1608,79 @@ def test_hybrid_khong_bao_mat_chi_tiet_that(
         # Biên lượn thật có biên độ ~2,5 mm đỉnh-đỉnh, không được ép thành line.
         assert float(np.ptp(side[:, 0]) / _PT_PER_MM) >= 1.80
     _hybrid_assert_machine_safe(result)
+
+
+def test_tai_su_dung_base_geometry_khi_doi_offset_va_kieu_goc() -> None:
+    """PERF (audit 2026-09-28 §CUTBASE.CACHE): xác nhận base_geometry tái sử dụng
+
+    cho ra hình học tương đương 100% so với gọi prepare_alpha_cutline_geometry trực tiếp.
+    """
+    alpha = np.zeros((120, 120), dtype=np.uint8)
+    cv2.rectangle(alpha, (20, 20), (100, 100), 255, -1)
+
+    base_info = extract_alpha_base_geometry(alpha, dpi=150, dpi_y=150)
+    assert base_info is not None
+    assert isinstance(base_info["base_geometry"], Polygon)
+
+    # 1. Thử offset 0.0, preserve
+    prep_cached_0 = offset_alpha_base_geometry(
+        base_info, offset_mm=0.0, corner_style="preserve"
+    )
+    prep_direct_0 = prepare_alpha_cutline_geometry(
+        alpha, dpi=150, dpi_y=150, offset_mm=0.0, corner_style="preserve"
+    )
+    assert prep_cached_0 is not None and prep_direct_0 is not None
+    assert prep_cached_0["ideal_geometry"].equals(prep_direct_0["ideal_geometry"])
+
+    # 2. Thử offset 2.0, round
+    prep_cached_2 = offset_alpha_base_geometry(
+        base_info, offset_mm=2.0, corner_style="round"
+    )
+    prep_direct_2 = prepare_alpha_cutline_geometry(
+        alpha, dpi=150, dpi_y=150, offset_mm=2.0, corner_style="round"
+    )
+    assert prep_cached_2 is not None and prep_direct_2 is not None
+    assert prep_cached_2["ideal_geometry"].equals(prep_direct_2["ideal_geometry"])
+    assert prep_cached_2["corner_style"] == "round"
+
+
+def test_fit_standard_polygon_fillet_ignores_hairline_slivers() -> None:
+    """QUALITY §CUTROUND.6: Trong MultiPolygon, sliver siêu mảnh không làm hỏng
+
+    bo góc của các tem/thẻ chuẩn còn lại.
+    """
+    from shapely.geometry import MultiPolygon, box
+    from app.workers.sticker_engine import _fit_standard_polygon_fillet, _PT_PER_MM
+
+    # Tạo 2 hình chữ nhật chuẩn
+    rect1 = box(10.0, 10.0, 100.0, 80.0)
+    rect2 = box(120.0, 10.0, 210.0, 80.0)
+    # Tạo 1 dải viền hairline giả lập guillotine/ringing (dày 0.15 mm, dài 200 pt)
+    sliver = box(10.0, 95.0, 210.0, 95.0 + 0.15 * _PT_PER_MM)
+
+    multi_with_sliver = MultiPolygon([rect1, rect2, sliver])
+    result_low = _fit_standard_polygon_fillet(
+        multi_with_sliver,
+        total_offset_pts=0.0,
+        source_pixel_mm=0.08,
+        curve_tension=15.0,
+    )
+    result_high = _fit_standard_polygon_fillet(
+        multi_with_sliver,
+        total_offset_pts=0.0,
+        source_pixel_mm=0.08,
+        curve_tension=75.0,
+    )
+
+    assert result_low is not None
+    assert result_high is not None
+    fitted_low, paths_low, _ = result_low
+    fitted_high, paths_high, _ = result_high
+
+    assert isinstance(fitted_low, MultiPolygon)
+    assert len(fitted_low.geoms) == 2
+    assert len(paths_low) == 2
+    # Độ dài cung góc ở tension 75 phải lớn hơn tension 15
+    assert paths_low != paths_high
+
+

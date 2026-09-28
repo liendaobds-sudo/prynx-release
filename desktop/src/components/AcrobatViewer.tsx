@@ -34,6 +34,7 @@ import type { InstantPreflightResult } from '../lib/instantPreflight';
 import { usePdfLoader, genPageId, genPageIds, flattenRotations } from '../hooks/viewer/usePdfLoader';
 import { useLiveLinkWatcher } from '../hooks/viewer/useLiveLinkWatcher';
 import {
+    resolveViewerPageColorMode,
     shouldAutoDisableAccurateColor,
     useTileRenderer,
 } from '../hooks/viewer/useTileRenderer';
@@ -136,6 +137,12 @@ type PageToolsActionDetail = {
 };
 
 type AutoTrimSide = 'top' | 'right' | 'bottom' | 'left';
+export interface AutoTrimOptions {
+    pages?: readonly number[];
+    marginMm: number;
+    trimSides: readonly AutoTrimSide[];
+    mode?: 'trim' | 'fill';
+}
 const AUTO_TRIM_SIDES: readonly AutoTrimSide[] = ['top', 'right', 'bottom', 'left'];
 const AUTO_TRIM_SIDE_LABEL: Record<AutoTrimSide, string> = {
     top: 'Trên',
@@ -209,6 +216,8 @@ interface Props {
     onObjectDelete?: (objs: ViewerPdfObject[], pageNum: number) => void;
     fetchObjectsForPage?: (pageNum: number) => void;
     onEditCommit?: (outputUrl: string, outputFilename: string, outputFid?: string, outputPath?: string) => void | Promise<void>;
+    /** Khử viền đổi revision PDF; không dùng đường commit riêng của sửa đối tượng. */
+    onAutoTrimApply?: (options: AutoTrimOptions) => Promise<boolean>;
     /** Commit crop through the workspace history/save pipeline. */
     /** Hoàn tác kết quả xử lý PDF khi viewer không còn thao tác trang để hoàn tác. */
     onDocumentUndo?: () => void;
@@ -247,7 +256,7 @@ interface Props {
 }
 
 
-export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onDocumentUndo, onVdpBoxCreate, rightPanel, toolbarExtra, toolbarExtraRight, pageOverlay, pageOverlayPage = 1, pageOverlayViewerPage, pageOverlayInstanceId, pageOverlayRenderer, pageWorkflowStatuses, cutlinePreviews, restoredHistoryDirty = false, editSession, initialViewState, onInitialViewStateApplied, pendingHistoryEntry, onHistoryEntryHydrated, onOpenDieCutModal }: Props) {
+export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjectDelete, fetchObjectsForPage, onEditCommit, onAutoTrimApply, onDocumentUndo, onVdpBoxCreate, rightPanel, toolbarExtra, toolbarExtraRight, pageOverlay, pageOverlayPage = 1, pageOverlayViewerPage, pageOverlayInstanceId, pageOverlayRenderer, pageWorkflowStatuses, cutlinePreviews, restoredHistoryDirty = false, editSession, initialViewState, onInitialViewStateApplied, pendingHistoryEntry, onHistoryEntryHydrated, onOpenDieCutModal }: Props) {
   const { t } = useTranslation();
     const {
         scale: physicalDisplayScale,
@@ -339,10 +348,12 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
 
     const isVdpMode = activeDashboardTool === 'datamerge' || activeDashboardTool === 'numbering' || activeDashboardTool === 'cover_numbering' || activeDashboardTool === 'stick_text_number';
     const showRulers = useAppSettingsStore(state => state.showRulers);
+    // Hook luôn được gọi; gate chỉ quyết định có sử dụng viewport hay không.
+    const nativeGpuViewportEnabled = useAppSettingsStore(state => state.nativeGpuViewportEnabled);
     // GPU Viewport tạm thời khóa hoàn toàn (kể cả DEV), chỉ bật khi có cờ VITE_ENABLE_GPU_VIEWPORT === 'true'
     const nativeGpuRequested = Boolean(import.meta.env.DEV)
         && (import.meta.env.VITE_ENABLE_GPU_VIEWPORT as string | undefined) === 'true'
-        && useAppSettingsStore(state => state.nativeGpuViewportEnabled);
+        && nativeGpuViewportEnabled;
     const [nativeGpuFailure, setNativeGpuFailure] = useState<string | null>(null);
     const [nativeViewportVisible, setNativeViewportVisible] = useState(false);
     const nativeViewportKeepAliveRef = useRef(false);
@@ -418,6 +429,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     // ── Khử viền dư (Auto-trim excess border) ──
     const [isAutoTrimOpen, setIsAutoTrimOpen] = useState(false);
     const [autoTrimBusy, setAutoTrimBusy] = useState(false);
+    const [autoTrimMode, setAutoTrimMode] = useState<'trim' | 'fill'>('trim');
     const [autoTrimMargin, setAutoTrimMargin] = useState(0);
     const [autoTrimScope, setAutoTrimScope] = useState<'all' | 'current'>('all');
     const [autoTrimSides, setAutoTrimSides] = useState<AutoTrimSide[]>([...AUTO_TRIM_SIDES]);
@@ -440,43 +452,30 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     }, [isAutoTrimOpen]);
 
     const handleAutoTrim = useCallback(async () => {
-        if (!file) return;
+        if (!file || !onAutoTrimApply || autoTrimBusy || autoTrimSides.length === 0) return;
         setAutoTrimBusy(true);
         const loadingId = toast.info(t('misc.acrobatViewer:dang_xu_ly_khu_vien'));
         try {
-            const fid = await ensureCropFileId();
             const pages = autoTrimScope === 'current' ? [activePage] : undefined;
-            const res = await authenticatedFetch(`${getApiUrl()}/preflight/auto-trim`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    file_id: fid,
-                    pages,
-                    margin_mm: autoTrimMargin,
-                    trim_sides: autoTrimSides,
-                }),
+            // WBR28.02–03 (audit 2026-09-28): tab sở hữu transaction và chỉ trả
+            // true sau khi artifact đúng revision đã đi qua history/save pipeline.
+            const committed = await onAutoTrimApply({
+                pages,
+                marginMm: autoTrimMode === 'fill' ? 0 : autoTrimMargin,
+                trimSides: [...autoTrimSides],
+                mode: autoTrimMode,
             });
-            if (!res.ok) {
-                const err = await res.json().catch(() => ({ detail: 'Unknown error' }));
-                throw new Error(err.detail || 'auto-trim failed');
-            }
-            const data = await res.json();
-            // Truyền download URL server-side cho onEditCommit — nó tự fetch/tạo blob
-            const downloadUrl = `${getApiUrl()}/preflight/download/${data.output_filename}`;
-            if (onEditCommit) {
-                await onEditCommit(downloadUrl, data.output_filename);
-            }
+            if (!committed) return;
             const count = pages ? pages.length : numPages;
-            toast.dismiss(loadingId);
             toast.success(t('misc.acrobatViewer:khu_vien_thanh_cong', { count }));
             setIsAutoTrimOpen(false);
         } catch (e) {
-            toast.dismiss(loadingId);
             toast.error(t('misc.acrobatViewer:khu_vien_that_bai', { msg: errorMessage(e) }));
         } finally {
+            toast.dismiss(loadingId);
             setAutoTrimBusy(false);
         }
-    }, [file, ensureCropFileId, autoTrimScope, autoTrimMargin, autoTrimSides, activePage, numPages, onEditCommit, t]);
+    }, [file, onAutoTrimApply, autoTrimBusy, autoTrimMode, autoTrimScope, autoTrimMargin, autoTrimSides, activePage, numPages, t]);
 
     // ═══ DOM Refs ═══
     const containerRef = useRef<HTMLDivElement>(null);
@@ -528,7 +527,17 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         colorRisk, viewerEngineMode, viewerShadowEnabled,
         renderDocumentToken: loaderRenderDocumentToken,
         notifyFirstPageRenderReady,
+        sourcePageCount,
     } = loader;
+
+    const maxOrderedPage = useMemo(() => {
+        return (pageOrder || []).reduce((max, p) => (p > max ? p : max), 0);
+    }, [pageOrder]);
+    const effectiveSourcePageCount = Math.max(
+        sourcePageCount || 0,
+        pdfRef?.numPages || 0,
+        maxOrderedPage,
+    );
 
     const [instantPreflightResult, setInstantPreflightResult] = useState<InstantPreflightResult | null>(null);
 
@@ -766,9 +775,9 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     const [accurateColorPreference, setAccurateColorPreference] = useState<{ sourceKey: string; enabled: boolean } | null>(null);
     const accurateColorPages = useMemo(
         () => colorRisk?.pages
-            .filter(page => page.accurateColorRecommended && (numPages <= 0 || page.page <= numPages))
+            .filter(page => page.accurateColorRecommended && (effectiveSourcePageCount <= 0 || page.page <= effectiveSourcePageCount))
             .map(page => page.page) || [],
-        [colorRisk, numPages],
+        [colorRisk, effectiveSourcePageCount],
     );
     // UIUX (audit 2026-09-20 §VIEW.DARK): Khi người dùng bật chế độ nền tối (viewerDarkBackground),
     // ưu tiên display lane trong suốt để xem tem nhãn/viền bế; không tự động ép PPE
@@ -777,6 +786,11 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     const accurateColorEnabled = accurateColorPreference?.sourceKey === accurateColorSourceKey
         ? accurateColorPreference.enabled
         : (colorRisk?.highRisk === true && !viewerDarkBackground);
+    // COLOR (audit 2026-09-28 §KNOCK.V1): detector tự đề nghị PPE khác với
+    // người dùng chủ động yêu cầu proof. Output Preview hoặc bật CMYK bằng
+    // tay phải fail-closed, không tự chuyển ảnh dù có nhãn cảnh báo.
+    const strictViewerProofRequired = showOutputPreview
+        || (accurateColorPreference?.sourceKey === accurateColorSourceKey && accurateColorPreference.enabled);
     const [accuratePrefetchGate, setAccuratePrefetchGate] = useState<{
         sourceKey: string;
         page: number;
@@ -847,10 +861,11 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         renderDocumentToken,
         nativeSceneDocumentToken,
         accurateColorError,
+        getPpeUnsupportedStatus,
         cancelAccurateGroup,
     } = useTileRenderer({
         file, pdfRef, pdfUrl, activePage, tabId, isActive,
-        numPages,
+        numPages: effectiveSourcePageCount,
         accurateColorEnabled,
         accurateColorPages,
         accurateColorProfileId: viewerSimulationProfileId,
@@ -1433,9 +1448,9 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     }, [isObjectEditMode, isVdpMode, setToolMode]);
     useEffect(() => {
         if (activePageIdentity.sourcePage != null) {
-            updatePageDimForPage(activePageIdentity.sourcePage, numPages);
+            updatePageDimForPage(activePageIdentity.sourcePage, effectiveSourcePageCount);
         }
-    }, [pdfRef, activePageIdentity.sourcePage, numPages, updatePageDimForPage]);
+    }, [pdfRef, activePageIdentity.sourcePage, effectiveSourcePageCount, updatePageDimForPage]);
 
     // Reset zoom state on new file
     useEffect(() => {
@@ -2481,6 +2496,10 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         accurateColorEnabled,
         accurateColorPages,
         viewerEngineMode,
+        getPpeUnsupportedStatus,
+        showOutputPreview,
+        strictViewerProofRequired,
+        t,
         nativeTextBlocks,
         plateLabels,
         detectedDimensionsByPage,
@@ -2516,6 +2535,10 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         accurateColorEnabled,
         accurateColorPages,
         viewerEngineMode,
+        getPpeUnsupportedStatus,
+        showOutputPreview,
+        strictViewerProofRequired,
+        t,
         nativeTextBlocks,
         plateLabels,
         detectedDimensionsByPage,
@@ -2605,11 +2628,19 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
     // Chỉ gắn surface khi hợp đồng công cụ hiện tại được hỗ trợ. Không để HWND
     // che text selection, overlay hiệu chỉnh, ruler hay nội dung chưa ghi về PDF.
     const nativeSourcePage = pageOrder[activePage - 1] ?? activePage;
+    const activePpeUnsupported = getPpeUnsupportedStatus(nativeSourcePage);
+    const activePageColorMode = resolveViewerPageColorMode({
+        requestedAccurate: viewerEngineMode !== 'current'
+            || (accurateColorEnabled && accurateColorPages.includes(nativeSourcePage)),
+        strictProofRequired: strictViewerProofRequired,
+        viewerEngineMode,
+        unsupported: activePpeUnsupported,
+    });
     const nativeDocumentKey = `${file?.path ?? ''}:${nativeSceneDocumentToken}:${nativeSourcePage}`;
     // R34.01/02: native chỉ nhận hợp đồng màu mà PPE/GPU đang thực hiện đúng.
     // Display preview vẫn giữ đường PDFium/Viewer cũ, không tự biến thành soft-proof.
     const nativeColorContractReady = accurateColorEnabled && !viewerDarkBackground
-        && viewerSimulationProfileId === 'fogra39';
+        && viewerSimulationProfileId === 'fogra39' && !activePpeUnsupported;
     // PERF (audit 2026-09-25 §R25.GPU.34): tách điều kiện giữ lease khỏi điều
     // kiện được phép đưa HWND lên trên WebView. Trước đây đổi sang một công cụ
     // bên phải làm `enabled=false`, hook unmount và gọi DestroyWindow ngay giữa
@@ -2667,7 +2698,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
 
     // ═══ Page Renderer ═══
     const renderPdfPage = useCallback((originalPageNum: number, flatIndex?: number) => {
-        if (!originalPageNum || (numPages > 0 && originalPageNum > numPages)) return null;
+        if (!originalPageNum || (originalPageNum > 0 && effectiveSourcePageCount > 0 && originalPageNum > effectiveSourcePageCount)) return null;
         const plateLabel = plateLabels[originalPageNum];
         // Rotation keyed theo INSTANCE-ID (mỗi vị trí 1 id riêng) → bản nhân bản / trang
         // trắng xoay ĐỘC LẬP. flatIndex = vị trí trong pageOrder → tra id. Fallback về 0
@@ -2678,8 +2709,16 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
         const rot = instId ? (pageRotations[instId] || 0) : 0;
         const localDim = allPageDims[originalPageNum] || pageDim;
         const localWidth100 = localDim ? localDim.w : actualWidth100;
-        const accurateColorPage = viewerEngineMode !== 'current'
-            || (accurateColorEnabled && accurateColorPages.includes(originalPageNum));
+        // COLOR (audit 2026-09-28 §KNOCK.V1): compatibility là một yêu cầu
+        // display MỚI cho cả trang, không phải byte PDFium trả dưới nhãn PPE.
+        const pageColorMode = resolveViewerPageColorMode({
+            requestedAccurate: viewerEngineMode !== 'current'
+                || (accurateColorEnabled && accurateColorPages.includes(originalPageNum)),
+            strictProofRequired: strictViewerProofRequired,
+            viewerEngineMode,
+            unsupported: getPpeUnsupportedStatus(originalPageNum),
+        });
+        const accurateColorPage = pageColorMode.accurateColorPage;
         const framePageOverlay = renderPageOverlayForFrame(pageOverlayRenderer, {
             originalPageNum,
             viewerPagePosition,
@@ -2709,7 +2748,17 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
             >
                 {plateLabel && <div className="text-[11px] font-semibold text-yellow-400 mb-1 px-2 py-0.5 tracking-wide max-w-full truncate">{plateLabel}</div>}
                 <div className="relative">
+                    {pageColorMode.compatibility && (
+                        <div data-testid="viewer-page-compatibility" data-page={originalPageNum} role="status"
+                            title={pageColorMode.compatibility.detail}
+                            className="absolute bottom-full left-0 right-0 mb-1 rounded bg-amber-100 px-2 py-1 text-[10px] leading-tight text-amber-900 dark:bg-amber-950 dark:text-amber-200">
+                            {t('misc.acrobatViewer:compatibility_preview_warning', {
+                                defaultValue: 'Xem tương thích — chưa xác nhận đúng màu. Không dùng để duyệt màu in.',
+                            })}
+                        </div>
+                    )}
                     <LivePageFrame
+                        key={`${renderedPageInstanceId}:${pageColorMode.compatibility ? 'compat-display' : 'standard'}`}
                         tabId={tabId}
                         // PERF (audit 2026-09-27 §V27.01): cùng nguồn với tile renderer,
                         // để frame mồi đúng path/token được nhận thay vì dựng lại.
@@ -2772,7 +2821,7 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                 </div>
             </div>
         );
-    }, [pageRotations, pageInstanceIds, allPageDims, pageDim, actualWidth100, effectiveZoom, physicalDisplayScale, physicalDisplayDpr, physicalRawDpi, bleedView, highlightBoxes, isVdpMode, getTileUrl, renderOwnerId, renderDocumentToken, cancelAccurateGroup, accurateColorEnabled, accurateColorPages, viewerSimulationProfileId, viewerSimulationIntent, viewerOutputPreviewProofIdentity, viewerEngineMode, handleActivePageRenderReady, accuratePrefetchReady, nativeTextBlocks, plateLabels, activeDashboardTool, detectedDimensionsByPage, file, ocgPreviewUrl, activePage, editSession, isImage, tabId, isActive, pageOverlay, pageOverlayPage, pageOverlayViewerPage, pageOverlayInstanceId, pageOverlayRenderer, fetchObjectsForPage, numPages, onEditCommit, onObjectDelete, onVdpBoxCreate, onVdpFieldsChange, pdfUrl, setHoveredPdfPosition, nativeViewportShouldMount, nativeViewportVisible, useNativeScene]);
+    }, [pageRotations, pageInstanceIds, allPageDims, pageDim, actualWidth100, effectiveZoom, physicalDisplayScale, physicalDisplayDpr, physicalRawDpi, bleedView, highlightBoxes, isVdpMode, getTileUrl, renderOwnerId, renderDocumentToken, cancelAccurateGroup, accurateColorEnabled, accurateColorPages, viewerSimulationProfileId, viewerSimulationIntent, viewerOutputPreviewProofIdentity, viewerEngineMode, getPpeUnsupportedStatus, strictViewerProofRequired, t, handleActivePageRenderReady, accuratePrefetchReady, nativeTextBlocks, plateLabels, activeDashboardTool, detectedDimensionsByPage, file, ocgPreviewUrl, activePage, editSession, isImage, tabId, isActive, pageOverlay, pageOverlayPage, pageOverlayViewerPage, pageOverlayInstanceId, pageOverlayRenderer, fetchObjectsForPage, numPages, effectiveSourcePageCount, onEditCommit, onObjectDelete, onVdpBoxCreate, onVdpFieldsChange, pdfUrl, setHoveredPdfPosition, nativeViewportShouldMount, nativeViewportVisible, useNativeScene]);
 
     const virtuosoItemContentRef = useRef<(index: number) => ReactNode>(() => null);
     virtuosoItemContentRef.current = (index: number) => {
@@ -2864,13 +2913,13 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                         </button>
                     )}
                     {/* Nút khử viền dư */}
-                    {file && (
+                    {file && onAutoTrimApply && (
                         <div className="relative" ref={autoTrimPopRef}>
                             <button
                                 onClick={() => setIsAutoTrimOpen(!isAutoTrimOpen)}
                                 title={t('misc.acrobatViewer:khu_vien_trang_desc')}
                                 aria-label={t('misc.acrobatViewer:khu_vien_trang')}
-                                disabled={autoTrimBusy}
+                                disabled={autoTrimBusy || !onAutoTrimApply}
                                 className={`flex items-center gap-1.5 px-2.5 h-8 rounded text-[13px] font-medium transition-colors ${
                                     isAutoTrimOpen
                                         ? 'bg-indigo-100 dark:bg-indigo-900/40 text-indigo-700 dark:text-indigo-300'
@@ -2882,8 +2931,46 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                             </button>
                             {isAutoTrimOpen && (
                                 <div className="absolute top-full left-0 mt-1 z-50 bg-white dark:bg-zinc-800 rounded-lg shadow-xl border border-slate-200 dark:border-white/15 p-3 w-56">
-                                    {/* Phạm vi */}
-                                    <div className="flex gap-2 mb-2">
+                                    <fieldset disabled={autoTrimBusy} className="m-0 min-w-0 border-0 p-0">
+                                        {/* Cách xử lý viền */}
+                                        <div role="group" aria-label={t('misc.acrobatViewer:khu_vien_che_do')} className="mb-2">
+                                            <div className="mb-1 text-[11px] font-medium text-slate-500 dark:text-zinc-400">
+                                                {t('misc.acrobatViewer:khu_vien_che_do')}
+                                            </div>
+                                            <div className="flex gap-2">
+                                                <button
+                                                    type="button"
+                                                    aria-pressed={autoTrimMode === 'trim'}
+                                                    onClick={() => setAutoTrimMode('trim')}
+                                                    className={`flex-1 text-xs py-1.5 rounded font-medium border transition-colors ${
+                                                        autoTrimMode === 'trim'
+                                                            ? 'bg-indigo-600 text-white border-indigo-600'
+                                                            : 'bg-slate-50 dark:bg-zinc-700 border-slate-300 dark:border-white/15 text-slate-600 dark:text-zinc-300'
+                                                    }`}
+                                                >
+                                                    {t('misc.acrobatViewer:khu_vien_xoa')}
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    aria-pressed={autoTrimMode === 'fill'}
+                                                    onClick={() => setAutoTrimMode('fill')}
+                                                    className={`flex-1 text-xs py-1.5 rounded font-medium border transition-colors ${
+                                                        autoTrimMode === 'fill'
+                                                            ? 'bg-indigo-600 text-white border-indigo-600'
+                                                            : 'bg-slate-50 dark:bg-zinc-700 border-slate-300 dark:border-white/15 text-slate-600 dark:text-zinc-300'
+                                                    }`}
+                                                >
+                                                    {t('misc.acrobatViewer:khu_vien_phu_mau_bien')}
+                                                </button>
+                                            </div>
+                                        </div>
+                                        {autoTrimMode === 'fill' && (
+                                            <p className="mb-2 text-[10px] leading-4 text-slate-500 dark:text-zinc-400">
+                                                {t('misc.acrobatViewer:khu_vien_phu_mau_hint')}
+                                            </p>
+                                        )}
+                                        {/* Phạm vi */}
+                                        <div className="flex gap-2 mb-2">
                                         <button
                                             onClick={() => setAutoTrimScope('all')}
                                             className={`flex-1 text-xs py-1.5 rounded font-medium border transition-colors ${
@@ -2902,51 +2989,57 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                                             }`}>
                                             {t('misc.acrobatViewer:trang_hien_tai')}
                                         </button>
-                                    </div>
-                                    <p className="mb-2 text-[10px] leading-4 text-slate-500 dark:text-zinc-400">
-                                        {t(
-                                            'misc.acrobatViewer:khu_vien_canh_bat_buoc_hint',
-                                            'Cạnh đã chọn là bắt buộc. Nếu không dò được phần dư ở một cạnh, PrynX sẽ dừng và không đổi file.',
+                                        </div>
+                                        <p className="mb-2 text-[10px] leading-4 text-slate-500 dark:text-zinc-400">
+                                            {t(
+                                                'misc.acrobatViewer:khu_vien_canh_bat_buoc_hint',
+                                                'Cạnh đã chọn là bắt buộc. Nếu không dò được phần dư ở một cạnh, PrynX sẽ dừng và không đổi file.',
+                                            )}
+                                        </p>
+                                        {/* UIUX (feedback 2026-08-26 §TRIM.SIDES): cạnh bật là
+                                            điều kiện bắt buộc; backend không được âm thầm bỏ qua. */}
+                                        <div
+                                            role="group"
+                                            aria-label={t('misc.acrobatViewer:khu_vien_trang_desc')}
+                                            className="grid grid-cols-4 gap-1 mb-2"
+                                        >
+                                            {AUTO_TRIM_SIDES.map(side => {
+                                                const selected = autoTrimSides.includes(side);
+                                                return (
+                                                    <button
+                                                        key={side}
+                                                        type="button"
+                                                        aria-pressed={selected}
+                                                        onClick={() => toggleAutoTrimSide(side)}
+                                                        className={`h-7 rounded border text-[10px] font-semibold transition-colors ${
+                                                            selected
+                                                                ? 'border-indigo-600 bg-indigo-600 text-white'
+                                                                : 'border-slate-300 bg-slate-50 text-slate-500 dark:border-white/15 dark:bg-zinc-700 dark:text-zinc-300'
+                                                        }`}
+                                                    >
+                                                        {selected ? '✓ ' : ''}{tv(AUTO_TRIM_SIDE_LABEL[side])}
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+                                        {/* Margin chỉ áp dụng khi xóa viền; phủ màu luôn giữ nguyên khổ. */}
+                                        {autoTrimMode === 'trim' && (
+                                            <>
+                                                <label className="text-[11px] font-medium text-slate-500 dark:text-zinc-400">{t('misc.acrobatViewer:le_bo_sung_mm')}</label>
+                                                <input type="number" min={0} max={20} step={0.5} value={autoTrimMargin}
+                                                    onChange={e => setAutoTrimMargin(Math.min(20, Math.max(0, parseFloat(e.target.value) || 0)))}
+                                                    className="w-full h-7 px-2 mt-0.5 mb-2 border border-slate-300 dark:border-white/15 rounded bg-white dark:bg-zinc-700 text-sm" />
+                                            </>
                                         )}
-                                    </p>
-                                    {/* UIUX (feedback 2026-08-26 §TRIM.SIDES): cạnh bật là
-                                        điều kiện bắt buộc; backend không được âm thầm bỏ qua. */}
-                                    <div
-                                        role="group"
-                                        aria-label={t('misc.acrobatViewer:khu_vien_trang_desc')}
-                                        className="grid grid-cols-4 gap-1 mb-2"
-                                    >
-                                        {AUTO_TRIM_SIDES.map(side => {
-                                            const selected = autoTrimSides.includes(side);
-                                            return (
-                                                <button
-                                                    key={side}
-                                                    type="button"
-                                                    aria-pressed={selected}
-                                                    onClick={() => toggleAutoTrimSide(side)}
-                                                    className={`h-7 rounded border text-[10px] font-semibold transition-colors ${
-                                                        selected
-                                                            ? 'border-indigo-600 bg-indigo-600 text-white'
-                                                            : 'border-slate-300 bg-slate-50 text-slate-500 dark:border-white/15 dark:bg-zinc-700 dark:text-zinc-300'
-                                                    }`}
-                                                >
-                                                    {selected ? '✓ ' : ''}{tv(AUTO_TRIM_SIDE_LABEL[side])}
-                                                </button>
-                                            );
-                                        })}
-                                    </div>
-                                    {/* Margin */}
-                                    <label className="text-[11px] font-medium text-slate-500 dark:text-zinc-400">{t('misc.acrobatViewer:le_bo_sung_mm')}</label>
-                                    <input type="number" min={0} max={20} step={0.5} value={autoTrimMargin}
-                                        onChange={e => setAutoTrimMargin(Math.min(20, Math.max(0, parseFloat(e.target.value) || 0)))}
-                                        className="w-full h-7 px-2 mt-0.5 mb-2 border border-slate-300 dark:border-white/15 rounded bg-white dark:bg-zinc-700 text-sm" />
-                                    {/* Nút áp dụng */}
-                                    <button
-                                        onClick={handleAutoTrim}
-                                        disabled={autoTrimBusy || autoTrimSides.length === 0}
-                                        className="w-full h-8 rounded bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-bold">
-                                        {autoTrimBusy ? t('misc.acrobatViewer:dang_xu_ly_khu_vien') : t('misc.acrobatViewer:ap_dung')}
-                                    </button>
+                                        {/* Nút áp dụng */}
+                                        <button
+                                            type="button"
+                                            onClick={handleAutoTrim}
+                                            disabled={autoTrimBusy || !onAutoTrimApply || autoTrimSides.length === 0}
+                                            className="w-full h-8 rounded bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-bold">
+                                            {autoTrimBusy ? t('misc.acrobatViewer:dang_xu_ly_khu_vien') : t('misc.acrobatViewer:ap_dung')}
+                                        </button>
+                                    </fieldset>
                                 </div>
                             )}
                         </div>
@@ -2961,20 +3054,22 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                                 sourceKey: accurateColorSourceKey,
                                 enabled: !accurateColorEnabled,
                             })}
-                            title={accurateColorError
-                                ? accurateColorError
-                                : t('tabs.outputPreview:gia_lap_may_rip_thuc_te_boc_chinh_xac')}
+                            title={activePageColorMode.compatibility
+                                ? t('misc.acrobatViewer:compatibility_preview_warning', {
+                                    defaultValue: 'Xem tương thích — chưa xác nhận đúng màu. Không dùng để duyệt màu in.',
+                                })
+                                : activePpeUnsupported?.detail || accurateColorError || t('tabs.outputPreview:gia_lap_may_rip_thuc_te_boc_chinh_xac')}
                             aria-label={t('tabs.outputPreview:gia_lap_may_rip_thuc_te_boc_chinh_xac')}
                             aria-pressed={accurateColorEnabled}
                             className={`h-8 px-2 rounded text-[11px] font-bold tracking-wide transition-colors ${
-                                accurateColorError
+                                accurateColorError || activePpeUnsupported
                                     ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300 ring-1 ring-amber-300 dark:ring-amber-700'
                                     : accurateColorEnabled
                                         ? 'bg-cyan-100 text-cyan-800 dark:bg-cyan-900/40 dark:text-cyan-300 ring-1 ring-cyan-300 dark:ring-cyan-700'
                                         : 'text-slate-600 dark:text-zinc-300 hover:bg-black/5 dark:hover:bg-white/10'
                             }`}
                         >
-                            CMYK{accurateColorError ? '!' : accurateColorEnabled ? '✓' : ''}
+                            CMYK{accurateColorError || activePpeUnsupported ? '!' : accurateColorEnabled ? '✓' : ''}
                         </button>
                     )}
                     {toolbarExtraRight}
@@ -3012,7 +3107,8 @@ export default function AcrobatViewer({ isActive, tabId, onExtractPages, onObjec
                              pageWorkflowStatuses={pageWorkflowStatuses}
                              cutlinePreviews={cutlinePreviews}
                              renderDocumentToken={loaderRenderDocumentToken}
-                             accurateColorEnabled={accurateColorEnabled}
+                             accurateColorEnabled={accurateColorEnabled || viewerEngineMode !== 'current' || strictViewerProofRequired}
+                             allowCompatibilityPreview={!strictViewerProofRequired && viewerEngineMode !== 'ppe-only'}
                              accurateColorProfileId={viewerSimulationProfileId}
                              accurateColorIntent={viewerSimulationIntent}
                         />

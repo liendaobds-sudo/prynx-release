@@ -22,7 +22,7 @@ pub fn shading(ctx:&GpuContext,encoder:&mut wgpu::CommandEncoder,target:&InkSurf
 mod tests {
     use super::*;
     use crate::icc_resolve::{IccProofLut,IccResolve};
-    use print_engine::{color::{ColorSpace,PdfFunction,RenderIntent},geom::Rect,shading::{ShadingKind,mesh::MeshTriangle}};
+    use print_engine::{color::{ColorSpace,PdfFunction,RenderIntent},geom::Rect,shading::{ShadingKind,mesh::{MeshTriangle,MeshPatch}}};
     #[test]
     fn function_uses_both_coordinates_and_mesh_keeps_transparent_outside(){
         let ctx=GpuContext::new_sync().unwrap();let space=InkSpace::preview();
@@ -32,8 +32,15 @@ mod tests {
             function:Some(PdfFunction::Identity{n_out:4}),bbox:None,background:None};
         let mesh=Shading{kind:ShadingKind::Mesh{triangles:vec![MeshTriangle{p:[[0.,0.],[2.,0.],[0.,2.]],c:std::array::from_fn(|_|vec![1.,0.,0.,0.])}]},
             colorspace:ColorSpace::DeviceCMYK,function:None,bbox:Some(Rect::new(0.,0.,1.,2.)),background:None};
+        let patch=Shading{kind:ShadingKind::Patches{patches:vec![MeshPatch{
+            grid:std::array::from_fn(|i|[(i%4) as f32/3.,(i/4) as f32/3.]),
+            c:[vec![0.],vec![1.],vec![1.],vec![0.]],
+        }]},colorspace:ColorSpace::DeviceCMYK,function:Some(PdfFunction::Exponential{
+            domain:vec![0.,1.],c0:vec![0.;4],c1:vec![0.,0.,0.,1.],n:2.,range:None,
+        }),bbox:None,background:None};
         for (resource,matrix,expected) in [(&function,Matrix::scale(2.,2.),vec![[0.25,0.25,0.,0.],[0.75,0.25,0.,0.],[0.25,0.75,0.,0.],[0.75,0.75,0.,0.]]),
-            (&mesh,Matrix::IDENTITY,vec![[1.,0.,0.,0.],[0.;4],[1.,0.,0.,0.],[0.;4]])]{
+            (&mesh,Matrix::IDENTITY,vec![[1.,0.,0.,0.],[0.;4],[1.,0.,0.,0.],[0.;4]]),
+            (&patch,Matrix::scale(2.,2.),vec![[0.,0.,0.,0.0625],[0.,0.,0.,0.5625],[0.,0.,0.,0.0625],[0.,0.,0.,0.5625]])]{
             let target=InkSurface::new(&ctx,2,2,4).unwrap();let out=ctx.create_target_texture(2,2,wgpu::TextureFormat::Rgba8Unorm,None);
             let mut e=ctx.device.create_command_encoder(&Default::default());let declared=shading(&ctx,&mut e,&target,resource,matrix,&space,&cm).unwrap();assert_eq!(declared,ChannelMask::PROCESS);
             resolve.encode(&ctx,&mut e,&target,&out.create_view(&Default::default())).unwrap();ctx.queue.submit([e.finish()]);

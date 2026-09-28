@@ -118,6 +118,7 @@ from app.workers.nup_layout_solver import (
     build_sequential_product_sequence,
     get_src_page_idx,
     normalize_alternate_rotation,
+    normalize_alternate_rotation_alignment,
     rectangle_inking_is_allowed,
     solve_grid,
     solve_manual,
@@ -828,6 +829,12 @@ def _run_nup_engine_impl(
             'alternateRotation', settings.get('alternate_rotation', 'none')
         )
     )
+    alternate_rotation_alignment = normalize_alternate_rotation_alignment(
+        settings.get(
+            'alternateRotationAlignment',
+            settings.get('alternate_rotation_alignment', 'foot_to_foot'),
+        )
+    )
     _diecut_inking_allowed = rectangle_inking_is_allowed(
         is_die_cut=bool(is_die_cut),
         is_cnc=bool(is_cnc),
@@ -842,6 +849,7 @@ def _run_nup_engine_impl(
         or (is_die_cut and not _diecut_inking_allowed)
     ):
         alternate_rotation = 'none'
+        alternate_rotation_alignment = 'foot_to_foot'
 
     grouping_strategy = settings.get('groupingStrategy') or settings.get('grouping_strategy') or 'maximize_area'
     # Bình trang là S&R từng source page. Grouping cũ trong preset/UI không được
@@ -1245,6 +1253,7 @@ def _run_nup_engine_impl(
                 die_size_mode=settings.get('dieSizeMode', 'die'),
                 die_offset_mm=settings.get('dieOffsetMm', 0),
                 alternate_rotation=alternate_rotation,
+                alternate_rotation_alignment=alternate_rotation_alignment,
             )
             try:
                 from app.workers.rot_audit_log import get_logger as _rot_get_logger
@@ -1719,6 +1728,7 @@ def _run_nup_engine_impl(
                         die_size_mode=settings.get('dieSizeMode', 'die'),
                         die_offset_mm=settings.get('dieOffsetMm', 0),
                         alternate_rotation=alternate_rotation,
+                        alternate_rotation_alignment=alternate_rotation_alignment,
                     )
                 except Exception as _e_zl:
                     logger.warning(f"   [CLUSTER] zone_layout_fn p_idx={p_idx} lỗi: {_e_zl}")
@@ -3180,6 +3190,7 @@ def _run_nup_engine_impl(
             layout = solve_manual(
                 trim_w, trim_h, gap_x, gap_y,
                 cols_manual, rows_manual, alternate_rotation,
+                alternate_rotation_alignment=alternate_rotation_alignment,
             )
         elif _is_cluster_type_early:
             # CHIA CỌC theo loại: dao guillotine cần đường xén THẲNG xuyên tờ → ép lưới
@@ -3215,6 +3226,7 @@ def _run_nup_engine_impl(
                 _uw_ct, _uh_ct, trim_w, trim_h,
                 gap_x, gap_y, 'simple_auto', secondary_gap,
                 alternate_rotation,
+                alternate_rotation_alignment=alternate_rotation_alignment,
             )
         else:
             from app.workers.nup_layout_solver import sequential_required_items
@@ -3231,6 +3243,7 @@ def _run_nup_engine_impl(
                 gap_x, gap_y, strategy, secondary_gap,
                 alternate_rotation,
                 required_items=_required_items_seq,
+                alternate_rotation_alignment=alternate_rotation_alignment,
             )
 
         if strategy == 'manual':

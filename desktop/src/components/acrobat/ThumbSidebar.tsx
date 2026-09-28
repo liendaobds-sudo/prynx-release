@@ -15,7 +15,10 @@ import {
     renderDocumentIdentity,
     renderPipelineIdentity,
     renderPurpose,
+    type RenderColorPipeline,
 } from '../../hooks/viewer/renderCoordinator';
+import { CancelledTileRenderError, isTileLoadCancellation } from '../../hooks/viewer/tileRenderScheduler';
+import { isRecognizedPpeUnsupportedStatus, parsePpeUnsupportedStatus } from '../../hooks/viewer/ppeUnsupportedPolicy';
 import { viewerTraceHash } from '../../lib/previewPerfLog';
 import { useAppSettingsStore } from '../../stores/appSettingsStore';
 import { useTranslation } from 'react-i18next';
@@ -32,7 +35,9 @@ import {
     sameCutlinePreview,
     type ThumbnailCutlinePreviewItem,
 } from './thumbnailCutlinePreview';
-import { peekViewerFirstFrame } from '../../lib/viewerFirstFrame';
+import { peekViewerFirstFrame, subscribeViewerFirstFrame } from '../../lib/viewerFirstFrame';
+import { tileHasMatchingProof } from '../../lib/tileUrlCache';
+import { outputPreviewProofIdentity } from '../../stores/useWorkspaceStore';
 import { pageHeightPtFromDim, pageWidthPtFromDim } from '../workspace/editGeometry';
 import type { ViewerContextMenuState } from './ViewerContextMenu';
 import { stickerSheetWorkflowStatusAtViewerPosition } from '../stickerSheetTabSelector';
@@ -138,6 +143,7 @@ interface MemoThumbItemProps {
     accurateColorEnabled?: boolean;
     accurateColorProfileId?: string;
     accurateColorIntent?: string;
+    allowCompatibilityPreview?: boolean;
 };
 
 interface ThumbSidebarProps {
@@ -185,6 +191,8 @@ interface ThumbSidebarProps {
     accurateColorEnabled?: boolean;
     accurateColorProfileId?: string;
     accurateColorIntent?: string;
+    /** Chỉ Viewer thường mới cho phép ảnh tương thích; kiểm màu/PPE-only phải đóng. */
+    allowCompatibilityPreview?: boolean;
     onCrossFileCopy?: (sourcePdfUrl: string, sourcePageNum: number, targetIndex: number) => void;
 }
 
@@ -196,11 +204,13 @@ const MemoThumbItem = React.memo<MemoThumbItemProps>((props) => {
         pdfUrl, file, thumbRev, thumbnailOwnerId, renderDocumentToken, pageCount, isLoadable, isViewerActive, registerRef,
         handleThumbClick, handlePointerDown, onContextMenu, workflowStatus, editPreviews, cutlinePreview,
         viewerDarkBackground,
-        accurateColorEnabled, accurateColorProfileId, accurateColorIntent,
+        accurateColorEnabled, accurateColorProfileId, accurateColorIntent, allowCompatibilityPreview,
     } = props;
     const { t } = useTranslation();
     const renderInstanceId = useId();
     const isBlankDoc = file?.isBlank === true;
+    const accurateColorRequested = accurateColorEnabled === true;
+    const compatibilityPreviewAllowed = allowCompatibilityPreview === true;
 
     const normRot = (((rot || 0) % 360) + 360) % 360;
     const isRotated = normRot % 180 !== 0;
@@ -221,8 +231,8 @@ const MemoThumbItem = React.memo<MemoThumbItemProps>((props) => {
     // Trang ngang xoay dọc cần bitmap nguồn rộng hơn thumbBaseWidth; nếu vẫn render
     // theo base rồi kéo CSS lên, thumbnail main sẽ mờ trong khi child đã bake thì nét.
     const renderCssWidth = Math.max(thumbBaseWidth, imgW);
-    const effectiveProfileId = accurateColorEnabled ? (accurateColorProfileId || 'fogra39') : null;
-    const effectiveIntent = accurateColorEnabled ? (accurateColorIntent || 'relative') : null;
+    const effectiveProfileId = accurateColorEnabled ? (accurateColorProfileId || 'fogra39').trim().toLowerCase() : null;
+    const effectiveIntent = accurateColorEnabled ? (accurateColorIntent || 'relative').trim().toLowerCase() : null;
     const thumbnailRequest = React.useMemo(() => createThumbnailRenderRequest({
         revision: revToken,
         pageNum: originalPageNum,
@@ -239,24 +249,58 @@ const MemoThumbItem = React.memo<MemoThumbItemProps>((props) => {
     );
     const readCurrentThumbnail = useCallback(() => getThumbCache(cacheKey), [cacheKey]);
     const readServerThumbnail = useCallback(() => undefined, []);
-    const cachedSrc = useSyncExternalStore(
+    const cachedThumbnailSrc = useSyncExternalStore(
         subscribeToCurrentThumbnail,
         readCurrentThumbnail,
         readServerThumbnail,
     );
     const isImage = !!(file?.type?.startsWith('image/') || file?.name?.match(/\.(jpg|jpeg|png|webp|gif)$/i));
-    const nativeRequestKey = `${cacheKey}_${pageCount}`;
+    // COLOR (audit 2026-09-28 §K.THUMB): cache PDF.js chỉ chứa URL, không có
+    // provenance nên không được đáp ứng yêu cầu màu chính xác của native.
+    const cachedSrc = accurateColorEnabled && file?.path ? undefined : cachedThumbnailSrc;
     const [nativePreview, setNativePreview] = useState<{ key: string; url: string } | null>(null);
     const [nativeRenderErrorKey, setNativeRenderErrorKey] = useState<string | null>(null);
     const [nativeRetryNonce, setNativeRetryNonce] = useState(0);
-    const firstFrame = (accurateColorEnabled && originalPageNum === 1)
-        ? peekViewerFirstFrame(file?.path, renderDocumentToken)
-        : null;
+    const firstFramePath = accurateColorEnabled && originalPageNum === 1 ? file?.path : null;
+    const subscribeToFirstFrame = useCallback(
+        (listener: () => void) => subscribeViewerFirstFrame(firstFramePath, listener), [firstFramePath],
+    );
+    const readFirstFrame = useCallback(
+        () => peekViewerFirstFrame(firstFramePath, renderDocumentToken), [firstFramePath, renderDocumentToken],
+    );
+    const readServerFirstFrame = useCallback(() => null, []);
+    const borrowedFirstFrame = useSyncExternalStore(subscribeToFirstFrame, readFirstFrame, readServerFirstFrame);
+    const proofIdentity = outputPreviewProofIdentity('all', false, false, null);
+    const firstFrame = borrowedFirstFrame
+        && borrowedFirstFrame.page === originalPageNum
+        && borrowedFirstFrame.documentToken === renderDocumentToken
+        && borrowedFirstFrame.profileId === effectiveProfileId
+        && borrowedFirstFrame.intent === effectiveIntent
+        && borrowedFirstFrame.proofIdentity === proofIdentity
+        && borrowedFirstFrame.proof?.engine === 'ppe-native'
+        && borrowedFirstFrame.proof.pipelineIdentity === renderPipelineIdentity('accurate', effectiveProfileId || 'fogra39', effectiveIntent || 'relative')
+        && tileHasMatchingProof(borrowedFirstFrame, {
+            documentToken: renderDocumentToken || '', page: originalPageNum,
+            profileId: effectiveProfileId, intent: effectiveIntent, proofIdentity,
+        }) ? borrowedFirstFrame : null;
     const needsNativeRender = isViewerActive !== false && !cachedSrc && !firstFrame?.url && !isImage && isLoadable
         && '__TAURI_INTERNALS__' in window && !!file?.path && originalPageNum > 0;
     const needsPdfJsRender = isViewerActive !== false && !cachedSrc && !isImage && isLoadable
         && !file?.path && originalPageNum > 0 && !!revToken;
 
+    // A→B→A hoặc compatibility→strict không được phục hồi URL A đã bị revoke.
+    // Epoch tăng ngay trong render để chặn cả response trước khi cleanup effect chạy.
+    const nativeScopeIdentity = JSON.stringify([
+        cacheKey, pageCount, optimalZoom, thumbnailOwnerId, renderDocumentToken, accurateColorRequested,
+        compatibilityPreviewAllowed, needsNativeRender, isViewerActive !== false,
+        isLoadable, firstFrame?.url, cachedSrc, nativeRetryNonce,
+    ]);
+    const nativeScopeRef = useRef({ identity: nativeScopeIdentity, file, epoch: 0 });
+    if (nativeScopeRef.current.identity !== nativeScopeIdentity || nativeScopeRef.current.file !== file) {
+        nativeScopeRef.current = { identity: nativeScopeIdentity, file, epoch: nativeScopeRef.current.epoch + 1 };
+    }
+    const nativeScopeEpoch = nativeScopeRef.current.epoch;
+    const nativeRequestKey = `${cacheKey}_${pageCount}:epoch:${nativeScopeEpoch}`;
     const nativeRenderError = nativeRenderErrorKey === nativeRequestKey;
 
     let finalSrc: string | undefined = cachedSrc;
@@ -298,8 +342,8 @@ const MemoThumbItem = React.memo<MemoThumbItemProps>((props) => {
         // thứ tự. Index có thể đã thuộc bản sao khác khi cleanup chạy; dùng ID
         // của lần mount để cuộn/remount không hủy nhầm request còn hiển thị.
         const groupKey = thumbnailRenderGroupKey(renderInstanceId, originalPageNum);
+        const isCurrent = () => !cancelled && nativeScopeRef.current.epoch === nativeScopeEpoch;
         (async () => {
-            let src: string | null = null;
             try {
                 const nativeFilePath = file?.path;
                 if (!nativeFilePath) throw new Error('Thumbnail thiếu đường dẫn PDF native.');
@@ -308,116 +352,102 @@ const MemoThumbItem = React.memo<MemoThumbItemProps>((props) => {
                     file,
                     renderDocumentToken,
                 );
-                const source = await nativeRenderCoordinator.renderPng({
-                    request: {
-                        ownerId: thumbnailOwnerId,
-                        groupKey,
-                        generationKey: nativeRequestKey,
-                        purpose: renderPurpose(500, accurateColorEnabled ? 'accurate' : 'display'),
-                        priority: 500,
-                        document,
-                        page: originalPageNum,
-                        rotation: 0,
-                        raster: { kind: 'scale', scale: optimalZoom, clip: null },
-                        color: { pipeline: accurateColorEnabled ? 'accurate' : 'display', profileId: effectiveProfileId, intent: effectiveIntent },
-                        pipelineIdentity: renderPipelineIdentity(accurateColorEnabled ? 'accurate' : 'display', effectiveProfileId || 'fogra39', effectiveIntent || 'relative'),
-                        soundness: accurateColorEnabled ? 'color-verified' : 'display-preview',
-                    },
-                    // PERF (audit 2026-09-27 §LOW.04): Thumbnail tuyệt đối không bypass scheduler.
-                    // Phải xếp hàng ở background lane (priority 500) để nhường quyền ưu tiên cho trang chính.
-                    bypassScheduler: false,
-                    render: async request => {
-                        activeRequestId = request.requestId;
-                        const { invoke } = await import('@tauri-apps/api/core');
-                        if (accurateColorEnabled) {
-                            try {
-                                return await invoke<ArrayBuffer>('render_ppe_page', {
-                                    filePath: nativeFilePath,
-                                    page: originalPageNum,
-                                    dpi: Math.max(24, Math.round(optimalZoom * 96)),
-                                    rotation: 0,
-                                    clipX: null,
-                                    clipY: null,
-                                    clipW: null,
-                                    clipH: null,
-                                    sessionOwnerId: thumbnailOwnerId,
-                                    requestContext: {
-                                        requestId: request.requestId,
-                                        ownerId: request.ownerId,
-                                        groupKey: request.groupKey,
-                                        generation: request.generation,
-                                        purpose: request.purpose,
-                                        priority: request.priority,
-                                        pipelineIdentity: request.pipelineIdentity,
-                                    },
-                                });
-                            } catch (ppeError) {
-                                console.warn('[ThumbSidebar] PPE thumbnail fallback to display:', ppeError);
-                                return invoke<ArrayBuffer>('render_pdf_page', {
-                                    filePath: nativeFilePath,
-                                    page: originalPageNum,
-                                    zoom: optimalZoom,
-                                    rotation: 0,
-                                    clipX: null,
-                                    clipY: null,
-                                    clipW: null,
-                                    clipH: null,
-                                    requestContext: {
-                                        requestId: request.requestId,
-                                        ownerId: request.ownerId,
-                                        groupKey: request.groupKey,
-                                        generation: request.generation,
-                                        purpose: 'background',
-                                        priority: request.priority,
-                                        pipelineIdentity: renderPipelineIdentity('display'),
-                                    },
-                                });
+                const renderThumbnail = (pipeline: RenderColorPipeline) => {
+                    const accurate = pipeline === 'accurate';
+                    const profileId = accurate ? effectiveProfileId : null;
+                    const intent = accurate ? effectiveIntent : null;
+                    const dpi = Math.max(24, Math.round(optimalZoom * 96));
+                    return nativeRenderCoordinator.renderPng({
+                        request: {
+                            ownerId: thumbnailOwnerId,
+                            groupKey,
+                            generationKey: `${nativeRequestKey}:${pipeline}`,
+                            purpose: renderPurpose(500, pipeline),
+                            priority: 500,
+                            document,
+                            page: originalPageNum,
+                            rotation: 0,
+                            raster: accurate ? { kind: 'dpi', dpi, clip: null }
+                                : { kind: 'scale', scale: optimalZoom, clip: null },
+                            color: { pipeline, profileId, intent },
+                            pipelineIdentity: renderPipelineIdentity(pipeline, profileId || 'fogra39', intent || 'relative'),
+                            soundness: accurate ? 'color-verified' : 'display-preview',
+                        },
+                        // PERF (audit 2026-09-27 §LOW.04): cả PPE và display đều
+                        // xếp hàng background; thumbnail không bypass scheduler.
+                        bypassScheduler: false,
+                        render: async request => {
+                            if (!isCurrent()) throw new CancelledTileRenderError();
+                            // Native chỉ dựng FOGRA39/Relative. Hồ sơ khác là lỗi
+                            // hợp đồng cục bộ, không giả thành capability để fallback.
+                            if (accurate && (profileId !== 'fogra39' || intent !== 'relative')) {
+                                throw new Error('Thumbnail native chưa hỗ trợ hồ sơ màu hoặc rendering intent này.');
                             }
-                        }
-                        return invoke<ArrayBuffer>('render_pdf_page', {
-                            filePath: nativeFilePath, page: originalPageNum, zoom: optimalZoom, rotation: 0,
-                            clipX: null, clipY: null, clipW: null, clipH: null,
-                            requestContext: {
-                                requestId: request.requestId,
-                                ownerId: request.ownerId,
-                                groupKey: request.groupKey,
-                                generation: request.generation,
-                                purpose: request.purpose,
-                                priority: request.priority,
-                                pipelineIdentity: request.pipelineIdentity,
-                            },
-                        });
-                    },
-                    // Dùng coordinator chung, nhưng Blob vẫn thuộc item này;
-                    // không tuyên bố chia sẻ bitmap giữa các owner khác nhau.
-                    encode: bytes => {
-                        const blob = new Blob([bytes], { type: 'image/png' });
-                        return {
-                            url: URL.createObjectURL(blob),
-                            byteLength: blob.size,
-                        };
-                    },
-                });
+                            activeRequestId = request.requestId;
+                            const { invoke } = await import('@tauri-apps/api/core');
+                            if (!isCurrent()) throw new CancelledTileRenderError();
+                            const args = {
+                                filePath: nativeFilePath, page: originalPageNum, rotation: 0,
+                                clipX: null, clipY: null, clipW: null, clipH: null,
+                                requestContext: {
+                                    requestId: request.requestId,
+                                    ownerId: request.ownerId,
+                                    groupKey: request.groupKey,
+                                    generation: request.generation,
+                                    purpose: request.purpose,
+                                    priority: request.priority,
+                                    pipelineIdentity: request.pipelineIdentity,
+                                },
+                            };
+                            return accurate
+                                ? invoke<ArrayBuffer>('render_ppe_page', { ...args, dpi, sessionOwnerId: thumbnailOwnerId })
+                                : invoke<ArrayBuffer>('render_pdf_page', { ...args, zoom: optimalZoom });
+                        },
+                        // Blob này thuộc item, không thuộc kho first-frame/cache.
+                        encode: (bytes, request) => {
+                            if (!isCurrent()) throw new CancelledTileRenderError();
+                            const blob = new Blob([bytes], { type: 'image/png' });
+                            return {
+                                url: URL.createObjectURL(blob),
+                                byteLength: blob.size,
+                                proof: {
+                                    engine: accurate ? 'ppe-native' : 'pdfium',
+                                    soundness: request.soundness,
+                                    documentToken: request.document.token,
+                                    page: request.page,
+                                    profileId, intent,
+                                    proofIdentity: accurate ? proofIdentity : 'display',
+                                    pipelineIdentity: request.pipelineIdentity,
+                                },
+                            };
+                        },
+                    });
+                };
+                // COLOR (audit 2026-09-28 §K.THUMB): PPE phải kết thúc trace lỗi
+                // trước khi mở request PDFium riêng; không mượn nhãn color-verified.
+                let source;
+                try {
+                    source = await renderThumbnail(accurateColorRequested ? 'accurate' : 'display');
+                } catch (error) {
+                    if (!isCurrent() || !accurateColorRequested || !compatibilityPreviewAllowed
+                        || !isRecognizedPpeUnsupportedStatus(parsePpeUnsupportedStatus(error))) throw error;
+                    source = await renderThumbnail('display');
+                }
                 ownBlobUrl = source.url;
-                if (cancelled || !nativeRenderCoordinator.isSourceCurrent(source)) {
+                if (!isCurrent() || !nativeRenderCoordinator.isSourceCurrent(source)) {
                     nativeRenderCoordinator.markDiscarded(source);
                     URL.revokeObjectURL(ownBlobUrl);
                     ownBlobUrl = null;
                     return;
                 }
                 nativeRenderCoordinator.markEncoded(source);
-                src = source.url;
-            } catch {
+                setNativePreview({ key: nativeRequestKey, url: source.url });
+            } catch (error) {
                 // UIUX (audit 2026-08-22 §UX.S.01): báo lỗi có thể thử lại thay vì
                 // giữ spinner vô hạn khi PDFium/Tauri gặp lỗi tạm thời.
-                if (!cancelled) setNativeRenderErrorKey(nativeRequestKey);
-                src = null;
+                if (isCurrent() && !isTileLoadCancellation(error)
+                    && !(error instanceof Error && error.name === 'AbortError')) setNativeRenderErrorKey(nativeRequestKey);
             }
-            if (cancelled) {
-                if (ownBlobUrl) URL.revokeObjectURL(ownBlobUrl);
-                return;
-            }
-            if (src) setNativePreview({ key: nativeRequestKey, url: src });
         })();
         return () => {
             cancelled = true;
@@ -427,9 +457,12 @@ const MemoThumbItem = React.memo<MemoThumbItemProps>((props) => {
                     .then(({ invoke }) => invoke('cancel_pdf_render', { requestId: activeRequestId }))
                     .catch(() => undefined);
             }
-            if (ownBlobUrl) URL.revokeObjectURL(ownBlobUrl);
+            if (ownBlobUrl) {
+                URL.revokeObjectURL(ownBlobUrl);
+                ownBlobUrl = null;
+            }
         };
-    }, [needsNativeRender, nativeRequestKey, nativeRetryNonce, file, originalPageNum, pageCount, thumbRev, pdfUrl, optimalZoom, thumbnailOwnerId, renderDocumentToken, renderInstanceId, accurateColorEnabled, effectiveProfileId, effectiveIntent]);
+    }, [needsNativeRender, nativeRequestKey, nativeScopeEpoch, file, originalPageNum, optimalZoom, thumbnailOwnerId, renderDocumentToken, renderInstanceId, accurateColorRequested, effectiveProfileId, effectiveIntent, compatibilityPreviewAllowed, proofIdentity]);
     return (
         <div
             ref={(el) => registerRef?.(el, index)}
@@ -577,6 +610,7 @@ const MemoThumbItem = React.memo<MemoThumbItemProps>((props) => {
         prev.isLoadable === next.isLoadable &&
         prev.isViewerActive === next.isViewerActive &&
         prev.pdfUrl === next.pdfUrl &&
+        prev.file === next.file &&
         prev.thumbRev === next.thumbRev &&
         prev.thumbnailOwnerId === next.thumbnailOwnerId &&
         prev.renderDocumentToken === next.renderDocumentToken &&
@@ -586,6 +620,7 @@ const MemoThumbItem = React.memo<MemoThumbItemProps>((props) => {
         prev.accurateColorEnabled === next.accurateColorEnabled &&
         prev.accurateColorProfileId === next.accurateColorProfileId &&
         prev.accurateColorIntent === next.accurateColorIntent &&
+        prev.allowCompatibilityPreview === next.allowCompatibilityPreview &&
         sameEditPreviewSequence(prev.editPreviews, next.editPreviews) &&
         sameCutlinePreview(prev.cutlinePreview, next.cutlinePreview);
 });
@@ -629,7 +664,7 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
         setContextMenu, sidebarRef, mainVirtuosoRef,
         file, pdfUrl, isViewerActive, pageWorkflowStatuses, editSessionPreviews,
         setIsDeleteModalOpen, navigatePage,
-        accurateColorEnabled, accurateColorProfileId, accurateColorIntent,
+        accurateColorEnabled, accurateColorProfileId, accurateColorIntent, allowCompatibilityPreview,
     } = props;
 
     const {
@@ -938,6 +973,7 @@ export function ThumbSidebar(props: ThumbSidebarProps) {
                                         accurateColorEnabled={accurateColorEnabled}
                                         accurateColorProfileId={accurateColorProfileId}
                                         accurateColorIntent={accurateColorIntent}
+                                        allowCompatibilityPreview={allowCompatibilityPreview}
                                         registerRef={registerThumbRef}
                                         handleThumbClick={handleThumbClick}
                                         handlePointerDown={handlePointerDown}

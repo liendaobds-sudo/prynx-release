@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use tiny_skia::{LineCap, LineJoin, Mask, Stroke, StrokeDash};
+use tiny_skia::{LineCap, LineJoin, Mask, Path, Stroke, StrokeDash};
 
 use crate::blend::BlendMode;
 use crate::color::ColorSpace;
@@ -10,6 +10,38 @@ use crate::geom::{Matrix, Region};
 use crate::ink::SoftMask;
 use crate::raster::mask::effective_line_width;
 use crate::text::state::TextState;
+
+/// CORRECTNESS (audit 2026-09-28 §KNOCK.BBOX): chỉ nhận path chữ nhật BBox
+/// đã qua CTM. Bốn đỉnh exact, không phải AABB hay so gần đúng: hình thoi và
+/// hình vuông có thể cùng bounds nhưng không được dùng chung chứng cứ clip.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BBoxClipKey {
+    vertices: [[u32; 2]; 4],
+    extent: (u32, u32),
+    anti_alias: bool,
+}
+
+impl BBoxClipKey {
+    pub(crate) fn from_device_path(path: &Path, width: u32, height: u32, anti_alias: bool) -> Option<Self> {
+        let points = path.points();
+        if points.len() != 4 || points.iter().any(|p| !p.x.is_finite() || !p.y.is_finite()) {
+            return None;
+        }
+        // Affine giữ BBox thành một tứ giác lồi, nên tập bốn đỉnh xác định đúng
+        // hình clip bất kể điểm bắt đầu/hướng đi. Chuẩn hoá ±0, không làm tròn.
+        let bits = |v: f32| if v == 0.0 { 0 } else { v.to_bits() };
+        let mut vertices = std::array::from_fn(|i| [bits(points[i].x), bits(points[i].y)]);
+        vertices.sort_unstable();
+        Some(Self { vertices, extent: (width, height), anti_alias })
+    }
+}
+
+/// Lịch sử bất biến chỉ chứa BBox đã áp vào clip hiện hành. q/Q chia sẻ bằng
+/// Arc; giao thêm path không xoá chứng cứ cũ, còn thay clip khác phải reset.
+struct AppliedBBoxClip {
+    key: BBoxClipKey,
+    previous: Option<Arc<AppliedBBoxClip>>,
+}
 
 /// Trạng thái đồ hoạ theo ISO 32000-2 §8.4, giới hạn ở phần ảnh hưởng tới mực.
 ///
@@ -37,6 +69,9 @@ pub struct GraphicsState {
     pub fill_alpha: f32,
     /// `CA` — alpha hằng khi vẽ nét.
     pub stroke_alpha: f32,
+    /// `AIS`: alpha hằng là shape khi true, opacity khi false. CPU phải giữ
+    /// riêng để knockout alpha0 vẫn xóa sibling nếu hình học còn phủ pixel.
+    pub alpha_is_shape: bool,
 
     /// `op` — overprint khi tô.
     pub fill_overprint: bool,
@@ -73,6 +108,9 @@ pub struct GraphicsState {
     /// Giá trị nằm trong graphics state để `q`/`Q` tự lưu và phục hồi cùng clip.
     pub clip_region: Option<Region>,
 
+    // Chỉ CPU Form/Group dùng; không phải cache toàn renderer hoặc retained clip.
+    applied_bbox_clips: Option<Arc<AppliedBBoxClip>>,
+
     /// Tham số text. Nằm trong graphics state (không phải trong text object) nên
     /// sống qua `BT`/`ET` và được `q`/`Q` lưu/phục hồi — đúng §9.3.
     pub text: TextState,
@@ -104,6 +142,7 @@ impl GraphicsState {
             dash_phase: 0.0,
             fill_alpha: 1.0,
             stroke_alpha: 1.0,
+            alpha_is_shape: false,
             fill_overprint: false,
             stroke_overprint: false,
             overprint_mode: 0,
@@ -111,10 +150,30 @@ impl GraphicsState {
             soft_mask: None,
             clip: None,
             clip_region: None,
+            applied_bbox_clips: None,
             text: TextState::default(),
             fill_pattern: None,
             stroke_pattern: None,
         }
+    }
+
+    pub(crate) fn has_applied_bbox_clip(&self, key: BBoxClipKey) -> bool {
+        let mut current = self.applied_bbox_clips.as_deref();
+        while let Some(applied) = current {
+            if applied.key == key { return true; }
+            current = applied.previous.as_deref();
+        }
+        false
+    }
+
+    pub(crate) fn remember_bbox_clip(&mut self, key: BBoxClipKey) {
+        self.applied_bbox_clips = Some(Arc::new(AppliedBBoxClip {
+            key, previous: self.applied_bbox_clips.clone(),
+        }));
+    }
+
+    pub(crate) fn clear_bbox_clip_history(&mut self) {
+        self.applied_bbox_clips = None;
     }
 
     /// Dựng tham số nét cho bộ rasterize, đã xử lý hairline và dash.
@@ -270,6 +329,31 @@ mod tests {
         s.restore();
         assert_eq!(s.current().line_width, 1.0);
         assert!(!s.current().fill_overprint);
+    }
+
+    #[test]
+    fn bbox_clip_history_is_exact_scoped_and_extent_specific() {
+        let path = crate::raster::mask::rect_path(3.25, 4.25, 21.5, 21.5).unwrap();
+        let key = BBoxClipKey::from_device_path(&path, 32, 32, true).unwrap();
+        let other_extent = BBoxClipKey::from_device_path(&path, 16, 32, true).unwrap();
+        let other_aa = BBoxClipKey::from_device_path(&path, 32, 32, false).unwrap();
+        let shifted = path.clone().transform(tiny_skia::Transform::from_translate(0.0001, 0.)).unwrap();
+        let shifted_key = BBoxClipKey::from_device_path(&shifted, 32, 32, true).unwrap();
+        let mut stack = StateStack::new(state());
+        stack.current_mut().remember_bbox_clip(key);
+        assert!(stack.current().has_applied_bbox_clip(key));
+        assert!(!stack.current().has_applied_bbox_clip(other_extent));
+        assert!(!stack.current().has_applied_bbox_clip(other_aa));
+        assert!(!stack.current().has_applied_bbox_clip(shifted_key), "Không dedup theo tolerance");
+        stack.save().unwrap();
+        stack.current_mut().remember_bbox_clip(shifted_key);
+        assert!(stack.current().has_applied_bbox_clip(key));
+        assert!(stack.current().has_applied_bbox_clip(shifted_key));
+        stack.restore();
+        assert!(stack.current().has_applied_bbox_clip(key));
+        assert!(!stack.current().has_applied_bbox_clip(shifted_key));
+        stack.current_mut().clear_bbox_clip_history();
+        assert!(!stack.current().has_applied_bbox_clip(key));
     }
 
     #[test]

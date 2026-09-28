@@ -29,7 +29,7 @@ from app.core.sticker_background import (
     has_meaningful_alpha,
 )
 from app.core.sticker_sheet_session import StickerSheetSession
-from app.core.system_memory import read_memory_status_mb
+from app.core.system_memory import read_memory_status_mb, read_memory_tier_mb
 from app.workers.cut_export.cut_layer_extractor import extract_cut_contours
 from app.workers.sticker_artwork_guard import assess_ai_artwork_loss
 from app.workers.sticker_shadow_boundary import recover_soft_shadow_alpha
@@ -426,53 +426,56 @@ def _render_pdf_page(
 
     raster_scale_limit = _full_page_raster_scale_limit(source_path, page_index)
     with CutlineTimer("PIPELINE", "RENDER_PDF_PAGE", f"file={Path(source_path).name} page={page_index+1}"):
-        with pdfium_guard("sticker_source_pipeline_render"):
-            document = pdfium.PdfDocument(source_path)
+        document = page = None
         try:
-            if page_index < 0 or page_index >= len(document):
-                raise StickerSourcePipelineError("Trang PDF cần nhận diện không tồn tại.")
-            page = document[page_index]
-            try:
+            # PERF (audit 2026-09-28 §PERF28.03): khóa cả vòng đời native,
+            # không chỉ constructor; tính policy và PIL convert ngoài khóa.
+            with pdfium_guard("sticker_source_pipeline_open"):
+                document = pdfium.PdfDocument(source_path)
+                if page_index < 0 or page_index >= len(document):
+                    raise StickerSourcePipelineError("Trang PDF cần nhận diện không tồn tại.")
+                page = document[page_index]
                 width_pt, height_pt = page.get_size()
-                logical_width = max(float(width_pt), 1.0)
-                logical_height = max(float(height_pt), 1.0)
-                physical_width_mm, physical_height_mm = physical_size_mm
-                desired_width_px = physical_width_mm / 25.4 * _PDF_ANALYSIS_DPI
-                desired_height_px = physical_height_mm / 25.4 * _PDF_ANALYSIS_DPI
-                scale = min(
-                    desired_width_px / logical_width,
-                    desired_height_px / logical_height,
+            logical_width = max(float(width_pt), 1.0)
+            logical_height = max(float(height_pt), 1.0)
+            physical_width_mm, physical_height_mm = physical_size_mm
+            desired_width_px = physical_width_mm / 25.4 * _PDF_ANALYSIS_DPI
+            desired_height_px = physical_height_mm / 25.4 * _PDF_ANALYSIS_DPI
+            scale = min(
+                desired_width_px / logical_width,
+                desired_height_px / logical_height,
+            )
+            if raster_scale_limit is not None:
+                scale = min(scale, raster_scale_limit)
+            total_ram_mb, available_ram_mb = read_memory_status_mb()
+            tier_mb = read_memory_tier_mb(total_ram_mb)
+            if tier_mb is not None and tier_mb < 8 * 1024:
+                max_edge_px: int | None = _PDF_ANALYSIS_MAX_EDGE_LOW_RAM_PX
+            elif tier_mb is not None and tier_mb < 16 * 1024:
+                max_edge_px = _PDF_ANALYSIS_MAX_EDGE_MID_RAM_PX
+            else:
+                # Máy >=16 GB hoặc không đọc được RAM giữ đủ 300 DPI.
+                max_edge_px = None
+            if max_edge_px is not None:
+                scale = min(scale, max_edge_px / max(logical_width, logical_height))
+            # PERF (audit 2026-08-16 §BX.P01): van cuối theo RAM còn trống, áp cho MỌI
+            # tier. Máy còn bộ nhớ thì không bị hạ gì; máy đang cạn RAM mới hạ và log.
+            if available_ram_mb is not None and available_ram_mb > 0:
+                budget_px = (
+                    available_ram_mb * _PDF_ANALYSIS_RAM_FRACTION
+                    * 1024.0 * 1024.0 / _PDF_ANALYSIS_BYTES_PER_PX
                 )
-                if raster_scale_limit is not None:
-                    scale = min(scale, raster_scale_limit)
-                total_ram_mb, available_ram_mb = read_memory_status_mb()
-                if total_ram_mb is not None and total_ram_mb < 8 * 1024:
-                    max_edge_px: int | None = _PDF_ANALYSIS_MAX_EDGE_LOW_RAM_PX
-                elif total_ram_mb is not None and total_ram_mb < 16 * 1024:
-                    max_edge_px = _PDF_ANALYSIS_MAX_EDGE_MID_RAM_PX
-                else:
-                    # PERF (audit 2026-08-08 §UNIFIED.8): máy >=16 GB hoặc không đọc
-                    # được RAM giữ đủ 300 DPI; chỉ máy yếu mới hạ kích thước phân tích.
-                    max_edge_px = None
-                if max_edge_px is not None:
-                    scale = min(scale, max_edge_px / max(logical_width, logical_height))
-                # PERF (audit 2026-08-16 §BX.P01): van cuối theo RAM còn trống, áp cho MỌI
-                # tier. Máy còn bộ nhớ thì không bị hạ gì; máy đang cạn RAM mới hạ và log.
-                if available_ram_mb is not None and available_ram_mb > 0:
-                    budget_px = (
-                        available_ram_mb * _PDF_ANALYSIS_RAM_FRACTION
-                        * 1024.0 * 1024.0 / _PDF_ANALYSIS_BYTES_PER_PX
+                planned_px = (logical_width * scale) * (logical_height * scale)
+                if budget_px > 0 and planned_px > budget_px:
+                    ram_scale = scale * (budget_px / planned_px) ** 0.5
+                    logger.info(
+                        "[STICKER] hạ ảnh phân tích theo RAM còn trống: scale %.4f→%.4f "
+                        "(cần %.0f Mpx, ngân sách %.0f Mpx, còn trống %.0f MB)",
+                        scale, ram_scale, planned_px / 1e6, budget_px / 1e6,
+                        available_ram_mb,
                     )
-                    planned_px = (logical_width * scale) * (logical_height * scale)
-                    if budget_px > 0 and planned_px > budget_px:
-                        ram_scale = scale * (budget_px / planned_px) ** 0.5
-                        logger.info(
-                            "[STICKER] hạ ảnh phân tích theo RAM còn trống: scale %.4f→%.4f "
-                            "(cần %.0f Mpx, ngân sách %.0f Mpx, còn trống %.0f MB)",
-                            scale, ram_scale, planned_px / 1e6, budget_px / 1e6,
-                            available_ram_mb,
-                        )
-                        scale = ram_scale
+                    scale = ram_scale
+            with pdfium_guard("sticker_source_pipeline_render"):
                 bitmap = page.render(
                     scale=scale,
                     rev_byteorder=True,
@@ -486,10 +489,14 @@ def _render_pdf_page(
                     raw_image = bitmap.to_pil().copy()
                 finally:
                     bitmap.close()
-            finally:
-                page.close()
         finally:
-            document.close()
+            with pdfium_guard("sticker_source_pipeline_close"):
+                try:
+                    if page is not None:
+                        page.close()
+                finally:
+                    if document is not None:
+                        document.close()
     image = raw_image if raw_image.mode == "RGBA" else raw_image.convert("RGBA")
     dpi_x = image.width / max(physical_size_mm[0], 1e-9) * 25.4
     dpi_y = image.height / max(physical_size_mm[1], 1e-9) * 25.4

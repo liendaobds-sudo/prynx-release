@@ -5,6 +5,7 @@ exports[`useImposerSettingsStore — characterization (golden) > default state (
   "activeDashboardTool": "none",
   "align": "center",
   "alternateRotation": "none",
+  "alternateRotationAlignment": "foot_to_foot",
   "autoCatalog": false,
   "batchOutput": null,
   "blankPlacement": "end",
@@ -316,6 +317,7 @@ exports[`useImposerSettingsStore — characterization (golden) > tập partializ
 [
   "align",
   "alternateRotation",
+  "alternateRotationAlignment",
   "autoCatalog",
   "blankPlacement",
   "bleed",

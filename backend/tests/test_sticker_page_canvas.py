@@ -9,6 +9,7 @@ import pytest
 from app.workers.sticker_page_canvas import (
     normalize_sticker_tight_crop_origin,
     restore_sticker_page_canvas,
+    split_or_normalize_sticker_tight_crop,
 )
 
 
@@ -372,4 +373,55 @@ def test_normalize_sticker_tight_crop_origin(tmp_path):
 
     # Gọi lần hai khi toạ độ đã ở (0, 0) thì không sửa gì
     assert normalize_sticker_tight_crop_origin(target) is False
+
+
+def test_split_or_normalize_sticker_tight_crop_multibox(tmp_path):
+    """Tách tờ nhiều tem thành các trang riêng biệt với toạ độ chuẩn hoá về (0, 0)."""
+    target = tmp_path / "multi_box_sheet.pdf"
+    with pikepdf.Pdf.new() as pdf:
+        page = pdf.add_blank_page(page_size=(500.0, 500.0))
+        page.obj[pikepdf.Name("/Contents")] = pdf.make_stream(
+            b"1 0 0 rg 50 50 100 100 re f\n0 1 0 rg 250 250 150 150 re f\n"
+        )
+        pdf.save(target)
+
+    meta = {
+        "pages": [
+            {
+                "page": 1,
+                "sticker_boxes": [
+                    {
+                        "crop_box": [45.0, 45.0, 155.0, 155.0],
+                        "trim_box": [50.0, 50.0, 150.0, 150.0],
+                    },
+                    {
+                        "crop_box": [245.0, 245.0, 405.0, 405.0],
+                        "trim_box": [250.0, 250.0, 400.0, 400.0],
+                    },
+                ],
+            }
+        ]
+    }
+
+    splat = split_or_normalize_sticker_tight_crop(target, meta=meta)
+    assert splat is True
+
+    with pikepdf.Pdf.open(target) as pdf:
+        assert len(pdf.pages) == 2
+
+        # Trang 1: Tem 1
+        p1 = pdf.pages[0]
+        assert _box(p1, "/MediaBox") == pytest.approx([0.0, 0.0, 110.0, 110.0])
+        assert _box(p1, "/CropBox") == pytest.approx([0.0, 0.0, 110.0, 110.0])
+        assert _box(p1, "/TrimBox") == pytest.approx([5.0, 5.0, 105.0, 105.0])
+        p1_contents = p1.Contents.read_bytes()
+        assert b"q 0 0 110.0000 110.0000 re W n 1 0 0 1 -45.0000 -45.0000 cm" in p1_contents
+
+        # Trang 2: Tem 2
+        p2 = pdf.pages[1]
+        assert _box(p2, "/MediaBox") == pytest.approx([0.0, 0.0, 160.0, 160.0])
+        assert _box(p2, "/CropBox") == pytest.approx([0.0, 0.0, 160.0, 160.0])
+        assert _box(p2, "/TrimBox") == pytest.approx([5.0, 5.0, 155.0, 155.0])
+        p2_contents = p2.Contents.read_bytes()
+        assert b"q 0 0 160.0000 160.0000 re W n 1 0 0 1 -245.0000 -245.0000 cm" in p2_contents
 

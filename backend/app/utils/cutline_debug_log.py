@@ -12,7 +12,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
+from app.core.development_diagnostics import development_diagnostic_enabled
+
 _LOCK = threading.Lock()
+
+def cutline_debug_log_enabled() -> bool:
+    return development_diagnostic_enabled("PRYNX_CUTLINE_DEBUG")
 
 def get_log_file_path() -> Path:
     appdata = os.environ.get("APPDATA") or os.environ.get("USERPROFILE") or ""
@@ -27,7 +32,9 @@ def get_log_file_path() -> Path:
     return target_dir / "cutline_debug.log"
 
 def log_cutline(source: str, stage: str, message: str, **fields: Any) -> None:
-    """Ghi 1 dòng log debug cutline có timestamp mili-giây ra file."""
+    """Ghi 1 dòng log debug cutline có timestamp mili-giây ra file (chỉ khi bật diagnostic)."""
+    if not cutline_debug_log_enabled():
+        return
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     extra_parts = []
     for k, v in fields.items():
@@ -41,11 +48,6 @@ def log_cutline(source: str, stage: str, message: str, **fields: Any) -> None:
     line = f"[{now_str}] [{source.upper()}] [{stage.upper()}] {message}{extra_str}\n"
 
     path = get_log_file_path()
-    try:
-        sys.stdout.write(f"[CUTLINE-DEBUG] {line}")
-        sys.stdout.flush()
-    except Exception:
-        pass
     written = False
     for attempt in range(5):
         try:
@@ -72,13 +74,18 @@ class CutlineTimer:
         self.message = message
         self.fields = fields
         self.t0 = 0.0
+        self._enabled = cutline_debug_log_enabled()
 
     def __enter__(self):
+        if not self._enabled:
+            return self
         self.t0 = time.perf_counter()
         log_cutline(self.source, self.stage, f"BẮT ĐẦU {self.message}", **self.fields)
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
+        if not self._enabled:
+            return False
         elapsed_ms = (time.perf_counter() - self.t0) * 1000.0
         if exc_type is not None:
             log_cutline(

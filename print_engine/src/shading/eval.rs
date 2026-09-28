@@ -55,9 +55,10 @@ impl SampledShading {
             ShadingKind::Axial { domain, .. } | ShadingKind::Radial { domain, .. } => {
                 (domain[0], domain[1])
             }
-            // Lưới không có tham số `t`: màu nằm ở đỉnh. Nhánh này không bao giờ
-            // chạy vì interpreter tách lưới ra đường vẽ riêng trước khi lấy mẫu.
-            ShadingKind::FunctionBased { .. } | ShadingKind::Mesh { .. } => (0.0, 1.0),
+            ShadingKind::FunctionBased { .. } => (0.0, 1.0),
+            // CORRECTNESS (audit 2026-09-28 §KNOCK.01-C2c): mesh phải nội suy
+            // raw theo hình học trước hàm màu; không thể thay bằng LUT 1 chiều.
+            ShadingKind::Mesh { .. } | ShadingKind::Patches { .. } => return Ok(None),
         };
 
         let mut lut = Vec::with_capacity(LUT_SIZE);
@@ -127,7 +128,7 @@ impl SampledShading {
             ShadingKind::FunctionBased { domain, matrix } => {
                 function_param(domain, matrix, sx, sy)?
             }
-            ShadingKind::Mesh { .. } => return None,
+            ShadingKind::Mesh { .. } | ShadingKind::Patches { .. } => return None,
         };
         let idx =
             ((frac.clamp(0.0, 1.0) * (LUT_SIZE - 1) as f32).round() as usize).min(LUT_SIZE - 1);
@@ -269,6 +270,37 @@ mod tests {
 
     const NO_EXTEND: [bool; 2] = [false, false];
     const BOTH: [bool; 2] = [true, true];
+
+    #[test]
+    fn mesh_and_patch_kinds_do_not_create_a_one_dimensional_lut() {
+        for kind in [
+            ShadingKind::Mesh {
+                triangles: Vec::new(),
+            },
+            ShadingKind::Patches {
+                patches: Vec::new(),
+            },
+        ] {
+            let shading = Shading {
+                kind,
+                colorspace: crate::color::ColorSpace::DeviceGray,
+                function: None,
+                bbox: None,
+                background: None,
+            };
+            let mut space = InkSpace::new();
+            let mut warn = RenderWarnings::default();
+            assert!(
+                SampledShading::new(&shading, &Matrix::IDENTITY, &mut space, &mut warn, None)
+                    .unwrap()
+                    .is_none()
+            );
+            assert!(
+                warn.colorspaces_used.is_empty(),
+                "không được đổi màu giả từ LUT"
+            );
+        }
+    }
 
     #[test]
     fn axial_param_is_zero_at_start_and_one_at_end() {

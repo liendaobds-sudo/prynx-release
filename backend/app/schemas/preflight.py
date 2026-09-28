@@ -56,7 +56,7 @@ class FixFileResponse(BaseModel):
 
     Dùng cho: `/delete-object`, `/layers/rename`, `/layers/toggle-lock`,
     `/layers/set-visibility`, `/layers/delete`, `/layers/reorder`, `/set-page-boxes`,
-    `/auto-trim`, `/add-bleed`, `/mirror-bleed`, `/convert-spot`.
+    `/add-bleed`, `/mirror-bleed`, `/convert-spot`.
 
     Desktop đọc `data.success` + `data.output_filename` rồi gọi `/preflight/download/
     {output_filename}` để lấy file — bỏ một trong hai là đứt luồng "sửa xong nhận file".
@@ -66,6 +66,12 @@ class FixFileResponse(BaseModel):
     output_filename: Optional[str] = Field(
         default=None, description="Tên file kết quả trong results/preflight_output"
     )
+
+
+class AutoTrimResponse(FixFileResponse):
+    """Xác nhận chế độ thực thi để client không nhầm phủ viền thành xén."""
+
+    mode: Literal["trim", "fill"]
 
 
 class FlattenLayersResponse(FixFileResponse):
@@ -383,7 +389,9 @@ class CropRegionsRequest(BaseModel):
 class AutoTrimRequest(BaseModel):
     file_id: str
     pages: Optional[List[int]] = None
-    margin_mm: float = Field(default=0, ge=0, le=20)
+    # PAGEBOX (audit 2026-09-28 §WBR28.FILL): client cũ vẫn mặc định xóa viền.
+    mode: Literal["trim", "fill"] = "trim"
+    margin_mm: float = Field(default=0, ge=0, le=20, allow_inf_nan=False)
     # UIUX (feedback 2026-08-26): None giữ hành vi tự động của client cũ;
     # danh sách tường minh là các cạnh bắt buộc xén trên mọi trang đã chọn.
     trim_sides: Optional[List[Literal["left", "top", "right", "bottom"]]] = Field(

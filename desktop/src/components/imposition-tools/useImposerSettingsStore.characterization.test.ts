@@ -215,11 +215,14 @@ describe('useImposerSettingsStore — characterization (golden)', () => {
         const st = () => store.getState();
 
         st().setAlternateRotation('row');
+        st().setAlternateRotationAlignment('head_to_head');
         st().switchToolProfile('nup', 'sticker_imposer');
         st().setAlternateRotation('none');
+        st().setAlternateRotationAlignment('foot_to_foot');
         st().switchToolProfile('sticker_imposer', 'nup');
 
         expect(st().alternateRotation).toBe('row');
+        expect(st().alternateRotationAlignment).toBe('head_to_head');
         expect(st().gridStrategy).toBe('optimal_auto');
     });
 

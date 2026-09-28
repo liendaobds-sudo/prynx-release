@@ -26,7 +26,9 @@ use crate::page::{
 use crate::page_program::FormProgram;
 
 /// Phiên bản hợp đồng cache/session. Tăng khi thay đổi semantics pixel hoặc identity.
-pub const SESSION_ENGINE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/session-1");
+// COLOR (audit 2026-09-28 §KNOCK.R1): raw mesh, shape/opacity và provenance mask
+// không tương thích pixel/session cũ dù không thay phiên bản ứng dụng.
+pub const SESSION_ENGINE_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "/session-2");
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct FileStamp {
@@ -1316,6 +1318,18 @@ pub type SharedRenderSession = Arc<Mutex<RenderSession>>;
 mod prepared_snapshot_tests {
     use super::*;
     use lopdf::{dictionary, Object, Stream};
+
+    #[test]
+    fn knockout_mesh_and_mask_semantics_use_a_new_session_identity() {
+        assert_eq!(SESSION_ENGINE_VERSION, concat!(env!("CARGO_PKG_VERSION"), "/session-2"));
+        let current = DocumentIdentity::from_bytes(None, b"cung tai lieu");
+        let mut legacy = current.clone();
+        legacy.engine_version = concat!(env!("CARGO_PKG_VERSION"), "/session-1");
+        assert_ne!(current, legacy, "cache cũ không được dùng sau khi đổi nghĩa pixel");
+        let stamp = FileStamp { canonical_path: PathBuf::from("document.pdf"), size: 13,
+            modified_ns: Some(1), created_ns: Some(2) };
+        assert_eq!(DocumentIdentity::from_stamp(&stamp).engine_version, current.engine_version);
+    }
 
     #[test]
     fn jobs_share_document_page_program_and_one_resource_budget() {

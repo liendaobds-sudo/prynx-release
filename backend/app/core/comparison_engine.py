@@ -450,12 +450,15 @@ def _compare_tile_size() -> int:
     if configured > 0:
         return max(256, min(configured, 4096))
 
-    from app.core.system_memory import read_memory_status_mb
+    from app.core.system_memory import read_memory_status_mb, read_memory_tier_mb
 
     total_mb, _available_mb = read_memory_status_mb()
-    if total_mb is not None and total_mb < 8 * 1024:
+    # PERF (audit 2026-09-28 §PERF28.03): tile theo tier lắp đặt;
+    # không sửa ngưỡng workload, DPI hay admission RAM/đĩa của Compare.
+    tier_mb = read_memory_tier_mb(total_mb)
+    if tier_mb is not None and tier_mb < 8 * 1024:
         return 1024
-    if total_mb is not None and total_mb < 16 * 1024:
+    if tier_mb is not None and tier_mb < 16 * 1024:
         return 1536
     return _DEFAULT_COMPARE_TILE_SIZE
 

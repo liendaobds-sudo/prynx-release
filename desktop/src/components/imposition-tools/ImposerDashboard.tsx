@@ -426,6 +426,9 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
             && (s.taskMode === 'nup' || s.taskMode === 'step_repeat')
         ) || rectangleStickerInking
     ) ? s.alternateRotation : 'none' as const;
+    const effectiveAlternateRotationAlignment = effectiveAlternateRotation !== 'none'
+        ? (s.alternateRotationAlignment || 'foot_to_foot')
+        : 'foot_to_foot' as const;
     const previewDetectedDimensionsByPage = useMemo(
         () => projectPageRecordToViewer(detectedDimensionsByPage, viewerPageOrder),
         [detectedDimensionsByPage, viewerPageOrder],
@@ -1447,6 +1450,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                     gap_y: (s.gapY || 0) * MM_TO_PT,
                     strategy: s.gridStrategy || 'optimal_auto',
                     alternate_rotation: effectiveAlternateRotation,
+                    alternate_rotation_alignment: effectiveAlternateRotationAlignment,
                     pages,
                     ...(srcPath ? { path: srcPath } : { file_id: srcFileId }),
                     cols: s.columns || 0,
@@ -1724,6 +1728,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                 formsize: finalFormsize, customSheetWidth: effSheetW, customSheetHeight: effSheetH,
                 bleed: s.bleed, columns: s.columns, rows: s.rows, gridStrategy: s.gridStrategy,
                 alternateRotation: effectiveAlternateRotation,
+                alternateRotationAlignment: effectiveAlternateRotationAlignment,
                 groupingStrategy: effectiveGroupingStrategy,
                 clusterMode: effClusterMode, clusterCount: s.clusterCount, clusterGap: s.clusterGap,
                 clusterGapMode: s.clusterGapMode, clusterDistribution: s.clusterDistribution, clusterBorder: s.clusterBorder,
@@ -1825,6 +1830,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                 : s.layoutType,
             columns: s.columns, rows: s.rows, gridStrategy: s.gridStrategy,
             alternateRotation: effectiveAlternateRotation,
+            alternateRotationAlignment: effectiveAlternateRotationAlignment,
             groupingStrategy: s.groupingStrategy, duplexFlow: s.duplexFlow,
             align: s.align, clusterMode: s.clusterMode, clusterCount: s.clusterCount,
             clusterGap: s.clusterGap, clusterGapMode: s.clusterGapMode,
@@ -1832,7 +1838,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
             clusterPostDieCutMarks: s.clusterPostDieCutMarks,
             cutBorder: { ...s.cutBorder },
         } : undefined,
-    }), [s, effectiveAlternateRotation]);
+    }), [s, effectiveAlternateRotation, effectiveAlternateRotationAlignment]);
 
     const handleLoadPreset = useCallback((preset: ImpositionPreset) => {
         // SEC (audit 2026-08-04 re-audit UI): không mutation một field nào
@@ -1874,6 +1880,12 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                     alternateRotation === 'row' || alternateRotation === 'column'
                         ? alternateRotation
                         : 'none',
+                );
+                const alternateRotationAlignment = preset.nup.alternateRotationAlignment;
+                s.setAlternateRotationAlignment(
+                    alternateRotationAlignment === 'head_to_head'
+                        ? 'head_to_head'
+                        : 'foot_to_foot',
                 );
                 s.setDuplexFlow(preset.nup.duplexFlow);
                 // PARITY (audit 2026-08-29 MAP-NEST-04): preset cũ thiếu intent giữ
@@ -2204,6 +2216,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                                 activeTool={activeTool}
                                 taskMode={s.taskMode} gridStrategy={s.gridStrategy} columns={s.columns} rows={s.rows}
                                 alternateRotation={effectiveAlternateRotation}
+                                alternateRotationAlignment={effectiveAlternateRotationAlignment}
                                 isDieCut={stickerLike}
                                 pageSheetMode={pageSheetMode}
                                 // Defensive: không bao giờ gửi layoutType='repeat' khi

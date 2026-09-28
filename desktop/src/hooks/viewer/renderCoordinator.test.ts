@@ -212,7 +212,7 @@ describe('RenderCoordinator — contract và vòng đời bitmap', () => {
         const swopAccurate = await renderOnce(requestInput({
             raster: { kind: 'dpi', dpi: 120, clip: null },
             color: { pipeline: 'accurate', profileId: 'swop', intent: 'perceptual' },
-            pipelineIdentity: 'ppe-swop-perceptual-view-knockout-png-v5-backend',
+            pipelineIdentity: 'ppe-swop-perceptual-view-knockout-png-v6-backend',
             soundness: 'color-verified',
         }));
         const topLeftTile = await renderOnce(requestInput({

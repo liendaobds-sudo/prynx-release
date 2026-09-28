@@ -46,6 +46,7 @@ from app.core.nesting_quality_gate import (
     parse_quality_gate_decision_proof,
 )
 from app.core.source_revision import SourceFingerprint, capture_source_fingerprint
+from app.core.system_memory import memory_tier_mb
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,9 @@ def step_repeat_subscriber_id(parent_id: str | None, design_index: int) -> str |
     return f"{parent_id}{_BATCH_SUBSCRIBER_SEPARATOR}{int(design_index)}"
 
 
-def preview_session_capacity_for_ram(total_ram_mb: float | None) -> int:
+def preview_session_capacity_for_ram(
+    total_ram_mb: float | None, *, tier_ram_mb: float | None = None,
+) -> int:
     """Số phiên giữ nóng, gate theo RAM máy.
 
     Một phiên giữ snapshot nguồn cộng manifest, nên không phải thứ giữ vô hạn. Theo
@@ -73,18 +76,23 @@ def preview_session_capacity_for_ram(total_ram_mb: float | None) -> int:
 
     if total_ram_mb is None or total_ram_mb <= 0:
         return 2
-    if total_ram_mb < 8 * 1024:
+    # PERF (audit 2026-09-28 §PERF28.03 B2j): chỉ ngưỡng hạng dùng installed;
+    # số phiên trên máy mạnh vẫn tăng theo usable thật.
+    tier_mb = memory_tier_mb(total_ram_mb, tier_ram_mb) or total_ram_mb
+    if tier_mb < 8 * 1024:
         return 1
-    if total_ram_mb < 16 * 1024:
+    if tier_mb < 16 * 1024:
         return 3
     return max(6, int(total_ram_mb // 4096))
 
 
 def _default_capacity() -> int:
-    from app.core.system_memory import read_memory_status_mb
+    from app.core.system_memory import read_memory_status_mb, read_memory_tier_mb
 
     total_ram_mb, _available_ram_mb = read_memory_status_mb()
-    return preview_session_capacity_for_ram(total_ram_mb)
+    return preview_session_capacity_for_ram(
+        total_ram_mb, tier_ram_mb=read_memory_tier_mb(total_ram_mb),
+    )
 
 
 def _gap_key(gap: Any) -> tuple[float, float]:

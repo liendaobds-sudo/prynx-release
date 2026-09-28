@@ -402,7 +402,7 @@ _CUTLINE_TUNING_MAX_HAUSDORFF_MM = 1.0
 # QUALITY (feedback 2026-08-19 §CUTROUND.7): độ bo là kích thước thành phẩm,
 # không phải số pixel nguồn. Thang tuyến tính giúp preview và PDF cùng hiểu
 # 50% = 1,5 mm, 100% = 3 mm ở mọi DPI.
-_CUTLINE_ROUND_RADIUS_MAX_MM = 3.0
+_CUTLINE_ROUND_RADIUS_MAX_MM = 12.0
 
 # QUALITY (audit 2026-08-20 §CUTHYBRID.1): chỉ chuẩn hóa các đoạn thẳng dài
 # có bằng chứng hình học rõ ràng. Đây là ngân sách hình học theo mm (không phải
@@ -653,10 +653,17 @@ def _filter_full_page_jpeg_halo_components(
             and max(width, height) <= island_max_span
             and part.distance(dominant) <= island_max_gap
         )
+        # §NOODLE.8: dải viền hairline ringing nén JPEG / thước xén siêu mảnh (<0,30 mm và fill_ratio < 0.03)
+        thickness = 2.0 * part.area / max(float(part.length), 1e-9)
+        is_hairline_ringing_halo = (
+            thickness < 0.30 * _PT_PER_MM
+            and bbox_fill_ratio < 0.03
+        )
         if (
             is_near_halo
             or is_compact_compression_island
             or is_weak_compression_island
+            or is_hairline_ringing_halo
         ):
             dropped += 1
         else:
@@ -5243,7 +5250,7 @@ def _fit_alpha_live_tuned_paths(
             accepted_part = None
             # Một mấu hẹp có thể vượt guard ở bán kính yêu cầu dù phần còn lại
             # bo được. Hạ bán kính có thứ tự thay vì vô hiệu cả tem ngay lập tức.
-            for radius_scale in (1.0, 0.75, 0.50, 0.25, 0.125, 0.0625):
+            for radius_scale in (1.0, 0.75, 0.50, 0.25, 0.125, 0.0625, 0.03125, 0.015625):
                 candidate_radius_mm = round_radius_mm * radius_scale
                 candidate_radius_pts = candidate_radius_mm * mm_to_pts
                 round_budget_pts = min(
@@ -5574,25 +5581,22 @@ def _presmooth_cutline_alpha(
     return smoothed
 
 
-def prepare_alpha_cutline_geometry(
+def extract_alpha_base_geometry(
     alpha_mask: np.ndarray,
     *,
     dpi: float,
     dpi_y: float | None = None,
-    cut_mode: str = "original",
-    offset_mm: float = 0.0,
-    bleed_mm: float = 0.0,
-    corner_style: str = "preserve",
-    fill_holes: bool = True,
     min_detail_area_mm2: float = _MIN_CONTOUR_AREA_MM2,
+    fill_holes: bool = True,
     presmooth_alpha: bool = False,
     cutline_denoise: float | int = 0.0,
 ) -> dict[str, object] | None:
-    """Chuẩn bị silhouette/offset dùng chung cho nhiều lần fit Bézier.
+    """Trích xuất silhouette gốc (marching-squares + Shapely union) từ alpha mask.
 
-    PERF (audit 2026-08-10 §CUTLINE.LIVE1): bám sát và độ bo không làm đổi
-    mask/offset đầu vào. Tách bước này để live preview tái sử dụng phần
-    marching-squares + Shapely thay vì dựng lại cho mỗi tick slider.
+    PERF (audit 2026-09-28 §CUTBASE.CACHE): bước marching-squares và unary_union
+    chiếm 85-90% thời gian xử lý của từng tem nhưng HOÀN TOÀN ĐỘC LẬP với offset_mm,
+    bleed_mm và corner_style. Tách riêng hàm này cho phép tái sử dụng base_geometry
+    khi người dùng chỉnh Co/giãn viền hoặc Kiểu góc mà không phải tính lại từ đầu.
     """
     mask = np.asarray(alpha_mask)
     if mask.ndim != 2 or mask.size == 0:
@@ -5611,18 +5615,9 @@ def prepare_alpha_cutline_geometry(
         or dpi_y_resolved <= 0
     ):
         return None
-    cut_mode = str(cut_mode or "original").strip().lower()
-    if cut_mode == "none":
-        return {
-            "disabled": True,
-            "dropped_contours": 0,
-        }
 
     from skimage import measure
 
-    # §CUTJAG.1/3: làm mượt Alpha trước marching-squares. Đặt ở đây (không đặt trong
-    # fitter) để mọi guard sai lệch ở hạ nguồn đều tham chiếu CÙNG một silhouette.
-    # Thanh kéo của người dùng THẮNG cổng tự động; để 0 thì dùng cổng tự động.
     try:
         denoise_amount = float(cutline_denoise or 0.0)
     except (TypeError, ValueError):
@@ -5660,6 +5655,14 @@ def prepare_alpha_cutline_geometry(
             continue
         polygon = Polygon(points)
         if polygon.is_empty or not polygon.is_valid:
+            continue
+        min_x, min_y, max_x, max_y = polygon.bounds
+        w = max_x - min_x
+        h = max_y - min_y
+        bbox_area = w * h
+        bbox_fill_ratio = polygon.area / bbox_area if bbox_area > 0 else 1.0
+        thickness = 2.0 * polygon.area / max(float(polygon.length), 1e-9)
+        if thickness < 0.30 * _PT_PER_MM and bbox_fill_ratio < 0.03:
             continue
         contour_polygons.append(polygon)
     if not contour_polygons:
@@ -5699,6 +5702,36 @@ def prepare_alpha_cutline_geometry(
     if base_geometry.is_empty or not isinstance(base_geometry, (Polygon, MultiPolygon)):
         return None
 
+    return {
+        "base_geometry": base_geometry,
+        "source_pixel_mm": max(25.4 / dpi_x, 25.4 / dpi_y_resolved),
+        "dropped_contours": len(filtered_exteriors),
+        "dpi_x": dpi_x,
+        "dpi_y": dpi_y_resolved,
+    }
+
+
+def offset_alpha_base_geometry(
+    base_info: dict[str, object],
+    *,
+    cut_mode: str = "original",
+    offset_mm: float = 0.0,
+    bleed_mm: float = 0.0,
+    corner_style: str = "preserve",
+    fill_holes: bool = True,
+) -> dict[str, object] | None:
+    """Áp dụng offset, bleed và kiểu góc lên base_geometry đã trích xuất."""
+    cut_mode = str(cut_mode or "original").strip().lower()
+    if cut_mode == "none":
+        return {
+            "disabled": True,
+            "dropped_contours": int(base_info.get("dropped_contours", 0)),
+        }
+
+    base_geometry = base_info.get("base_geometry")
+    if not isinstance(base_geometry, (Polygon, MultiPolygon)) or base_geometry.is_empty:
+        return None
+
     effective_offset_mm = float(offset_mm) - (
         ALPHA_CONTOUR_INSET_MM if cut_mode == "alpha" else 0.0
     )
@@ -5730,10 +5763,79 @@ def prepare_alpha_cutline_geometry(
         "base_geometry": base_geometry,
         "ideal_geometry": ideal_geometry,
         "total_offset_pts": total_offset_pts,
-        "source_pixel_mm": max(25.4 / dpi_x, 25.4 / dpi_y_resolved),
+        "source_pixel_mm": float(base_info.get("source_pixel_mm", 0.0)),
         "corner_style": str(corner_style or "preserve").strip().lower(),
-        "dropped_contours": len(filtered_exteriors),
+        "dropped_contours": int(base_info.get("dropped_contours", 0)),
     }
+
+
+_ALPHA_BASE_GEOMETRY_CACHE: dict[str, dict[str, object]] = {}
+_ALPHA_BASE_CACHE_MAX = 50
+
+
+def prepare_alpha_cutline_geometry(
+    alpha_mask: np.ndarray,
+    *,
+    dpi: float,
+    dpi_y: float | None = None,
+    cut_mode: str = "original",
+    offset_mm: float = 0.0,
+    bleed_mm: float = 0.0,
+    corner_style: str = "preserve",
+    fill_holes: bool = True,
+    min_detail_area_mm2: float = _MIN_CONTOUR_AREA_MM2,
+    presmooth_alpha: bool = False,
+    cutline_denoise: float | int = 0.0,
+) -> dict[str, object] | None:
+    """Chuẩn bị silhouette/offset dùng chung cho nhiều lần fit Bézier.
+
+    PERF (audit 2026-08-10 §CUTLINE.LIVE1): bám sát và độ bo không làm đổi
+    mask/offset đầu vào. Tách bước này để live preview tái sử dụng phần
+    marching-squares + Shapely thay vì dựng lại cho mỗi tick slider.
+    """
+    cut_mode = str(cut_mode or "original").strip().lower()
+    if cut_mode == "none":
+        return {
+            "disabled": True,
+            "dropped_contours": 0,
+        }
+
+    try:
+        mask_bytes = np.ascontiguousarray(alpha_mask).tobytes()
+        cache_key = hashlib.sha256(
+            mask_bytes
+            + f":{dpi}:{dpi_y}:{min_detail_area_mm2}:{fill_holes}:{presmooth_alpha}:{cutline_denoise}".encode("utf-8")
+        ).hexdigest()
+    except Exception:
+        cache_key = None
+
+    base_info = _ALPHA_BASE_GEOMETRY_CACHE.get(cache_key) if cache_key else None
+    if base_info is None:
+        base_info = extract_alpha_base_geometry(
+            alpha_mask,
+            dpi=dpi,
+            dpi_y=dpi_y,
+            min_detail_area_mm2=min_detail_area_mm2,
+            fill_holes=fill_holes,
+            presmooth_alpha=presmooth_alpha,
+            cutline_denoise=cutline_denoise,
+        )
+        if base_info is None:
+            return None
+        if cache_key:
+            _ALPHA_BASE_GEOMETRY_CACHE[cache_key] = base_info
+            if len(_ALPHA_BASE_GEOMETRY_CACHE) > _ALPHA_BASE_CACHE_MAX:
+                oldest = next(iter(_ALPHA_BASE_GEOMETRY_CACHE))
+                _ALPHA_BASE_GEOMETRY_CACHE.pop(oldest, None)
+
+    return offset_alpha_base_geometry(
+        base_info,
+        cut_mode=cut_mode,
+        offset_mm=offset_mm,
+        bleed_mm=bleed_mm,
+        corner_style=corner_style,
+        fill_holes=fill_holes,
+    )
 
 
 def _collapse_raster_corner_splits(vertices):
@@ -5882,39 +5984,75 @@ def _fit_standard_polygon_fillet(
     source_pixel_mm: float,
     curve_tension: float | int | None,
 ):
-    """Dựng line + cung cubic tiếp tuyến cho polygon chuẩn của mask/AI."""
-    vertices = _standard_convex_polygon_vertices(
-        base_geometry,
-        source_pixel_mm=source_pixel_mm,
-    )
-    if vertices is None:
+    """Dựng line + cung cubic tiếp tuyến cho polygon chuẩn của mask/AI (hỗ trợ cả Polygon và MultiPolygon)."""
+    if isinstance(base_geometry, Polygon):
+        geoms = [base_geometry]
+        is_multi = False
+    elif isinstance(base_geometry, MultiPolygon):
+        geoms = [g for g in base_geometry.geoms if not g.is_empty]
+        is_multi = True
+    else:
         return None
-    polygon = Polygon(vertices)
-    if abs(total_offset_pts) > 1e-12:
-        polygon = polygon.buffer(
-            total_offset_pts,
-            join_style=2,
-            mitre_limit=100.0,
-        )
-    if not isinstance(polygon, Polygon) or polygon.is_empty or polygon.interiors:
+
+    if not geoms:
         return None
+
     radius_pts = (
         _cutline_round_radius_mm(curve_tension) * _PT_PER_MM
     )
     if radius_pts <= 1e-9:
         return None
-    segments = build_filleted_polygon_beziers(
-        list(polygon.exterior.coords[:-1]),
-        radius=radius_pts,
-        minimum_straight=_CUTLINE_FINAL_SHORT_SEGMENT_MM * _PT_PER_MM,
-    )
-    if not segments:
+
+    fitted_geometries = []
+    all_paths = []
+    for g in geoms:
+        min_x, min_y, max_x, max_y = g.bounds
+        w, h = max_x - min_x, max_y - min_y
+        bbox_area = w * h
+        fill_ratio = g.area / bbox_area if bbox_area > 0 else 1.0
+        thickness = 2.0 * g.area / max(float(g.length), 1e-9)
+
+        vertices = _standard_convex_polygon_vertices(
+            g,
+            source_pixel_mm=source_pixel_mm,
+        )
+        if vertices is None:
+            # QUALITY §CUTROUND.6: Trong MultiPolygon, bỏ qua dải viền hairline ringing / thước xén
+            # siêu mảnh để không làm hỏng bo góc của các tem/thẻ chuẩn còn lại.
+            if is_multi and (thickness < 0.35 * _PT_PER_MM or fill_ratio < 0.05):
+                continue
+            return None
+        polygon = Polygon(vertices)
+        if abs(total_offset_pts) > 1e-12:
+            polygon = polygon.buffer(
+                total_offset_pts,
+                join_style=2,
+                mitre_limit=100.0,
+            )
+        if not isinstance(polygon, Polygon) or polygon.is_empty or polygon.interiors:
+            # Mảnh siêu nhỏ bị buffer âm làm biến mất thì bỏ qua trong MultiPolygon
+            if is_multi and polygon.is_empty:
+                continue
+            return None
+        segments = build_filleted_polygon_beziers(
+            list(polygon.exterior.coords[:-1]),
+            radius=radius_pts,
+            minimum_straight=_CUTLINE_FINAL_SHORT_SEGMENT_MM * _PT_PER_MM,
+        )
+        if not segments:
+            return None
+        sampled = sample_bezier_segments(segments, samples_per_segment=24)
+        fitted_poly = Polygon(sampled)
+        if fitted_poly.is_empty or not fitted_poly.is_valid:
+            return None
+        fitted_geometries.append(fitted_poly)
+        all_paths.append(segments)
+
+    if not fitted_geometries:
         return None
-    sampled = sample_bezier_segments(segments, samples_per_segment=24)
-    fitted_geometry = Polygon(sampled)
-    if fitted_geometry.is_empty or not fitted_geometry.is_valid:
-        return None
-    return fitted_geometry, [segments], 0.0
+    if not is_multi and len(fitted_geometries) == 1:
+        return fitted_geometries[0], all_paths, 0.0
+    return MultiPolygon(fitted_geometries), all_paths, 0.0
 
 
 def fit_prepared_alpha_cutline_geometry(
@@ -6298,6 +6436,24 @@ def simplify_alpha_cutline_result(
     """Giảm thêm trên baseline đã fit; mỗi tick luôn bắt đầu từ baseline này."""
     if not cutline or float(tolerance_mm) <= 0:
         return cutline
+
+    # PERF (audit 2026-09-29 §AI-SHEET.SIMPLIFY): analytic-fillet đã là nghiệm giải tích tối ưu
+    # gồm các cạnh thẳng và cung tròn/elip chính xác (<= 8 segments). Đơn giản hóa thêm là thừa
+    # và gây nghẽn lặp IRLS khi kéo slider bên "Tách nhiều tem".
+    if cutline.get("fit_mode") == "analytic-fillet":
+        count = sum(len(r) for g in cutline.get("path_groups", []) for r in [g["exterior"], *g.get("interiors", [])])
+        result = dict(cutline)
+        result["quality"] = {
+            **cutline.get("quality", {}),
+            "simplification": {
+                "before_segments": count,
+                "after_segments": count,
+                "maximum_error_bound_mm": 0.0,
+                "changed": False,
+            },
+        }
+        return result
+
     from app.workers.cutline_cubic_simplify import simplify_cubic_path_groups
 
     groups, stats = simplify_cubic_path_groups(
@@ -8065,12 +8221,15 @@ def _band_tiles(band, band_radius: int, tile: int = 1024):
 
     Trả: (crop_y0, crop_y1, crop_x0, crop_x1, core_y0, core_y1, core_x0, core_x1).
     """
-    ys, xs = np.where(band > 0)
-    if ys.size == 0:
+    row_any = np.any(band > 0, axis=1)
+    if not np.any(row_any):
         return
     h, w = band.shape[:2]
-    by0, by1 = int(ys.min()), int(ys.max()) + 1
-    bx0, bx1 = int(xs.min()), int(xs.max()) + 1
+    col_any = np.any(band > 0, axis=0)
+    y_indices = np.flatnonzero(row_any)
+    x_indices = np.flatnonzero(col_any)
+    by0, by1 = int(y_indices[0]), int(y_indices[-1]) + 1
+    bx0, bx1 = int(x_indices[0]), int(x_indices[-1]) + 1
     for cy0 in range(by0, by1, tile):
         cy1 = min(cy0 + tile, by1)
         for cx0 in range(bx0, bx1, tile):
@@ -8219,6 +8378,7 @@ def _rectangle_vector_bleed_commands(
     sample_inset_pts: float = 0.0,
     sides=None,
     join_overlap_pts: float = 0.0,
+    bleed_amounts_pts: tuple[float, float, float, float] | None = None,
 ) -> tuple[list[str], float, float, float, float]:
     """Stretch vector edge/corner strips around a rectangular page.
 
@@ -8239,7 +8399,27 @@ def _rectangle_vector_bleed_commands(
     Trả về: ``(commands, bite_trái, bite_phải, bite_dưới, bite_trên)``.
     """
     side_l, side_r, side_b, side_t = normalize_bleed_sides(sides)
-    if bleed_pts <= 0 or page_width <= 0 or page_height <= 0:
+    # PAGEBOX (audit 2026-09-28 §WBR28.FILL): bốn độ rộng độc lập theo thứ tự
+    # trái/phải/dưới/trên. Bỏ tham số mới giữ nguyên nhánh scalar của Bù xén.
+    if bleed_amounts_pts is not None:
+        try:
+            amounts = tuple(float(value) for value in bleed_amounts_pts)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Độ rộng phủ viền phải gồm bốn số hữu hạn không âm.") from exc
+        if len(amounts) != 4 or not all(
+            math.isfinite(value) and value >= 0 for value in amounts
+        ):
+            raise ValueError("Độ rộng phủ viền phải gồm bốn số hữu hạn không âm.")
+        side_l = side_l and amounts[0] > 0
+        side_r = side_r and amounts[1] > 0
+        side_b = side_b and amounts[2] > 0
+        side_t = side_t and amounts[3] > 0
+    else:
+        amounts = (bleed_pts,) * 4
+    if (
+        (bleed_amounts_pts is None and bleed_pts <= 0)
+        or page_width <= 0 or page_height <= 0
+    ):
         return [], 0.0, 0.0, 0.0, 0.0
     if not (side_l or side_r or side_b or side_t):
         return [], 0.0, 0.0, 0.0, 0.0
@@ -8262,10 +8442,10 @@ def _rectangle_vector_bleed_commands(
     bite_bottom = bite_y if side_b else 0.0
     bite_top = bite_y if side_t else 0.0
 
-    bleed_left = bleed_pts if side_l else 0.0
-    bleed_right = bleed_pts if side_r else 0.0
-    bleed_bottom = bleed_pts if side_b else 0.0
-    bleed_top = bleed_pts if side_t else 0.0
+    bleed_left = amounts[0] if side_l else 0.0
+    bleed_right = amounts[1] if side_r else 0.0
+    bleed_bottom = amounts[2] if side_b else 0.0
+    bleed_top = amounts[3] if side_t else 0.0
 
     out_w = page_width + bleed_left + bleed_right
     out_h = page_height + bleed_bottom + bleed_top
@@ -8408,7 +8588,7 @@ def _auto_sticker_hw_profile(
 
     Bảng theo rule phần cứng của dự án:
       RAM < 8GB            → workers 1, sticky 15'
-      8–16GB               → tối đa 2 workers, sticky 10'
+      8–16GB               → tối đa 4 workers, sticky 10'
       ≥16GB                → CPU-1 workers, sticky tắt
 
     Env STICKER_MAX_WORKERS / STICKER_STICKY_SEQ_SEC ghi đè khi set.
@@ -8417,7 +8597,10 @@ def _auto_sticker_hw_profile(
     global _hw_profile_logged
 
     if total_ram_mb is None:
-        total_ram_mb = _total_ram_mb()
+        # PERF (audit 2026-09-28 §PERF28.03): chỉ auto đọc RAM lắp đặt;
+        # đầu vào minh thị vẫn thuần, reader usable dùng cho admission không đổi.
+        from app.core.system_memory import read_memory_tier_mb
+        total_ram_mb = read_memory_tier_mb(_total_ram_mb())
     if cpu_count is None:
         cpu_count = os.cpu_count() or 2
     cpu_count = max(1, int(cpu_count))
@@ -8604,7 +8787,11 @@ def _cap_sticker_workers(
     per_worker = _estimate_worker_ram_mb(
         page_w_pt, page_h_pt, dpi, light_path=light_path,
     )
-    is_weak = total is not None and total < 16 * 1024
+    # PERF (audit 2026-09-28 §PERF28.03): đồng bộ gate thứ hai với profile,
+    # nhưng ngân sách bên dưới vẫn lấy RAM khả dụng thật.
+    from app.core.system_memory import read_memory_tier_mb
+    tier_mb = read_memory_tier_mb(total)
+    is_weak = tier_mb is not None and tier_mb < 16 * 1024
     if is_weak and avail is not None and per_worker > 0:
         # Giữ ~35% RAM cho OS + app UI + backend cha; không dùng hết free RAM.
         budget = max(0.0, avail * 0.65)
@@ -8818,6 +9005,8 @@ class StickerEngine:
         min_detail_area_mm2: float = _MIN_CONTOUR_AREA_MM2,
         alpha_path_overrides: dict[int, dict] | None = None,
         approved_contour_overrides: dict[int, dict] | None = None,
+        _cutline_only: bool = False,
+        _cached_page_dielines: dict | None = None,
     ) -> tuple:
         # _page_subset: khi != None, CHỈ xử lý các trang có index trong list (theo
         # đúng thứ tự truyền vào) và lưu output ra output_path. Dùng cho worker song
@@ -8972,44 +9161,49 @@ class StickerEngine:
             # COLOR (audit 2026-08-24 §BCOLOR.02): nguồn CMYK/DeviceN không ICC
             # không có đủ provenance để dựng lại plate màu. Với bù xén raster,
             # dùng render PDFium RGB chung cho artwork và bleed để tránh mixed-space seam.
-            source_color_provenance = describe_pdf_color_provenance(doc_in_pike)
-            unprofiled_process_color_fallback = (
-                source_color_provenance.get("profile_state")
-                in {"untagged-device-cmyk", "malformed"}
-                and bool(
-                    source_color_provenance.get("has_device_cmyk")
-                    or source_color_provenance.get("has_devicen")
+            if not (_cutline_only and _cached_page_dielines):
+                source_color_provenance = describe_pdf_color_provenance(doc_in_pike)
+                unprofiled_process_color_fallback = (
+                    source_color_provenance.get("profile_state")
+                    in {"untagged-device-cmyk", "malformed"}
+                    and bool(
+                        source_color_provenance.get("has_device_cmyk")
+                        or source_color_provenance.get("has_devicen")
+                    )
+                    and not bool(source_color_provenance.get("has_embedded_cmyk_profile"))
                 )
-                and not bool(source_color_provenance.get("has_embedded_cmyk_profile"))
-            )
-            if unprofiled_process_color_fallback:
-                logger.warning(
-                    "[STICKER] %s: nguồn CMYK/DeviceN thiếu ICC; giữ bleed RGB "
-                    "theo render PDFium để tránh seam màu",
-                    (
-                        COLOR_DEVICEN_FALLBACK_WARNING
-                        if source_color_provenance.get("has_devicen")
-                        else COLOR_DEVICE_CMYK_FALLBACK_WARNING
-                    ),
-                )
-            color_warning_codes = [
-                str(item)
-                for item in source_color_provenance.get("warnings", [])
-                if item
-            ]
-            if (
-                unprofiled_process_color_fallback
-                and source_color_provenance.get("has_device_cmyk")
-                and not source_color_provenance.get("has_devicen")
-                and COLOR_DEVICE_CMYK_FALLBACK_WARNING not in color_warning_codes
-            ):
-                color_warning_codes.append(COLOR_DEVICE_CMYK_FALLBACK_WARNING)
-            if (
-                source_color_provenance.get("has_devicen")
-                and unprofiled_process_color_fallback
-                and COLOR_DEVICEN_FALLBACK_WARNING not in color_warning_codes
-            ):
-                color_warning_codes.append(COLOR_DEVICEN_FALLBACK_WARNING)
+                if unprofiled_process_color_fallback:
+                    logger.warning(
+                        "[STICKER] %s: nguồn CMYK/DeviceN thiếu ICC; giữ bleed RGB "
+                        "theo render PDFium để tránh seam màu",
+                        (
+                            COLOR_DEVICEN_FALLBACK_WARNING
+                            if source_color_provenance.get("has_devicen")
+                            else COLOR_DEVICE_CMYK_FALLBACK_WARNING
+                        ),
+                    )
+                color_warning_codes = [
+                    str(item)
+                    for item in source_color_provenance.get("warnings", [])
+                    if item
+                ]
+                if (
+                    unprofiled_process_color_fallback
+                    and source_color_provenance.get("has_device_cmyk")
+                    and not source_color_provenance.get("has_devicen")
+                    and COLOR_DEVICE_CMYK_FALLBACK_WARNING not in color_warning_codes
+                ):
+                    color_warning_codes.append(COLOR_DEVICE_CMYK_FALLBACK_WARNING)
+                if (
+                    source_color_provenance.get("has_devicen")
+                    and unprofiled_process_color_fallback
+                    and COLOR_DEVICEN_FALLBACK_WARNING not in color_warning_codes
+                ):
+                    color_warning_codes.append(COLOR_DEVICEN_FALLBACK_WARNING)
+            else:
+                source_color_provenance = {}
+                unprofiled_process_color_fallback = False
+                color_warning_codes = []
             invalid_pages = sorted(page for page in selection_targets if page >= pdfium_page_count)
             if invalid_pages:
                 raise ValueError(
@@ -9033,7 +9227,7 @@ class StickerEngine:
                     else list(range(len(doc_in_pike.pages)))
                 )
             )
-            if alpha_corner_policy == "adaptive":
+            if alpha_corner_policy == "adaptive" and not (_cutline_only and _cached_page_dielines):
                 # QUALITY (audit 2026-08-05 §EXISTING.CUT1): file đã có spot
                 # CutContour phải giữ đúng hành vi legacy; nâng cấp này chỉ làm
                 # mượt contour raster mới sinh, không tái diễn giải khuôn vector.
@@ -9249,6 +9443,7 @@ class StickerEngine:
                 alpha_edge_background_rgb = None
                 alpha_edge_background_tolerance = 0
                 _cut_page_ok = (not cut_first_page_only) or (page_idx == 0)
+                _recorded_base_dieline_entry = None
 
                 # PERF (2026-09-20 §CUT-FIRST-PAGE-FAST): Khi cut_first_page_only=True và bleed_mm <= 0,
                 # trang 2..N không có đường cắt và không bù xén. Nối thẳng page_in_pike vào doc_out,
@@ -9280,13 +9475,15 @@ class StickerEngine:
                         pass
                     continue
 
-                debug_step = f"Rasterize Page {page_idx}"
-                _t0_pdfium = time.perf_counter()
-                with pdfium_guard():
-                    if page_in is not None:
-                        page_in.close()
-                    page_in = doc_in_pdfium[page_idx]
-                t_open_pdfium = time.perf_counter() - _t0_pdfium
+                t_open_pdfium = 0.0
+                if not (_cached_page_dielines and page_idx in _cached_page_dielines):
+                    debug_step = f"Rasterize Page {page_idx}"
+                    _t0_pdfium = time.perf_counter()
+                    with pdfium_guard():
+                        if page_in is not None:
+                            page_in.close()
+                        page_in = doc_in_pdfium[page_idx]
+                    t_open_pdfium = time.perf_counter() - _t0_pdfium
                 _t0_pike = time.perf_counter()
                 page_in_pike = doc_in_pike.pages[page_idx]
                 t_open_pike = time.perf_counter() - _t0_pike
@@ -9331,6 +9528,414 @@ class StickerEngine:
                         "selection_skipped": True,
                         "page": page_idx + 1,
                     })
+                    continue
+
+                if _cached_page_dielines and page_idx in _cached_page_dielines:
+                    _t0_fast = time.perf_counter()
+                    cached_entry = _cached_page_dielines[page_idx]
+                    base_dieline = cached_entry["base_dieline"]
+                    recon_meta = cached_entry["recon_meta"]
+                    cut_draw_style = cached_entry.get("cut_draw_style", corner_style)
+                    source_pixel_mm_page = cached_entry.get("source_pixel_mm_page")
+                    px_per_mm = cached_entry.get("px_per_mm", self.dpi / 25.4)
+                    color_render_strategy = cached_entry.get("color_render_strategy", "vector-original")
+                    alpha_source_contour = cached_entry.get("alpha_source_contour", False)
+                    alpha_source_pixel_mm = cached_entry.get("alpha_source_pixel_mm")
+                    alpha_fallback_used = cached_entry.get("alpha_fallback_used", False)
+
+                    crop_x0 = float(page_in_pike.cropbox[0])
+                    crop_y0 = float(page_in_pike.cropbox[1])
+                    page_in_width = float(page_in_pike.cropbox[2]) - crop_x0
+                    page_in_height = float(page_in_pike.cropbox[3]) - crop_y0
+
+                    total_offset, bleed_outer_offset = compute_cut_bleed_offsets(
+                        cut_mode, bleed_pts, offset_pts
+                    )
+                    if selection_page_mode:
+                        max_expansion_pts = 0.0
+                    elif rectangle_mode or cut_mode == "none":
+                        max_expansion_pts = max(0.0, bleed_pts)
+                    else:
+                        max_expansion_pts = max(0.0, total_offset, bleed_outer_offset)
+
+                    if rectangle_mode:
+                        exp_left = max_expansion_pts if bleed_side_l else 0.0
+                        exp_right = max_expansion_pts if bleed_side_r else 0.0
+                        exp_bottom = max_expansion_pts if bleed_side_b else 0.0
+                        exp_top = max_expansion_pts if bleed_side_t else 0.0
+                    else:
+                        exp_left = exp_right = exp_bottom = exp_top = max_expansion_pts
+
+                    new_width = page_in_width + exp_left + exp_right
+                    new_height = page_in_height + exp_bottom + exp_top
+                    page_out = doc_out.add_blank_page(page_size=(new_width, new_height))
+
+                    if (alpha_source_contour or approved_contour_page) and preserve_contour:
+                        join_style = 1
+                    elif recon_meta.get("reconstructed") and recon_meta.get("kind") in ("circle", "ellipse", "rounded_rect"):
+                        join_style = 1
+                    elif recon_meta.get("reconstructed") and recon_meta.get("kind") in ("rect", "triangle"):
+                        join_style = 2
+                    else:
+                        join_style = 1 if corner_style == "round" else 2
+
+                    _t0_buf = time.perf_counter()
+                    if total_offset != 0:
+                        dieline_poly = base_dieline.buffer(total_offset, join_style=join_style)
+                        if total_offset < 0:
+                            dieline_poly = dieline_poly.buffer(0.01, join_style=join_style)
+                    else:
+                        dieline_poly = base_dieline
+
+                    if bleed_outer_offset != 0:
+                        bleed_outer_poly = base_dieline.buffer(bleed_outer_offset, join_style=join_style)
+                    else:
+                        bleed_outer_poly = base_dieline
+
+                    if fill_holes:
+                        if dieline_poly.geom_type == 'MultiPolygon':
+                            dieline_poly = MultiPolygon([Polygon(p.exterior) for p in dieline_poly.geoms])
+                        elif dieline_poly.geom_type == 'Polygon':
+                            dieline_poly = Polygon(dieline_poly.exterior)
+                        if bleed_outer_poly.geom_type == 'MultiPolygon':
+                            bleed_outer_poly = MultiPolygon([Polygon(p.exterior) for p in bleed_outer_poly.geoms])
+                        elif bleed_outer_poly.geom_type == 'Polygon':
+                            bleed_outer_poly = Polygon(bleed_outer_poly.exterior)
+                    _buf_ms = (time.perf_counter() - _t0_buf) * 1000.0
+
+                    _t0_fit = time.perf_counter()
+                    direct_analytic_fillet = None
+                    if (
+                        not alpha_source_contour
+                        and not approved_contour_page
+                        and cut_mode != "none"
+                        and corner_style == "round"
+                    ):
+                        direct_source_pixel_mm = source_pixel_mm_page
+                        if (
+                            direct_source_pixel_mm is None
+                            or not math.isfinite(float(direct_source_pixel_mm))
+                            or float(direct_source_pixel_mm) <= 0.0
+                        ):
+                            direct_source_pixel_mm = 1.0 / max(px_per_mm, 1e-9)
+                        direct_analytic_fillet = _fit_standard_polygon_fillet(
+                            base_dieline,
+                            total_offset_pts=total_offset,
+                            source_pixel_mm=float(direct_source_pixel_mm),
+                            curve_tension=curve_tension,
+                        )
+                        if direct_analytic_fillet is not None:
+                            (
+                                direct_fitted_geometry,
+                                direct_fitted_paths,
+                                _direct_fit_tolerance_mm,
+                            ) = direct_analytic_fillet
+                            direct_quality = _alpha_final_cutline_quality(
+                                direct_fitted_paths,
+                                reference_geometry=dieline_poly,
+                                fitted_geometry=direct_fitted_geometry,
+                                alpha_geometry=base_dieline,
+                                total_offset_pts=total_offset,
+                                mm_to_pts=mm_to_pts,
+                                source_pixel_mm=float(direct_source_pixel_mm),
+                                fit_mode="analytic-fillet",
+                            )
+                            if not bool(direct_quality.get("machine_safe")):
+                                raise UnsafeCutlineGeometryError(
+                                    "Đường bo góc hình chuẩn chưa an toàn "
+                                    f"({int(direct_quality.get('short_segment_count', 0))} "
+                                    "đoạn thẳng ngắn, "
+                                    f"{int(direct_quality.get('disconnected_join_count', 0))} "
+                                    "khớp hở, "
+                                    f"{int(direct_quality.get('unprotected_join_count', 0))} "
+                                    "khớp gãy).",
+                                    quality=direct_quality,
+                                )
+
+                    override_result = (
+                        approved_override_result
+                        if approved_contour_page
+                        else _alpha_override_geometry(alpha_path_overrides.get(page_idx))
+                    )
+                    cut_fitted_paths = None
+                    cut_draw_tension = 0.33
+                    if (approved_contour_page or alpha_source_contour) and override_result is not None:
+                        cut_poly, cut_fitted_paths = override_result
+                        dieline_poly = cut_poly
+                    elif not _cut_page_ok:
+                        cut_poly = dieline_poly
+                    elif (alpha_source_contour or approved_contour_page) and preserve_contour:
+                        fitted_alpha = _fit_alpha_bezier_paths(
+                            base_dieline,
+                            dieline_poly,
+                            total_offset_pts=total_offset,
+                            mm_to_pts=mm_to_pts,
+                            corner_policy=alpha_corner_policy,
+                            source_pixel_mm=alpha_source_pixel_mm,
+                            allow_high_resolution_fairing=(
+                                bool(alpha_source_mode) and not alpha_contour_mode
+                            ),
+                            cutline_smoothness=cutline_smoothness,
+                            cutline_fidelity=cutline_fidelity,
+                            curve_tension=curve_tension,
+                        )
+                        if fitted_alpha is not None:
+                            cut_poly, cut_fitted_paths, _fit_tolerance_mm = fitted_alpha
+                        else:
+                            cut_poly, alpha_anchor_deviation_pts = _smooth_alpha_cut_contour(
+                                base_dieline,
+                                dieline_poly,
+                                total_offset_pts=total_offset,
+                                mm_to_pts=mm_to_pts,
+                            )
+                            alpha_bezier_tension = _safe_alpha_bezier_tension(
+                                base_dieline,
+                                dieline_poly,
+                                cut_poly,
+                                total_offset_pts=total_offset,
+                                mm_to_pts=mm_to_pts,
+                                anchor_deviation_pts=alpha_anchor_deviation_pts,
+                            )
+                            if alpha_bezier_tension is not None:
+                                cut_draw_style = "alpha_smooth"
+                                cut_draw_tension = alpha_bezier_tension
+                    elif direct_analytic_fillet is not None:
+                        (
+                            cut_poly,
+                            cut_fitted_paths,
+                            _fit_tolerance_mm,
+                        ) = direct_analytic_fillet
+                        dieline_poly = cut_poly
+                    elif recon_meta.get("reconstructed") and recon_meta.get("fully_reconstructed", True):
+                        cut_poly = dieline_poly.simplify(0.05, preserve_topology=True)
+                    elif preserve_contour and alpha_corner_policy == "adaptive":
+                        fitted_contour = _fit_preserved_contour_paths(
+                            dieline_poly,
+                            mm_to_pts=mm_to_pts,
+                            source_pixel_mm=alpha_source_pixel_mm,
+                        )
+                        if fitted_contour is not None:
+                            cut_poly, cut_fitted_paths, _fit_tolerance_mm = fitted_contour
+                        else:
+                            cut_poly, _fit_tolerance_mm = _preserved_contour_fallback_geometry(
+                                dieline_poly,
+                                mm_to_pts=mm_to_pts,
+                                source_pixel_mm=alpha_source_pixel_mm,
+                            )
+                    elif preserve_contour:
+                        preserve_simplify_pts = 0.20 * mm_to_pts
+                        cut_poly = dieline_poly.simplify(preserve_simplify_pts, preserve_topology=True)
+                        cut_poly = _round_preserved_corners(
+                            cut_poly,
+                            radius_pts=_PRESERVE_CORNER_RADIUS_MM * mm_to_pts,
+                            quad_segs=_PRESERVE_CORNER_QUAD_SEGS,
+                        )
+                    else:
+                        rounded_fit = (
+                            _fit_round_contour_paths(dieline_poly, mm_to_pts=mm_to_pts)
+                            if corner_style == "round"
+                            else None
+                        )
+                        if rounded_fit is not None:
+                            cut_poly, cut_fitted_paths, _fit_tolerance_mm = rounded_fit
+                        else:
+                            _cut_simplify = 0.05 if recon_meta.get("reconstructed") else 1.0
+                            if isinstance(dieline_poly, MultiPolygon):
+                                _cut_parts = []
+                                for p in dieline_poly.geoms:
+                                    _s = p.simplify(_cut_simplify, preserve_topology=False)
+                                    if _s.is_empty:
+                                        continue
+                                    if isinstance(_s, MultiPolygon):
+                                        _cut_parts.extend(g for g in _s.geoms if not g.is_empty)
+                                    else:
+                                        _cut_parts.append(_s)
+                                cut_poly = MultiPolygon(_cut_parts) if _cut_parts else dieline_poly
+                            else:
+                                cut_poly = dieline_poly.simplify(_cut_simplify, preserve_topology=False)
+
+                    polyline_reduction = None
+                    if (
+                        cut_fitted_paths is None
+                        and cut_draw_style == "preserve"
+                        and alpha_corner_policy == "adaptive"
+                        and shape_mode in {"auto_safe", "contour"}
+                        and cut_mode in {"original", "bleed"}
+                        and not approved_contour_page
+                        and not alpha_source_contour
+                        and not rectangle_mode
+                        and not selection_page_mode
+                        and source_pixel_mm_page is not None
+                        and not page_in_pike.get("/Annots")
+                        and not _page_defines_cut_contour(page_in_pike)
+                        and cut_poly is not None
+                        and not cut_poly.is_empty
+                    ):
+                        from app.workers.cutline_polyline_reduction import (
+                            reduce_cut_polyline, reduction_path_stream,
+                        )
+                        polyline_reduction = reduce_cut_polyline(
+                            cut_poly, mm_to_units=_PT_PER_MM,
+                            tolerance_mm=0.02, page_height=page_in_height,
+                        )
+                    _fit_ms = (time.perf_counter() - _t0_fit) * 1000.0
+                    cutline_simplification_stat = None
+                    _t0_simp = time.perf_counter()
+                    if direct_analytic_fillet is not None:
+                        # PERF (audit 2026-09-29 §FILLET.SIMP): Đường bo góc hình chuẩn đã là dạng
+                        # giải tích tối giản toán học (mỗi cạnh thẳng = 1 đoạn, mỗi góc bo = 1 cung
+                        # Bézier G1 tiếp tuyến). Bỏ qua giải lặp Newton-Raphson vì không thể nén tiếp.
+                        _total_direct_segs = sum(len(p) for p in cut_fitted_paths) if cut_fitted_paths else 0
+                        cutline_simplification_stat = {
+                            "before_segments": _total_direct_segs,
+                            "after_segments": _total_direct_segs,
+                            "maximum_error_bound_mm": 0.0,
+                            "changed": False,
+                        }
+                    elif (
+                        page_simplify_mm > 0
+                        and not approved_contour_page
+                        and not (isinstance(alpha_path_payload, dict) and alpha_path_payload.get("path_groups"))
+                        and not rectangle_mode and not selection_page_mode
+                        and shape_mode in {"auto_safe", "contour"}
+                        and not _page_defines_cut_contour(page_in_pike)
+                    ):
+                        from app.workers.cutline_cubic_simplify import simplify_cubic_path_groups
+                        baseline_paths = cut_fitted_paths
+                        writer_round_baseline = False
+                        if polyline_reduction is not None:
+                            baseline_paths = [[(s.p0, s.p1, s.p2, s.p3) for s in path]
+                                              for path in polyline_reduction.paths]
+                        if baseline_paths is None and cut_draw_style in {"preserve", "miter"}:
+                            baseline_paths = _paths_for_alpha_geometry(cut_poly)
+                        elif baseline_paths is None and cut_draw_style in {"round", "alpha_smooth"}:
+                            writer_round_baseline = True
+                            from app.workers.cutline_geometry import _catmull_rom_bezier_segments
+                            baseline_paths = [
+                                _catmull_rom_bezier_segments(
+                                    [segment[0] for segment in path] + [path[-1][3]],
+                                    tension=cut_draw_tension,
+                                ) for path in _paths_for_alpha_geometry(cut_poly) if path
+                            ]
+                        if baseline_paths:
+                            groups = _group_alpha_paths_like(cut_poly, baseline_paths)
+                            if groups:
+                                simplified, additional_simplification = simplify_cubic_path_groups(
+                                    groups, tolerance_mm=page_simplify_mm,
+                                    page_height=page_in_height,
+                                    prefer_conservative=writer_round_baseline,
+                                    preview_fast=True,
+                                )
+                                if additional_simplification["changed"]:
+                                    cut_fitted_paths = [ring for group in simplified
+                                                        for ring in [group["exterior"], *group.get("interiors", [])]]
+                                    polyline_reduction = None
+                                cutline_simplification_stat = additional_simplification
+                    _simp_ms = (time.perf_counter() - _t0_simp) * 1000.0
+
+                    _t0_stream = time.perf_counter()
+                    page_content_stream = []
+                    if _cut_page_ok and draw_cut_contour and cut_mode != "none" and cut_poly is not None and not cut_poly.is_empty:
+                        page_content_stream.append("q")
+                        cut_origin_x = exp_left
+                        cut_origin_y = exp_bottom
+                        page_content_stream.append(f"1 0 0 1 {cut_origin_x:.4f} {cut_origin_y:.4f} cm")
+                        page_content_stream.append("/CutContour CS")
+                        page_content_stream.append("1.0 SCN")
+                        page_content_stream.append("1.0 w")
+
+                        if polyline_reduction is not None:
+                            for path in polyline_reduction.paths:
+                                page_content_stream.extend(reduction_path_stream(path, page_in_height))
+                        elif cut_fitted_paths is not None:
+                            for segments in cut_fitted_paths:
+                                page_content_stream.extend(
+                                    build_bezier_segments_path_stream(segments, page_in_height)
+                                )
+                        else:
+                            if isinstance(cut_poly, MultiPolygon):
+                                raw_geoms = list(cut_poly.geoms)
+                            elif hasattr(cut_poly, 'geoms'):
+                                raw_geoms = list(cut_poly.geoms)
+                            else:
+                                raw_geoms = [cut_poly]
+                            geoms = [g for g in raw_geoms if g.geom_type == 'Polygon' and not g.is_empty]
+                            for p in geoms:
+                                coords = list(p.exterior.coords)
+                                if coords:
+                                    page_content_stream.extend(
+                                        build_contour_path_stream(coords, page_in_height, cut_draw_style, tension=cut_draw_tension)
+                                    )
+                                for inter in p.interiors:
+                                    icoords = list(inter.coords)
+                                    if icoords:
+                                        page_content_stream.extend(
+                                            build_contour_path_stream(icoords, page_in_height, cut_draw_style, tension=cut_draw_tension)
+                                        )
+                        page_content_stream.append("S")
+                        page_content_stream.append("Q")
+
+                    full_content = "\n".join(page_content_stream).encode("ascii")
+                    page_out.contents_add(pikepdf.Stream(doc_out, full_content))
+
+                    if _cut_page_ok and draw_cut_contour and cut_mode != "none":
+                        if "/Resources" not in page_out:
+                            page_out.Resources = pikepdf.Dictionary()
+                        if "/ColorSpace" not in page_out.Resources:
+                            page_out.Resources.ColorSpace = pikepdf.Dictionary()
+                        page_out.Resources.ColorSpace.CutContour = cs_arr
+
+                    page_meta = {
+                        "recon": recon_meta,
+                        "color_render_strategy": color_render_strategy,
+                        "_base_dieline_entry": cached_entry,
+                    }
+                    if cutline_simplification_stat is not None:
+                        page_meta["cutline_simplification"] = cutline_simplification_stat
+                    if dieline_poly is not None and not getattr(dieline_poly, 'is_empty', True):
+                        any_dieline_found = True
+                        minx, miny, maxx, maxy = dieline_poly.bounds
+                        pdf_miny = page_in_height - maxy
+                        pdf_maxy = page_in_height - miny
+                        minx += exp_left
+                        pdf_miny += exp_bottom
+                        maxx += exp_left
+                        pdf_maxy += exp_bottom
+                        box_arr = pikepdf.Array([minx, pdf_miny, maxx, pdf_maxy])
+                        page_out.TrimBox = box_arr
+                        page_out.ArtBox = box_arr
+
+                    all_pages_meta.append(page_meta)
+                    _tot_fast_ms = (time.perf_counter() - _t0_fast) * 1000.0
+                    try:
+                        from app.utils.cutline_debug_log import log_cutline
+                        log_cutline(
+                            "FAST_PATH",
+                            "PAGE_TIMING",
+                            f"page={page_idx + 1} w={page_in_width:.1f} h={page_in_height:.1f}",
+                            total_ms=round(_tot_fast_ms, 2),
+                            buf_ms=round(_buf_ms, 2),
+                            fit_ms=round(_fit_ms, 2),
+                            simp_ms=round(_simp_ms, 2),
+                            stream_ms=round(_stream_ms, 2),
+                            simplify_mm=page_simplify_mm,
+                        )
+                        if _tot_fast_ms > 1000.0:
+                            log_cutline(
+                                "BOTTLENECK",
+                                "FAST_PATH_SLOW",
+                                f"[ĐIỂM NGHẼN] Fast-path page={page_idx+1} mất {_tot_fast_ms:.1f}ms (> 1s)",
+                                total_ms=round(_tot_fast_ms, 2),
+                                simp_ms=round(_simp_ms, 2),
+                                fit_ms=round(_fit_ms, 2),
+                                buf_ms=round(_buf_ms, 2),
+                            )
+                    except Exception:
+                        pass
+                    logger.info(
+                        "[STICKER] [FAST_PATH] Hoàn thành trang %d/%d trong %.4fs",
+                        page_idx + 1, _n_pages, time.perf_counter() - _t0_fast,
+                    )
                     continue
 
                 # ── Chặn OOM: giới hạn độ phân giải raster theo kích thước trang ──
@@ -9887,6 +10492,17 @@ class StickerEngine:
                         ])
                     else:
                         bleed_outer_poly = rect_poly
+                    _recorded_base_dieline_entry = {
+                        "base_dieline": rect_poly,
+                        "recon_meta": recon_meta,
+                        "cut_draw_style": cut_draw_style,
+                        "source_pixel_mm_page": source_pixel_mm_page,
+                        "px_per_mm": px_per_mm,
+                        "color_render_strategy": color_render_strategy,
+                        "alpha_source_contour": alpha_source_contour,
+                        "alpha_source_pixel_mm": alpha_source_pixel_mm,
+                        "alpha_fallback_used": alpha_fallback_used,
+                    }
                     if self.debug:
                         logger.debug(
                             ">>> RECTANGLE MODE: page %.1fx%.1f pt, bleed_pts=%.2f, sides=%s",
@@ -9929,6 +10545,16 @@ class StickerEngine:
                                 # §BG.6: bỏ contour vụn do nhiễu nén, trước khi
                                 # simplify (simplify không đổi thứ hạng diện tích).
                                 if poly.area < min_area_pt2:
+                                    dropped_specks += 1
+                                    speck_polys.append(poly)
+                                    continue
+                                min_x, min_y, max_x, max_y = poly.bounds
+                                w = max_x - min_x
+                                h = max_y - min_y
+                                bbox_area = w * h
+                                fill_ratio = poly.area / bbox_area if bbox_area > 0 else 1.0
+                                thickness = 2.0 * poly.area / max(float(poly.length), 1e-9)
+                                if thickness < 0.30 * _PT_PER_MM and fill_ratio < 0.03:
                                     dropped_specks += 1
                                     speck_polys.append(poly)
                                     continue
@@ -10079,7 +10705,7 @@ class StickerEngine:
                                             dropped_recognized_halo,
                                             dominant_kind,
                                         )
-                                if recon_meta.get("kind") in ("rect", "triangle"):
+                                if corner_style != "round" and recon_meta.get("kind") in ("rect", "triangle"):
                                     cut_draw_style = "miter"
                                 elif recon_meta.get("kind") in (
                                     "circle", "ellipse", "rounded_rect"
@@ -10096,6 +10722,17 @@ class StickerEngine:
                                 "error": type(_recon_err).__name__,
                             }
                         geom_union_recon_seconds = time.perf_counter() - _t0_geom
+                        _recorded_base_dieline_entry = {
+                            "base_dieline": base_dieline,
+                            "recon_meta": recon_meta,
+                            "cut_draw_style": cut_draw_style,
+                            "source_pixel_mm_page": source_pixel_mm_page,
+                            "px_per_mm": px_per_mm,
+                            "color_render_strategy": color_render_strategy,
+                            "alpha_source_contour": alpha_source_contour,
+                            "alpha_source_pixel_mm": alpha_source_pixel_mm,
+                            "alpha_fallback_used": alpha_fallback_used,
+                        }
                         _t0_fit = time.perf_counter()
 
                         # Vị trí đường cắt + mép ngoài bù xén — xem compute_cut_bleed_offsets.
@@ -10394,7 +11031,7 @@ class StickerEngine:
                     removes_background=(white_bg_mask_built or color_bg_detected is not None
                                         or alpha_fallback_used or page_box_mask_built),
                 )
-                if bleed_mm > 0.0 and not use_vector_rectangle_bleed:
+                if not _cutline_only and bleed_mm > 0.0 and not use_vector_rectangle_bleed:
                     debug_step = f"Generate Bleed Page {page_idx}"
                     bleed_px = math.ceil(bleed_mm * px_per_mm)
                     if bleed_px > 0:
@@ -11183,7 +11820,7 @@ class StickerEngine:
                 # One source Form XObject is reused by the vector bleed strips and
                 # by the original artwork layer. Its resources retain CMYK/ICC/spot.
                 src_xobj_name = None
-                if not selection_page_mode and flattened_img_name is None:
+                if not _cutline_only and not selection_page_mode and flattened_img_name is None:
                     _t0_xobj = time.perf_counter()
                     src_xobj = page_in_pike.as_form_xobject()
                     src_xobj_name = page_out.add_resource(src_xobj, pikepdf.Name.XObject)
@@ -11202,7 +11839,7 @@ class StickerEngine:
                 vector_bite_right = 0.0
                 vector_bite_bottom = 0.0
                 vector_bite_top = 0.0
-                if use_vector_rectangle_bleed:
+                if not _cutline_only and use_vector_rectangle_bleed:
                     (
                         vector_ops,
                         vector_bite_left,
@@ -11230,7 +11867,7 @@ class StickerEngine:
                         page_content_stream.extend(vector_ops)
 
                 # LAYER 1 (BOTTOM): Bleed color with SMask
-                if bleed_stream_data and flattened_img_name is None:
+                if not _cutline_only and bleed_stream_data and flattened_img_name is None:
                     img_w_pt = float(img_w) / self.scale
                     img_h_pt = float(img_h) / self.scale
                     
@@ -11337,89 +11974,90 @@ class StickerEngine:
                 # đã chứng minh giữ nguyên Form/SMask, không clip lại bằng mask
                 # dao. Các mask chỉnh sửa/lẹm mép vẫn dùng đường clip cũ.
 
-                page_content_stream.append("q")
-                if use_vector_rectangle_bleed and (
-                    vector_bite_left > 0 or vector_bite_right > 0
-                    or vector_bite_bottom > 0 or vector_bite_top > 0
-                ):
-                    clip_x = exp_left + vector_bite_left
-                    clip_y = exp_bottom + vector_bite_bottom
-                    clip_w = max(0.01, page_in_width - vector_bite_left - vector_bite_right)
-                    clip_h = max(0.01, page_in_height - vector_bite_bottom - vector_bite_top)
-                    page_content_stream.append(
-                        f"{clip_x:.4f} {clip_y:.4f} {clip_w:.4f} {clip_h:.4f} re W n"
-                    )
-                elif rectangle_mode and bleed_stream_data:
-                    # [BLEED-SIDES FIX 2026-08-01 §CBS.1] Rectangle đã có biên
-                    # vật lý chính xác, không trace mask full-page qua OpenCV. Contour
-                    # pixel kết thúc ở H-1 nên phép đổi cũ hụt 1 pixel nguồn tại đáy;
-                    # bật bleed dưới che khe, còn chọn cạnh riêng lẻ thì lộ giấy trắng.
-                    # Dùng lượng lẹm đã lượng tử theo raster để clip vẫn khớp SMask.
-                    raster_bite_pts = max(0.0, edge_bite_px / self.scale)
-                    clip_bite_left = raster_bite_pts if bleed_side_l else 0.0
-                    clip_bite_right = raster_bite_pts if bleed_side_r else 0.0
-                    clip_bite_bottom = raster_bite_pts if bleed_side_b else 0.0
-                    clip_bite_top = raster_bite_pts if bleed_side_t else 0.0
-                    clip_x = exp_left + clip_bite_left
-                    clip_y = exp_bottom + clip_bite_bottom
-                    clip_w = max(
-                        0.01, page_in_width - clip_bite_left - clip_bite_right
-                    )
-                    clip_h = max(
-                        0.01, page_in_height - clip_bite_bottom - clip_bite_top
-                    )
-                    page_content_stream.append(
-                        f"{clip_x:.4f} {clip_y:.4f} {clip_w:.4f} {clip_h:.4f} re W n"
-                    )
-                elif (bleed_stream_data and sticker_footprint is not None
-                      and not preserve_native_artwork_alpha):
-                    # Trace footprint (đã đóng kín, hole-filled) thành đường clip vector.
-                    # footprint là raster trong KHÔNG GIAN ẢNH ĐỆM (padded); ánh xạ về
-                    # toạ độ trang giống vị trí đặt ảnh bleed: (shift_x + px/scale,
-                    # shift_y + (h - py)/scale). Nhờ vậy biên clip khớp tuyệt đối bleed_ring.
-                    fp_h_px = sticker_footprint.shape[0]
-                    fp_contours, _ = cv2.findContours(sticker_footprint, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                    inv_scale = 1.0 / self.scale
-                    clip_ops = []
-                    for cnt in fp_contours:
-                        pts = cnt.reshape(-1, 2)
-                        if len(pts) < 3:
-                            continue
-                        x0 = shift_x + pts[0][0] * inv_scale
-                        y0 = shift_y + (fp_h_px - pts[0][1]) * inv_scale
-                        clip_ops.append(f"{x0:.3f} {y0:.3f} m")
-                        for px, py in pts[1:]:
-                            x = shift_x + px * inv_scale
-                            y = shift_y + (fp_h_px - py) * inv_scale
-                            clip_ops.append(f"{x:.3f} {y:.3f} l")
-                        clip_ops.append("h")
-                    if clip_ops:
-                        page_content_stream.extend(clip_ops)
-                        page_content_stream.append("W n")
-                # Form XObject giữ toạ độ gốc của trang (BBox = CropBox, bắt đầu ở
-                # crop_x0/crop_y0), trong khi bleed + contour ở "local crop space"
-                # (gốc 0,0). Phải dịch thêm -crop_x0/-crop_y0 để artwork khớp bleed;
-                # nếu không artwork lệch đúng bằng gốc CropBox và bị footprint clip cắt.
-                art_shift_x = exp_left - crop_x0
-                art_shift_y = exp_bottom - crop_y0
-                page_content_stream.append(f"1 0 0 1 {art_shift_x:.4f} {art_shift_y:.4f} cm")
-                page_content_stream.append(f"{str(src_xobj_name)} Do")
-                page_content_stream.append("Q")
-                if selection_page_mode:
-                    # The original sheet is already present because the source page
-                    # was copied intact. Drop the legacy re-draw layer to avoid
-                    # changing transparency/overprint by painting it twice.
-                    del page_content_stream[artwork_ops_start:]
-                elif sampled_bleed_overlay_stream:
-                    # QUALITY (audit 2026-07-28 §BX.5): phủ choke màu lấy mẫu lên
-                    # dải mép rất hẹp sau artwork để che halo/AA trắng của nguồn.
-                    page_content_stream.extend(sampled_bleed_overlay_stream)
-                if vector_bleed_after_artwork and vector_ops:
-                    # Vẽ sau Form gốc; overlap nhỏ đã khóa kín hairline nhưng không
-                    # đổi footprint, bleed_mm hay edge_bite của người dùng.
-                    page_content_stream.extend(vector_ops)
+                if not _cutline_only:
+                    page_content_stream.append("q")
+                    if use_vector_rectangle_bleed and (
+                        vector_bite_left > 0 or vector_bite_right > 0
+                        or vector_bite_bottom > 0 or vector_bite_top > 0
+                    ):
+                        clip_x = exp_left + vector_bite_left
+                        clip_y = exp_bottom + vector_bite_bottom
+                        clip_w = max(0.01, page_in_width - vector_bite_left - vector_bite_right)
+                        clip_h = max(0.01, page_in_height - vector_bite_bottom - vector_bite_top)
+                        page_content_stream.append(
+                            f"{clip_x:.4f} {clip_y:.4f} {clip_w:.4f} {clip_h:.4f} re W n"
+                        )
+                    elif rectangle_mode and bleed_stream_data:
+                        # [BLEED-SIDES FIX 2026-08-01 §CBS.1] Rectangle đã có biên
+                        # vật lý chính xác, không trace mask full-page qua OpenCV. Contour
+                        # pixel kết thúc ở H-1 nên phép đổi cũ hụt 1 pixel nguồn tại đáy;
+                        # bật bleed dưới che khe, còn chọn cạnh riêng lẻ thì lộ giấy trắng.
+                        # Dùng lượng lẹm đã lượng tử theo raster để clip vẫn khớp SMask.
+                        raster_bite_pts = max(0.0, edge_bite_px / self.scale)
+                        clip_bite_left = raster_bite_pts if bleed_side_l else 0.0
+                        clip_bite_right = raster_bite_pts if bleed_side_r else 0.0
+                        clip_bite_bottom = raster_bite_pts if bleed_side_b else 0.0
+                        clip_bite_top = raster_bite_pts if bleed_side_t else 0.0
+                        clip_x = exp_left + clip_bite_left
+                        clip_y = exp_bottom + clip_bite_bottom
+                        clip_w = max(
+                            0.01, page_in_width - clip_bite_left - clip_bite_right
+                        )
+                        clip_h = max(
+                            0.01, page_in_height - clip_bite_bottom - clip_bite_top
+                        )
+                        page_content_stream.append(
+                            f"{clip_x:.4f} {clip_y:.4f} {clip_w:.4f} {clip_h:.4f} re W n"
+                        )
+                    elif (bleed_stream_data and sticker_footprint is not None
+                          and not preserve_native_artwork_alpha):
+                        # Trace footprint (đã đóng kín, hole-filled) thành đường clip vector.
+                        # footprint là raster trong KHÔNG GIAN ẢNH ĐỆM (padded); ánh xạ về
+                        # toạ độ trang giống vị trí đặt ảnh bleed: (shift_x + px/scale,
+                        # shift_y + (h - py)/scale). Nhờ vậy biên clip khớp tuyệt đối bleed_ring.
+                        fp_h_px = sticker_footprint.shape[0]
+                        fp_contours, _ = cv2.findContours(sticker_footprint, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                        inv_scale = 1.0 / self.scale
+                        clip_ops = []
+                        for cnt in fp_contours:
+                            pts = cnt.reshape(-1, 2)
+                            if len(pts) < 3:
+                                continue
+                            x0 = shift_x + pts[0][0] * inv_scale
+                            y0 = shift_y + (fp_h_px - pts[0][1]) * inv_scale
+                            clip_ops.append(f"{x0:.3f} {y0:.3f} m")
+                            for px, py in pts[1:]:
+                                x = shift_x + px * inv_scale
+                                y = shift_y + (fp_h_px - py) * inv_scale
+                                clip_ops.append(f"{x:.3f} {y:.3f} l")
+                            clip_ops.append("h")
+                        if clip_ops:
+                            page_content_stream.extend(clip_ops)
+                            page_content_stream.append("W n")
+                    # Form XObject giữ toạ độ gốc của trang (BBox = CropBox, bắt đầu ở
+                    # crop_x0/crop_y0), trong khi bleed + contour ở "local crop space"
+                    # (gốc 0,0). Phải dịch thêm -crop_x0/-crop_y0 để artwork khớp bleed;
+                    # nếu không artwork lệch đúng bằng gốc CropBox và bị footprint clip cắt.
+                    art_shift_x = exp_left - crop_x0
+                    art_shift_y = exp_bottom - crop_y0
+                    page_content_stream.append(f"1 0 0 1 {art_shift_x:.4f} {art_shift_y:.4f} cm")
+                    page_content_stream.append(f"{str(src_xobj_name)} Do")
+                    page_content_stream.append("Q")
+                    if selection_page_mode:
+                        # The original sheet is already present because the source page
+                        # was copied intact. Drop the legacy re-draw layer to avoid
+                        # changing transparency/overprint by painting it twice.
+                        del page_content_stream[artwork_ops_start:]
+                    elif sampled_bleed_overlay_stream:
+                        # QUALITY (audit 2026-07-28 §BX.5): phủ choke màu lấy mẫu lên
+                        # dải mép rất hẹp sau artwork để che halo/AA trắng của nguồn.
+                        page_content_stream.extend(sampled_bleed_overlay_stream)
+                    if vector_bleed_after_artwork and vector_ops:
+                        # Vẽ sau Form gốc; overlap nhỏ đã khóa kín hairline nhưng không
+                        # đổi footprint, bleed_mm hay edge_bite của người dùng.
+                        page_content_stream.extend(vector_ops)
 
-                if flattened_img_name is not None:
+                if not _cutline_only and flattened_img_name is not None:
                     # Bỏ toàn bộ Form CMYK/bleed SMask vừa dựng ở trên: ảnh flatten
                     # đã chứa đúng cả hai lớp trên cùng lưới RGB. Giữ stream CUT
                     # phía dưới chạy bình thường.
@@ -11471,7 +12109,18 @@ class StickerEngine:
                             cut_poly, mm_to_units=_PT_PER_MM,
                             tolerance_mm=0.02, page_height=page_in_height,
                         )
-                    if (
+                    if direct_analytic_fillet is not None:
+                        # PERF (audit 2026-09-29 §FILLET.SIMP): Đường bo góc hình chuẩn đã là dạng
+                        # giải tích tối giản toán học (mỗi cạnh thẳng = 1 đoạn, mỗi góc bo = 1 cung
+                        # Bézier G1 tiếp tuyến). Bỏ qua giải lặp Newton-Raphson vì không thể nén tiếp.
+                        _total_direct_segs = sum(len(p) for p in cut_fitted_paths) if cut_fitted_paths else 0
+                        additional_simplification = {
+                            "before_segments": _total_direct_segs,
+                            "after_segments": _total_direct_segs,
+                            "maximum_error_bound_mm": 0.0,
+                            "changed": False,
+                        }
+                    elif (
                         page_simplify_mm > 0
                         and not approved_contour_page
                         and not (isinstance(alpha_path_payload, dict) and alpha_path_payload.get("path_groups"))
@@ -11609,6 +12258,8 @@ class StickerEngine:
                     "recon": recon_meta,
                     "color_render_strategy": color_render_strategy,
                 }
+                if _recorded_base_dieline_entry is not None:
+                    page_meta["_base_dieline_entry"] = _recorded_base_dieline_entry
                 if dieline_poly is not None and not getattr(dieline_poly, 'is_empty', True):
                     any_dieline_found = True
                     minx, miny, maxx, maxy = dieline_poly.bounds
@@ -11694,8 +12345,10 @@ class StickerEngine:
                     shape_detect_seconds = time.perf_counter() - _t0_shp
                     
                     boxes = []
+                    sticker_boxes = []
                     _meta_poly = cut_poly if cut_poly is not None else dieline_poly
                     geoms = _meta_poly.geoms if isinstance(_meta_poly, MultiPolygon) else [_meta_poly]
+                    all_trims = []
                     for p in geoms:
                         p_minx, p_miny, p_maxx, p_maxy = p.bounds
                         p_w_pt = p_maxx - p_minx
@@ -11707,6 +12360,40 @@ class StickerEngine:
                             "h_pt": round(p_h_pt, 2),
                             "w_mm": round(p_w_pt * 25.4 / 72.0, 2),
                             "h_mm": round(p_h_pt * 25.4 / 72.0, 2)
+                        })
+                        t_x0 = p_minx + exp_left
+                        t_y0 = page_in_height - p_maxy + exp_bottom
+                        t_x1 = p_maxx + exp_left
+                        t_y1 = page_in_height - p_miny + exp_bottom
+                        all_trims.append((t_x0, t_y0, t_x1, t_y1))
+
+                    for idx, (t_x0, t_y0, t_x1, t_y1) in enumerate(all_trims):
+                        b_l = bleed_pts if (bleed_mm > 0 and (not rectangle_mode or bleed_side_l)) else 0.0
+                        b_r = bleed_pts if (bleed_mm > 0 and (not rectangle_mode or bleed_side_r)) else 0.0
+                        b_b = bleed_pts if (bleed_mm > 0 and (not rectangle_mode or bleed_side_b)) else 0.0
+                        b_t = bleed_pts if (bleed_mm > 0 and (not rectangle_mode or bleed_side_t)) else 0.0
+
+                        for jdx, (ot_x0, ot_y0, ot_x1, ot_y1) in enumerate(all_trims):
+                            if idx == jdx:
+                                continue
+                            if min(t_y1, ot_y1) > max(t_y0, ot_y0) - 2.0:
+                                if ot_x1 <= t_x0:
+                                    b_l = min(b_l, max(0.0, (t_x0 - ot_x1) / 2.0))
+                                elif ot_x0 >= t_x1:
+                                    b_r = min(b_r, max(0.0, (ot_x0 - t_x1) / 2.0))
+                            if min(t_x1, ot_x1) > max(t_x0, ot_x0) - 2.0:
+                                if ot_y1 <= t_y0:
+                                    b_b = min(b_b, max(0.0, (t_y0 - ot_y1) / 2.0))
+                                elif ot_y0 >= t_y1:
+                                    b_t = min(b_t, max(0.0, (ot_y0 - t_y1) / 2.0))
+
+                        c_x0 = max(0.0, t_x0 - b_l - crop_guard)
+                        c_y0 = max(0.0, t_y0 - b_b - crop_guard)
+                        c_x1 = min(new_width, t_x1 + b_r + crop_guard)
+                        c_y1 = min(new_height, t_y1 + b_t + crop_guard)
+                        sticker_boxes.append({
+                            "crop_box": [round(c_x0, 4), round(c_y0, 4), round(c_x1, 4), round(c_y1, 4)],
+                            "trim_box": [round(t_x0, 4), round(t_y0, 4), round(t_x1, 4), round(t_y1, 4)],
                         })
                     
                     # Hình học đường cắt đã reconstruct (auto_safe): kind + độ tin cậy.
@@ -11732,11 +12419,14 @@ class StickerEngine:
                         "width_mm": round(width_mm, 2),
                         "height_mm": round(height_mm, 2),
                         "boxes": boxes,
+                        "sticker_boxes": sticker_boxes,
                         "shape_type": shape_type_str,
                         "shape_params": shape_params_str,
                         "cut_kind": _rk,
                         "cut_confidence": round(_conf, 2) if _conf is not None else None,
                     }
+                    if _recorded_base_dieline_entry is not None:
+                        page_meta["_base_dieline_entry"] = _recorded_base_dieline_entry
                 elif cut_mode != "none":
                     # Yêu cầu tạo đường cắt nhưng không dò được hình trên trang này.
                     pages_no_dieline.append(page_idx + 1)
@@ -11838,30 +12528,51 @@ class StickerEngine:
                     time.perf_counter() - page_started,
                 )
                 try:
-                    from app.utils.cutline_debug_log import log_cutline
-                    _page_tot = time.perf_counter() - page_started
-                    _measured = (raster_seconds + contour_seconds + t_open_pike + t_open_pdfium
-                                 + mask_prep_seconds + geom_union_recon_seconds + buffer_fit_seconds
-                                 + xobject_seconds + simplify_seconds + shape_detect_seconds + content_add_seconds)
-                    _other_s = max(0.0, _page_tot - _measured)
-                    log_cutline(
-                        "ENGINE",
-                        "PAGE_TIMING",
-                        f"page={page_idx + 1} w={int(img.shape[1])} h={int(img.shape[0])} dpi={self.scale * 72.0:.1f} pid={os.getpid()}",
-                        total_s=round(_page_tot, 3),
-                        raster_s=round(raster_seconds, 3),
-                        contour_s=round(contour_seconds, 3),
-                        open_pike_s=round(t_open_pike, 3),
-                        open_pdfium_s=round(t_open_pdfium, 3),
-                        mask_prep_s=round(mask_prep_seconds, 3),
-                        geom_recon_s=round(geom_union_recon_seconds, 3),
-                        buffer_fit_s=round(buffer_fit_seconds, 3),
-                        xobj_s=round(xobject_seconds, 3),
-                        simplify_s=round(simplify_seconds, 3),
-                        shape_s=round(shape_detect_seconds, 3),
-                        content_s=round(content_add_seconds, 3),
-                        other_s=round(_other_s, 3),
-                    )
+                    from app.utils.cutline_debug_log import log_cutline, cutline_debug_log_enabled
+                    if cutline_debug_log_enabled():
+                        _page_tot = time.perf_counter() - page_started
+                        _measured = (raster_seconds + contour_seconds + t_open_pike + t_open_pdfium
+                                     + mask_prep_seconds + geom_union_recon_seconds + buffer_fit_seconds
+                                     + xobject_seconds + simplify_seconds + shape_detect_seconds + content_add_seconds)
+                        _other_s = max(0.0, _page_tot - _measured)
+                        log_cutline(
+                            "ENGINE",
+                            "PAGE_TIMING",
+                            f"page={page_idx + 1} w={int(img.shape[1])} h={int(img.shape[0])} dpi={self.scale * 72.0:.1f} pid={os.getpid()}",
+                            total_s=round(_page_tot, 3),
+                            raster_s=round(raster_seconds, 3),
+                            contour_s=round(contour_seconds, 3),
+                            open_pike_s=round(t_open_pike, 3),
+                            open_pdfium_s=round(t_open_pdfium, 3),
+                            mask_prep_s=round(mask_prep_seconds, 3),
+                            geom_recon_s=round(geom_union_recon_seconds, 3),
+                            buffer_fit_s=round(buffer_fit_seconds, 3),
+                            xobj_s=round(xobject_seconds, 3),
+                            simplify_s=round(simplify_seconds, 3),
+                            shape_s=round(shape_detect_seconds, 3),
+                            content_s=round(content_add_seconds, 3),
+                            other_s=round(_other_s, 3),
+                        )
+                        if _page_tot > 1.0:
+                            stages = [
+                                ("simplify_s", simplify_seconds),
+                                ("raster_s", raster_seconds),
+                                ("contour_s", contour_seconds),
+                                ("buffer_fit_s", buffer_fit_seconds),
+                                ("geom_recon_s", geom_union_recon_seconds),
+                                ("mask_prep_s", mask_prep_seconds),
+                                ("open_pdfium_s", t_open_pdfium),
+                                ("open_pike_s", t_open_pike),
+                            ]
+                            biggest = max(stages, key=lambda s: s[1])
+                            log_cutline(
+                                "BOTTLENECK",
+                                "ENGINE_SLOW",
+                                f"[ĐIỂM NGHẼN] Trang {page_idx+1} mất {_page_tot:.2f}s (> 1s) - Lớn nhất: {biggest[0]} ({biggest[1]:.2f}s)",
+                                total_s=round(_page_tot, 3),
+                                biggest_stage=biggest[0],
+                                biggest_s=round(biggest[1], 3),
+                            )
                 except Exception:
                     pass
                 if rectangle_mode and bleed_color_type in ("inpaint", "trajectory"):
@@ -12247,6 +12958,7 @@ class StickerEngine:
         chunk_spill_dir = chunk_spill.name
 
         from app.core.heavy_job_scheduler import process_pool_admission
+        from app.core.system_memory import read_memory_tier_mb
 
         def _run_admitted(requested_workers: int, pool_enabled: bool):
             # PERF (audit 2026-09-25 §G2): chỉ giữ reservation trong lúc pool
@@ -12268,7 +12980,10 @@ class StickerEngine:
                     and (kw.get("cutline_simplify_auto") or float(kw.get("cutline_simplify_mm") or 0) > 0)
                 )
                 with shared_simplify_job(
-                    enabled=share_simplify, records=current_simplify_memo(), total_ram_mb=_total_ram_mb(),
+                    # PERF (audit 2026-09-28 §PERF28.03): broker chỉ cần tier;
+                    # reader usable và admission phía trên không đổi hợp đồng.
+                    enabled=share_simplify, records=current_simplify_memo(),
+                    total_ram_mb=read_memory_tier_mb(_total_ram_mb()),
                 ) as shared:
                     job_args = [dict(args, shared_simplify_memo=shared) for args in args_list]
                     return self._run_sticker_chunks(

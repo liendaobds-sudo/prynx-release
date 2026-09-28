@@ -538,6 +538,34 @@ describe('StickerSheetPanel', () => {
         useStickerSheetStore.getState().disposeTab('tab');
     });
 
+    it('điều khiển Co / giãn viền và Kiểu góc hiển thị trên mặt tiền và cập nhật thiết lập', () => {
+        render(<StickerSheetPanel tabId="tab" onExport={vi.fn()} />);
+        expect(screen.getByText('Co / giãn viền')).toBeTruthy();
+        const offsetInput = screen.getByRole('spinbutton', { name: 'Co / giãn viền' });
+        expect(offsetInput).toBeTruthy();
+
+        // Nhập offset thu vào -0.8mm
+        fireEvent.change(offsetInput, { target: { value: '-0.8' } });
+        expect(useStickerSheetStore.getState().getTab('tab').outputSettings.offsetMm).toBe(-0.8);
+        expect(screen.getByText('-0.8 mm (thu vào)')).toBeTruthy();
+
+        // Bấm nút Đặt lại về 0mm
+        const resetBtn = screen.getByRole('button', { name: 'Đặt lại' });
+        fireEvent.click(resetBtn);
+        expect(useStickerSheetStore.getState().getTab('tab').outputSettings.offsetMm).toBe(0);
+
+        // Bấm chọn Kiểu góc tròn và góc nhọn
+        const roundBtn = screen.getByRole('button', { name: '🟢 Góc tròn' });
+        fireEvent.click(roundBtn);
+        expect(useStickerSheetStore.getState().getTab('tab').outputSettings.cornerStyle).toBe('round');
+
+        const miterBtn = screen.getByRole('button', { name: '🔺 Góc nhọn' });
+        fireEvent.click(miterBtn);
+        expect(useStickerSheetStore.getState().getTab('tab').outputSettings.cornerStyle).toBe('miter');
+
+        useStickerSheetStore.getState().disposeTab('tab');
+    });
+
     it('chọn ảnh chỉ tạo preview và nút nhận diện, không hiện thiết lập trước khi quét', () => {
         useStickerSheetStore.setState({ tabs: {} });
         const detectAction = vi.spyOn(

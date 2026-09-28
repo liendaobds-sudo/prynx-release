@@ -9,32 +9,30 @@
 //!
 //! # Cách dựng
 //!
-//! Tất cả bốn kiểu được quy về **một** dạng duy nhất: danh sách tam giác có màu ở ba
-//! đỉnh. Kiểu 4/5 vốn đã là tam giác. Kiểu 6 (Coons) được nâng lên thành tensor
-//! patch 4×4 rồi cả kiểu 6 và 7 được chia lưới thành tam giác.
+//! Kiểu 4/5 lưu tam giác. Kiểu 6 (Coons) được nâng lên thành tensor patch 4×4;
+//! kiểu 6/7 chỉ giữ điểm điều khiển và bốn màu góc, rồi dựng **từng** lưới 10×10
+//! khi vẽ. Không bung cả shading thành hàng trăm nghìn tam giác trong bộ nhớ.
 //!
-//! Quy về một dạng có hai cái lợi thật: vòng vẽ chỉ có một đường (nên overprint,
-//! alpha, blend không thể lệch giữa các kiểu), và nội suy màu chỉ cài một lần.
+//! # Nội suy trước hàm màu
 //!
-//! # Nội suy trong không gian **mực**, không trong không gian màu
-//!
-//! Màu ba đỉnh được quy sang mực **một lần cho mỗi tam giác**, rồi nội suy tuyến
-//! tính theo toạ độ trọng tâm. Với `DeviceCMYK` (ánh xạ đồng nhất) đây là chính
-//! xác. Với `DeviceRGB` qua ICC thì khác một chút so với nội suy trong RGB rồi mới
-//! quy đổi — nhưng đổi lại là **không gọi ICC cho từng pixel**, và với một dải
-//! chuyển mượt thì sai lệch nằm sâu trong dung sai. Gọi ICC theo pixel sẽ làm một
-//! trang mesh mất hàng phút.
+//! Thành phần trong stream được giữ nguyên: có `/Function` thì mỗi đỉnh/góc chỉ
+//! mang tham số `t`. Vòng vẽ nội suy raw (trọng tâm với 4/5, song tuyến tại UV với
+//! 6/7), sau đó mới áp hàm màu và đổi sang mực. Áp hàm ở đỉnh trước nội suy làm sai
+//! hàm phi tuyến, còn nội suy mực trước ICC làm sai không gian màu của shading.
 
 use lopdf::{Dictionary, Document};
 
+use crate::cancel::CancelToken;
 use crate::color::PdfFunction;
 use crate::error::{PpeError, PpeResult};
+use crate::geom::Matrix;
+use crate::ink::DEFAULT_RENDER_MEMORY_BUDGET_BYTES;
 use crate::pdf;
 
 /// Trần số tam giác của một shading.
 ///
-/// Chặn file thù địch (hoặc hỏng) khai lưới khổng lồ. 400 000 tam giác đã vượt xa
-/// mọi gradient mesh thật; vượt trần thì báo lỗi để caller dừng an toàn.
+/// Giữ guard hiện có cho danh sách tam giác kiểu 4/5. Kiểu 6/7 không dùng trần
+/// này: một stream nhỏ hợp lệ có thể tương ứng nhiều hơn 400 000 tam giác.
 const MAX_TRIANGLES: usize = 400_000;
 
 /// Số ô mỗi chiều khi chia một patch Coons/tensor thành lưới.
@@ -48,11 +46,183 @@ const PATCH_SUBDIV: usize = 10;
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MeshTriangle {
     pub p: [[f32; 2]; 3],
-    /// Thành phần màu tại ba đỉnh, trong colorspace của shading.
+    /// Giá trị raw tại ba đỉnh: thành phần colorspace, hoặc `[t]` khi có hàm màu.
     pub c: [Vec<f32>; 3],
 }
 
-/// Đọc dữ liệu lưới và quy về danh sách tam giác.
+/// Patch gọn, chưa chia lưới hoặc áp hàm màu.
+///
+/// PERF (audit 2026-09-28 §KNOCK.01-C2c): không cấp 200 tam giác và 600 vector
+/// màu cho mỗi patch trước khi biết vùng nào thực sự được vẽ.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct MeshPatch {
+    /// Điểm điều khiển theo hàng: `grid[row * 4 + col]`.
+    pub grid: [[f32; 2]; 16],
+    /// Raw tại góc (0,0), (1,0), (1,1), (0,1) trong hệ UV nội bộ.
+    pub c: [Vec<f32>; 4],
+}
+
+/// Lưới hình học tạm của đúng một patch, nằm trên stack, không giữ màu đỉnh.
+pub struct MeshPatchGrid {
+    points: [[f32; 2]; (PATCH_SUBDIV + 1) * (PATCH_SUBDIV + 1)],
+}
+
+/// Tam giác lấy từ lưới patch, kèm UV để nội suy raw tại điểm thắng cuối cùng.
+#[derive(Debug, Clone, Copy)]
+pub struct MeshPatchTriangle {
+    pub p: [[f32; 2]; 3],
+    pub uv: [[f32; 2]; 3],
+}
+
+impl MeshPatch {
+    /// Kiểm cả payload đọc từ PDF lẫn payload đã deserialize từ retained scene.
+    pub fn validate(&self, expected_values: usize) -> PpeResult<()> {
+        if expected_values == 0
+            || self.grid.iter().flatten().any(|v| !v.is_finite())
+            || self.c.iter().any(|corner| {
+                corner.len() != expected_values || corner.iter().any(|v| !v.is_finite())
+            })
+        {
+            return Err(PpeError::MalformedPdf(
+                "patch shading có điểm/màu không hữu hạn hoặc sai số thành phần".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Hộp bao bảo thủ sau CTM: mặt Bézier luôn nằm trong bao lồi control points.
+    /// `None` báo dữ liệu/CTM không hữu hạn, không được hiểu là patch ngoài clip.
+    pub fn control_bounds(&self, ctm: &Matrix) -> Option<[f32; 4]> {
+        let mut bounds = [
+            f32::INFINITY,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NEG_INFINITY,
+        ];
+        for [x, y] in self.grid {
+            let (dx, dy) = ctm.apply(x, y);
+            if !dx.is_finite() || !dy.is_finite() {
+                return None;
+            }
+            bounds[0] = bounds[0].min(dx);
+            bounds[1] = bounds[1].min(dy);
+            bounds[2] = bounds[2].max(dx);
+            bounds[3] = bounds[3].max(dy);
+        }
+        Some(bounds)
+    }
+
+    /// Giữ nguyên 10×10 ô; chỉ thay thời điểm cấp phát, không giảm chất lượng.
+    pub fn tessellate(&self) -> MeshPatchGrid {
+        MeshPatchGrid {
+            points: std::array::from_fn(|index| {
+                let u = (index % (PATCH_SUBDIV + 1)) as f32 / PATCH_SUBDIV as f32;
+                let v = (index / (PATCH_SUBDIV + 1)) as f32 / PATCH_SUBDIV as f32;
+                bezier_surface(&self.grid, u, v)
+            }),
+        }
+    }
+
+    /// Nội suy raw song tuyến; caller áp `/Function` và chuyển colorspace sau đây.
+    /// UV được kẹp để sai số nhỏ ở cạnh tam giác không ngoại suy qua biên patch.
+    pub fn sample_raw_into(&self, u: f32, v: f32, out: &mut Vec<f32>) -> PpeResult<()> {
+        out.clear();
+        self.validate(self.c[0].len())?;
+        self.sample_raw_into_validated(u, v, out)
+    }
+
+    /// Đường nóng sau khi caller đã `validate` toàn patch trước raster. Vẫn kiểm
+    /// kích thước và kết quả nhưng không quét lại 16 điểm + mọi màu mỗi pixel.
+    pub(crate) fn sample_raw_into_validated(
+        &self,
+        u: f32,
+        v: f32,
+        out: &mut Vec<f32>,
+    ) -> PpeResult<()> {
+        out.clear();
+        let n = self.c[0].len();
+        if !u.is_finite()
+            || !v.is_finite()
+            || n == 0
+            || self.c.iter().any(|corner| corner.len() != n)
+        {
+            return Err(PpeError::MalformedPdf(
+                "không nội suy được patch shading có UV/màu không hợp lệ".into(),
+            ));
+        }
+        out.try_reserve(n).map_err(|_| {
+            PpeError::Unsupported("không đủ bộ nhớ nội suy màu patch shading".into())
+        })?;
+        // Dùng f64 ở tổng có trọng số để cả khoảng raw hữu hạn rất lớn cũng
+        // không tràn trung gian. Kết quả vẫn nằm trong bao lồi bốn giá trị góc.
+        let (u, v) = (u.clamp(0.0, 1.0) as f64, v.clamp(0.0, 1.0) as f64);
+        for i in 0..n {
+            let top = self.c[0][i] as f64 * (1.0 - u) + self.c[1][i] as f64 * u;
+            let bottom = self.c[3][i] as f64 * (1.0 - u) + self.c[2][i] as f64 * u;
+            let value = (top * (1.0 - v) + bottom * v) as f32;
+            if !value.is_finite() {
+                out.clear();
+                return Err(PpeError::MalformedPdf(
+                    "màu patch shading không hữu hạn".into(),
+                ));
+            }
+            out.push(value);
+        }
+        Ok(())
+    }
+
+    /// Dung lượng bản thân patch và capacity các vector màu, để caller tính budget.
+    pub fn estimated_bytes(&self) -> usize {
+        self.c
+            .iter()
+            .fold(std::mem::size_of::<Self>(), |total, corner| {
+                total.saturating_add(corner.capacity().saturating_mul(std::mem::size_of::<f32>()))
+            })
+    }
+}
+
+impl MeshPatchGrid {
+    /// Không cấp phát mỗi tam giác. Patch sau thắng patch trước; nếu một patch tự
+    /// gập, caller chọn UV lớn nhất theo **u rồi v nội bộ** (v rồi u trong PDF).
+    pub fn triangles(&self) -> impl Iterator<Item = MeshPatchTriangle> + '_ {
+        (0..PATCH_SUBDIV * PATCH_SUBDIV * 2).map(|index| {
+            let cell = index / 2;
+            let i = cell % PATCH_SUBDIV;
+            let j = cell / PATCH_SUBDIV;
+            let row = j * (PATCH_SUBDIV + 1);
+            let next_row = (j + 1) * (PATCH_SUBDIV + 1);
+            let (u0, v0) = (
+                i as f32 / PATCH_SUBDIV as f32,
+                j as f32 / PATCH_SUBDIV as f32,
+            );
+            let (u1, v1) = (
+                (i + 1) as f32 / PATCH_SUBDIV as f32,
+                (j + 1) as f32 / PATCH_SUBDIV as f32,
+            );
+            if index % 2 == 0 {
+                MeshPatchTriangle {
+                    p: [
+                        self.points[row + i],
+                        self.points[row + i + 1],
+                        self.points[next_row + i],
+                    ],
+                    uv: [[u0, v0], [u1, v0], [u0, v1]],
+                }
+            } else {
+                MeshPatchTriangle {
+                    p: [
+                        self.points[row + i + 1],
+                        self.points[next_row + i + 1],
+                        self.points[next_row + i],
+                    ],
+                    uv: [[u1, v0], [u1, v1], [u0, v1]],
+                }
+            }
+        })
+    }
+}
+
+/// Đọc dữ liệu lưới kiểu 4/5 thành danh sách tam giác, giữ nguyên thành phần raw.
 ///
 /// `n_values` là số giá trị màu mỗi đỉnh: `1` khi shading có `/Function` (đỉnh mang
 /// tham số `t`), ngược lại là số kênh của colorspace.
@@ -64,47 +234,41 @@ pub fn parse_mesh(
     function: Option<&PdfFunction>,
     n_comps: usize,
 ) -> PpeResult<Vec<MeshTriangle>> {
-    let bits_coord = int_key(doc, dict, "BitsPerCoordinate")
-        .ok_or_else(|| PpeError::MalformedPdf("shading lưới thiếu BitsPerCoordinate".into()))?;
-    let bits_comp = int_key(doc, dict, "BitsPerComponent")
-        .ok_or_else(|| PpeError::MalformedPdf("shading lưới thiếu BitsPerComponent".into()))?;
-    if !matches!(bits_coord, 1 | 2 | 4 | 8 | 12 | 16 | 24 | 32) {
-        return Err(PpeError::MalformedPdf(format!(
-            "BitsPerCoordinate không hợp lệ: {bits_coord}"
-        )));
-    }
-    if !matches!(bits_comp, 1 | 2 | 4 | 8 | 12 | 16) {
-        return Err(PpeError::MalformedPdf(format!(
-            "BitsPerComponent không hợp lệ: {bits_comp}"
-        )));
-    }
-    let bits_coord = bits_coord as u32;
-    let bits_comp = bits_comp as u32;
-
-    let n_values = if function.is_some() { 1 } else { n_comps };
-    let decode = pdf::dict_get(doc, dict, "Decode")
-        .and_then(|o| pdf::num_array(doc, o))
-        .ok_or_else(|| PpeError::MalformedPdf("shading lưới thiếu /Decode".into()))?;
-    if decode.len() < 4 + 2 * n_values {
-        return Err(PpeError::MalformedPdf(format!(
-            "/Decode cần {} phần tử, có {}",
-            4 + 2 * n_values,
-            decode.len()
-        )));
-    }
-
-    let mut reader = BitReader::new(data);
-    let ctx = MeshCtx {
-        bits_coord,
-        bits_comp,
-        n_values,
-        decode,
+    parse_mesh_bounded(
+        doc,
+        dict,
+        shading_type,
+        data,
         function,
         n_comps,
-    };
+        DEFAULT_RENDER_MEMORY_BUDGET_BYTES,
+        None,
+    )
+}
 
+/// Ngân sách gồm slice stream đang sống và các Vec do parser tạo; caller có
+/// buffer raster phải truyền số byte còn lại của cùng lần render.
+#[allow(clippy::too_many_arguments)]
+pub fn parse_mesh_bounded(
+    doc: &Document,
+    dict: &Dictionary,
+    shading_type: i32,
+    data: &[u8],
+    function: Option<&PdfFunction>,
+    n_comps: usize,
+    memory_budget_bytes: usize,
+    cancel: Option<&CancelToken>,
+) -> PpeResult<Vec<MeshTriangle>> {
+    let mut budget = MeshParseBudget::new(memory_budget_bytes, data.len(), cancel)?;
+    let ctx = MeshCtx::from_dict(doc, dict, function.is_some(), n_comps, &mut budget)?;
+    let mut reader = BitReader::new(data);
     match shading_type {
-        4 => parse_free_triangles(&mut reader, &ctx, int_key(doc, dict, "BitsPerFlag")),
+        4 => parse_free_triangles(
+            &mut reader,
+            &ctx,
+            int_key(doc, dict, "BitsPerFlag"),
+            &mut budget,
+        ),
         5 => {
             let per_row = int_key(doc, dict, "VerticesPerRow").ok_or_else(|| {
                 PpeError::MalformedPdf("shading kiểu 5 thiếu VerticesPerRow".into())
@@ -112,46 +276,279 @@ pub fn parse_mesh(
             if per_row < 2 {
                 return Err(PpeError::MalformedPdf("VerticesPerRow phải >= 2".into()));
             }
-            parse_lattice(&mut reader, &ctx, per_row as usize)
+            parse_lattice(&mut reader, &ctx, per_row as usize, &mut budget)
         }
-        6 | 7 => parse_patches(
-            &mut reader,
-            &ctx,
-            int_key(doc, dict, "BitsPerFlag"),
-            shading_type == 7,
-        ),
-        other => Err(PpeError::Unsupported(format!("shading kiểu {other}"))),
+        other => Err(PpeError::Unsupported(format!(
+            "shading tam giác kiểu {other}"
+        ))),
     }
 }
 
-struct MeshCtx<'a> {
+/// Đọc kiểu 6/7 thành patch gọn; số patch chỉ tăng sau khi đọc đủ một record.
+pub fn parse_patch_mesh(
+    doc: &Document,
+    dict: &Dictionary,
+    shading_type: i32,
+    data: &[u8],
+    function: Option<&PdfFunction>,
+    n_comps: usize,
+) -> PpeResult<Vec<MeshPatch>> {
+    parse_patch_mesh_bounded(
+        doc,
+        dict,
+        shading_type,
+        data,
+        function,
+        n_comps,
+        DEFAULT_RENDER_MEMORY_BUDGET_BYTES,
+        None,
+    )
+}
+
+/// Bản có ngân sách/hủy cho đường render; không áp trần số patch cố định.
+#[allow(clippy::too_many_arguments)]
+pub fn parse_patch_mesh_bounded(
+    doc: &Document,
+    dict: &Dictionary,
+    shading_type: i32,
+    data: &[u8],
+    function: Option<&PdfFunction>,
+    n_comps: usize,
+    memory_budget_bytes: usize,
+    cancel: Option<&CancelToken>,
+) -> PpeResult<Vec<MeshPatch>> {
+    let mut budget = MeshParseBudget::new(memory_budget_bytes, data.len(), cancel)?;
+    if !matches!(shading_type, 6 | 7) {
+        return Err(PpeError::Unsupported(format!(
+            "shading patch kiểu {shading_type}"
+        )));
+    }
+    let ctx = MeshCtx::from_dict(doc, dict, function.is_some(), n_comps, &mut budget)?;
+    parse_patches(
+        &mut BitReader::new(data),
+        &ctx,
+        int_key(doc, dict, "BitsPerFlag"),
+        shading_type == 7,
+        &mut budget,
+    )
+}
+
+/// MEMORY (audit 2026-09-28 §KNOCK.01-C2c): kiểm trước allocator, tính capacity
+/// thật cả Vec ngoài lẫn màu bên trong. Đây là ngân sách request, không phải cap
+/// phần cứng hoặc chất lượng mới. Mọi tài nguyên sống cùng parser được cộng dồn.
+struct MeshParseBudget<'a> {
+    used: usize,
+    limit: usize,
+    cancel: Option<&'a CancelToken>,
+}
+
+impl<'a> MeshParseBudget<'a> {
+    fn new(limit: usize, stream_bytes: usize, cancel: Option<&'a CancelToken>) -> PpeResult<Self> {
+        let mut budget = Self {
+            used: 0,
+            limit,
+            cancel,
+        };
+        budget.check_cancelled()?;
+        budget.add(stream_bytes)?;
+        Ok(budget)
+    }
+
+    fn check_cancelled(&self) -> PpeResult<()> {
+        self.cancel.map_or(Ok(()), CancelToken::check)
+    }
+
+    fn error(&self, additional: usize) -> PpeError {
+        const MIB: usize = 1024 * 1024;
+        PpeError::MemoryBudgetExceeded {
+            requested_mib: self.used.saturating_add(additional).saturating_add(MIB - 1) / MIB,
+            limit_mib: self.limit.saturating_add(MIB - 1) / MIB,
+        }
+    }
+
+    fn add(&mut self, bytes: usize) -> PpeResult<()> {
+        let requested = self
+            .used
+            .checked_add(bytes)
+            .ok_or_else(|| self.error(usize::MAX))?;
+        if requested > self.limit {
+            return Err(self.error(bytes));
+        }
+        self.used = requested;
+        Ok(())
+    }
+
+    fn release(&mut self, bytes: usize) {
+        debug_assert!(bytes <= self.used);
+        self.used = self.used.saturating_sub(bytes);
+    }
+
+    fn reserve_exact<T>(&mut self, values: &mut Vec<T>, capacity: usize) -> PpeResult<()> {
+        self.check_cancelled()?;
+        let old_capacity = values.capacity();
+        if capacity <= old_capacity {
+            return Ok(());
+        }
+        let bytes = (capacity - old_capacity)
+            .checked_mul(std::mem::size_of::<T>())
+            .ok_or_else(|| self.error(usize::MAX))?;
+        // Reserve trước; mọi đường lỗi kết thúc parser nên không giữ lease giả.
+        self.add(bytes)?;
+        values
+            .try_reserve_exact(capacity - values.len())
+            .map_err(|_| self.error(0))?;
+        // Vec được phép trả capacity lớn hơn yêu cầu; vẫn tính phần thực tế đó.
+        self.add(
+            (values.capacity() - capacity)
+                .checked_mul(std::mem::size_of::<T>())
+                .ok_or_else(|| self.error(usize::MAX))?,
+        )?;
+        Ok(())
+    }
+
+    fn reserve_one<T>(&mut self, values: &mut Vec<T>) -> PpeResult<()> {
+        if values.len() < values.capacity() {
+            return self.check_cancelled();
+        }
+        let item_bytes = std::mem::size_of::<T>();
+        if item_bytes == 0 {
+            return self.check_cancelled();
+        }
+        let available_items = (self.limit - self.used) / item_bytes;
+        if available_items == 0 {
+            return Err(self.error(item_bytes));
+        }
+        // Tăng theo cấp số nhân khi còn RAM; gần budget chỉ xin phần còn đủ,
+        // tránh từ chối một record hợp lệ chỉ vì capacity dư của chiến lược grow.
+        let capacity = values
+            .capacity()
+            .checked_mul(2)
+            .unwrap_or(usize::MAX)
+            .max(1)
+            .min(values.capacity().saturating_add(available_items));
+        self.reserve_exact(values, capacity)
+    }
+
+    fn clone_values(&mut self, source: &[f32]) -> PpeResult<Vec<f32>> {
+        let mut values = Vec::new();
+        self.reserve_exact(&mut values, source.len())?;
+        values.extend_from_slice(source);
+        Ok(values)
+    }
+}
+
+struct MeshCtx {
     bits_coord: u32,
     bits_comp: u32,
     n_values: usize,
     decode: Vec<f32>,
-    function: Option<&'a PdfFunction>,
-    n_comps: usize,
 }
 
-impl MeshCtx<'_> {
-    fn read_vertex(&self, r: &mut BitReader) -> Option<([f32; 2], Vec<f32>)> {
-        let x = self.decode_value(r.read(self.bits_coord)?, self.bits_coord, 0);
-        let y = self.decode_value(r.read(self.bits_coord)?, self.bits_coord, 1);
-        let mut vals = Vec::with_capacity(self.n_values);
-        for i in 0..self.n_values {
-            let raw = r.read(self.bits_comp)?;
-            vals.push(self.decode_value(raw, self.bits_comp, 2 + i));
+impl MeshCtx {
+    fn from_dict(
+        doc: &Document,
+        dict: &Dictionary,
+        has_function: bool,
+        n_comps: usize,
+        budget: &mut MeshParseBudget<'_>,
+    ) -> PpeResult<Self> {
+        let bits_coord = int_key(doc, dict, "BitsPerCoordinate")
+            .ok_or_else(|| PpeError::MalformedPdf("shading lưới thiếu BitsPerCoordinate".into()))?;
+        let bits_comp = int_key(doc, dict, "BitsPerComponent")
+            .ok_or_else(|| PpeError::MalformedPdf("shading lưới thiếu BitsPerComponent".into()))?;
+        if !matches!(bits_coord, 1 | 2 | 4 | 8 | 12 | 16 | 24 | 32) {
+            return Err(PpeError::MalformedPdf(format!(
+                "BitsPerCoordinate không hợp lệ: {bits_coord}"
+            )));
         }
-        Some(([x, y], self.to_components(vals)))
+        if !matches!(bits_comp, 1 | 2 | 4 | 8 | 12 | 16) {
+            return Err(PpeError::MalformedPdf(format!(
+                "BitsPerComponent không hợp lệ: {bits_comp}"
+            )));
+        }
+        let bits_coord = bits_coord as u32;
+        let bits_comp = bits_comp as u32;
+
+        let n_values = if has_function { 1 } else { n_comps };
+        let decode_items = pdf::dict_get(doc, dict, "Decode")
+            .and_then(|o| o.as_array().ok())
+            .ok_or_else(|| PpeError::MalformedPdf("shading lưới thiếu /Decode".into()))?;
+        let required_decode = n_values
+            .checked_mul(2)
+            .and_then(|n| n.checked_add(4))
+            .filter(|_| n_values > 0)
+            .ok_or_else(|| {
+                PpeError::MalformedPdf("số thành phần shading lưới không hợp lệ".into())
+            })?;
+        if decode_items.len() < required_decode {
+            return Err(PpeError::MalformedPdf(format!(
+                "/Decode cần {} phần tử, có {}",
+                required_decode,
+                decode_items.len()
+            )));
+        }
+        let mut decode = Vec::new();
+        budget.reserve_exact(&mut decode, required_decode)?;
+        for item in &decode_items[..required_decode] {
+            budget.check_cancelled()?;
+            decode.push(pdf::num(doc, item).ok_or_else(|| {
+                PpeError::MalformedPdf("/Decode shading lưới chứa giá trị không phải số".into())
+            })?);
+        }
+        if decode[..required_decode].iter().any(|v| !v.is_finite()) {
+            return Err(PpeError::MalformedPdf(
+                "/Decode shading lưới không hữu hạn".into(),
+            ));
+        }
+        Ok(Self {
+            bits_coord,
+            bits_comp,
+            n_values,
+            decode,
+        })
+    }
+    fn vertex_bits(&self) -> Option<usize> {
+        self.n_values
+            .checked_mul(self.bits_comp as usize)
+            .and_then(|bits| bits.checked_add(2 * self.bits_coord as usize))
     }
 
-    fn read_colour(&self, r: &mut BitReader) -> Option<Vec<f32>> {
-        let mut vals = Vec::with_capacity(self.n_values);
+    fn read_vertex(
+        &self,
+        r: &mut BitReader,
+        budget: &mut MeshParseBudget<'_>,
+    ) -> PpeResult<Option<Vertex>> {
+        budget.check_cancelled()?;
+        let bits = self.vertex_bits().ok_or_else(|| budget.error(usize::MAX))?;
+        if bits > r.remaining_bits() {
+            return Ok(None);
+        }
+        let point = self
+            .read_point(r)
+            .ok_or_else(|| PpeError::MalformedPdf("thiếu tọa độ đỉnh shading lưới".into()))?;
+        Ok(self.read_colour(r, budget)?.map(|colour| (point, colour)))
+    }
+
+    fn read_colour(
+        &self,
+        r: &mut BitReader,
+        budget: &mut MeshParseBudget<'_>,
+    ) -> PpeResult<Option<Vec<f32>>> {
+        // Không dùng số kênh khai báo để cấp phát trước khi bitstream chứng minh
+        // rằng thật sự còn đủ payload màu cho record này.
+        if self.n_values > r.remaining_bits() / self.bits_comp as usize {
+            return Ok(None);
+        }
+        let mut vals = Vec::new();
+        budget.reserve_exact(&mut vals, self.n_values)?;
         for i in 0..self.n_values {
-            let raw = r.read(self.bits_comp)?;
+            budget.check_cancelled()?;
+            let raw = r
+                .read(self.bits_comp)
+                .ok_or_else(|| PpeError::MalformedPdf("thiếu màu đỉnh shading lưới".into()))?;
             vals.push(self.decode_value(raw, self.bits_comp, 2 + i));
         }
-        Some(self.to_components(vals))
+        Ok(Some(vals))
     }
 
     fn read_point(&self, r: &mut BitReader) -> Option<[f32; 2]> {
@@ -174,21 +571,6 @@ impl MeshCtx<'_> {
         }
         dmin + (raw as f32) * (dmax - dmin) / max
     }
-
-    /// Đỉnh mang `t` khi có `/Function`; quy về thành phần màu ngay tại đây.
-    ///
-    /// Làm ở bước đọc thay vì trong vòng vẽ: hàm màu thường là chương trình
-    /// PostScript, và một lưới có hàng nghìn đỉnh chứ hàng triệu pixel.
-    fn to_components(&self, vals: Vec<f32>) -> Vec<f32> {
-        match self.function {
-            Some(f) => {
-                let mut out = f.eval(&[vals.first().copied().unwrap_or(0.0)]);
-                out.resize(self.n_comps.max(1), 0.0);
-                out
-            }
-            None => vals,
-        }
-    }
 }
 
 /// Kiểu 4 — lưới tam giác tự do, mỗi đỉnh có cờ nối.
@@ -196,6 +578,7 @@ fn parse_free_triangles(
     r: &mut BitReader,
     ctx: &MeshCtx,
     bits_flag: Option<i64>,
+    budget: &mut MeshParseBudget<'_>,
 ) -> PpeResult<Vec<MeshTriangle>> {
     let bits_flag = bits_flag
         .ok_or_else(|| PpeError::MalformedPdf("shading kiểu 4 thiếu BitsPerFlag".into()))?
@@ -207,14 +590,11 @@ fn parse_free_triangles(
     }
 
     let mut out: Vec<MeshTriangle> = Vec::new();
-    // Ba đỉnh gần nhất, dùng cho cờ 1/2.
-    let mut va: Option<([f32; 2], Vec<f32>)> = None;
-    let mut vb: Option<([f32; 2], Vec<f32>)> = None;
-    let mut vc: Option<([f32; 2], Vec<f32>)> = None;
 
     loop {
+        budget.check_cancelled()?;
         let Some(flag) = r.read(bits_flag) else { break };
-        let Some(vertex) = ctx.read_vertex(r) else {
+        let Some(vertex) = ctx.read_vertex(r, budget)? else {
             break;
         };
         // Mỗi **đỉnh** của kiểu 4 chiếm số byte nguyên (§8.7.4.5.5).
@@ -228,36 +608,24 @@ fn parse_free_triangles(
                     if r.read(bits_flag).is_none() {
                         return finish(out);
                     }
-                    let Some(v) = ctx.read_vertex(r) else {
+                    let Some(v) = ctx.read_vertex(r, budget)? else {
                         return finish(out);
                     };
                     r.align();
                     tri[slot] = v;
                 }
-                va = Some(tri[0].clone());
-                vb = Some(tri[1].clone());
-                vc = Some(tri[2].clone());
-                push(&mut out, &tri[0], &tri[1], &tri[2])?;
+                push_owned(&mut out, tri, budget)?;
             }
-            1 => {
-                // (vb, vc, mới)
-                let (Some(b), Some(c)) = (vb.clone(), vc.clone()) else {
+            1 | 2 => {
+                // Cờ 1: (vb,vc,mới); cờ 2: (va,vc,mới). Giữ tam giác trước
+                // trong `out`, không tạo thêm ba bản copy trạng thái ngoài budget.
+                let Some(prev) = out.last() else {
                     break;
                 };
-                push(&mut out, &b, &c, &vertex)?;
-                va = Some(b);
-                vb = Some(c);
-                vc = Some(vertex);
-            }
-            2 => {
-                // (va, vc, mới)
-                let (Some(a), Some(c)) = (va.clone(), vc.clone()) else {
-                    break;
-                };
-                push(&mut out, &a, &c, &vertex)?;
-                vb = Some(c);
-                vc = Some(vertex);
-                va = Some(a);
+                let first = if flag == 1 { 1 } else { 0 };
+                let a = (prev.p[first], budget.clone_values(&prev.c[first])?);
+                let b = (prev.p[2], budget.clone_values(&prev.c[2])?);
+                push_owned(&mut out, [a, b, vertex], budget)?;
             }
             _ => break, // cờ lạ ⇒ dừng, phần đã đọc vẫn dùng được
         }
@@ -266,32 +634,49 @@ fn parse_free_triangles(
 }
 
 /// Kiểu 5 — lưới hình chữ nhật, không có cờ.
-fn parse_lattice(r: &mut BitReader, ctx: &MeshCtx, per_row: usize) -> PpeResult<Vec<MeshTriangle>> {
-    let mut rows: Vec<Vec<([f32; 2], Vec<f32>)>> = Vec::new();
-    'outer: loop {
-        let mut row = Vec::with_capacity(per_row);
+fn parse_lattice(
+    r: &mut BitReader,
+    ctx: &MeshCtx,
+    per_row: usize,
+    budget: &mut MeshParseBudget<'_>,
+) -> PpeResult<Vec<MeshTriangle>> {
+    let row_bits = ctx
+        .vertex_bits()
+        .and_then(|n| n.checked_mul(per_row))
+        .ok_or_else(|| budget.error(usize::MAX))?;
+    let mut prev: Vec<Vertex> = Vec::new();
+    let mut out = Vec::new();
+    // Chỉ giữ hai hàng nguồn, vẫn tạo đúng các tam giác như cách giữ toàn lưới.
+    // VerticesPerRow không được phép gây cấp phát khi stream không có đủ hàng.
+    while row_bits <= r.remaining_bits() {
+        budget.check_cancelled()?;
+        let mut row: Vec<Vertex> = Vec::new();
+        budget.reserve_exact(&mut row, per_row)?;
         for _ in 0..per_row {
-            match ctx.read_vertex(r) {
-                Some(v) => row.push(v),
-                None => break 'outer,
+            row.push(ctx.read_vertex(r, budget)?.ok_or_else(|| {
+                PpeError::MalformedPdf("thiếu đỉnh trong hàng shading kiểu 5".into())
+            })?);
+        }
+        if !prev.is_empty() {
+            for i in 1..per_row {
+                budget.check_cancelled()?;
+                push(&mut out, &prev[i - 1], &prev[i], &row[i - 1], budget)?;
+                push(&mut out, &prev[i], &row[i], &row[i - 1], budget)?;
             }
         }
-        rows.push(row);
-        if rows.len() * per_row > MAX_TRIANGLES {
-            break;
+        let mut released = prev
+            .capacity()
+            .saturating_mul(std::mem::size_of::<Vertex>());
+        for vertex in &prev {
+            released = released.saturating_add(
+                vertex
+                    .1
+                    .capacity()
+                    .saturating_mul(std::mem::size_of::<f32>()),
+            );
         }
-    }
-
-    let mut out = Vec::new();
-    for j in 1..rows.len() {
-        for i in 1..per_row {
-            let a = &rows[j - 1][i - 1];
-            let b = &rows[j - 1][i];
-            let c = &rows[j][i - 1];
-            let d = &rows[j][i];
-            push(&mut out, a, b, c)?;
-            push(&mut out, b, d, c)?;
-        }
+        budget.release(released);
+        prev = row;
     }
     finish(out)
 }
@@ -302,7 +687,8 @@ fn parse_patches(
     ctx: &MeshCtx,
     bits_flag: Option<i64>,
     tensor: bool,
-) -> PpeResult<Vec<MeshTriangle>> {
+    budget: &mut MeshParseBudget<'_>,
+) -> PpeResult<Vec<MeshPatch>> {
     let bits_flag = bits_flag
         .ok_or_else(|| PpeError::MalformedPdf("shading kiểu 6/7 thiếu BitsPerFlag".into()))?
         as u32;
@@ -312,92 +698,94 @@ fn parse_patches(
         )));
     }
 
-    let mut out = Vec::new();
-    // Lưới 4×4 điểm điều khiển của patch trước, dùng khi cờ 1/2/3 nối cạnh.
-    let mut prev: Option<([[f32; 2]; 16], [Vec<f32>; 4])> = None;
+    let mut out: Vec<MeshPatch> = Vec::new();
 
     loop {
+        budget.check_cancelled()?;
         let Some(flag) = r.read(bits_flag) else { break };
+        if flag > 3 || (flag != 0 && out.is_empty()) {
+            return Err(PpeError::MalformedPdf(format!(
+                "cờ nối patch shading không hợp lệ: {flag}"
+            )));
+        }
         let mut grid = [[0.0f32; 2]; 16];
         let mut colours: [Vec<f32>; 4] = Default::default();
 
         // Cờ khác 0: cạnh đầu và hai màu đầu lấy từ patch trước. Bỏ qua cơ chế này
         // làm mọi patch từ thứ hai trở đi bị lệch chỗ — lưới rời thành các mảnh.
-        let (n_points, n_colours) = if flag == 0 { (12, 4) } else { (8, 2) };
+        let (n_points, n_colours): (usize, usize) = if flag == 0 { (12, 4) } else { (8, 2) };
+        // PERF (audit 2026-09-28 §KNOCK.01-C2c): số kênh/flag không đủ chứng minh
+        // cần cấp phát. Kiểm payload còn lại trước cả clone hai màu nối cạnh.
+        let coord_bits = (n_points + if tensor { 4 } else { 0 }) * 2 * ctx.bits_coord as usize;
+        let colour_bits = ctx
+            .n_values
+            .checked_mul(n_colours)
+            .and_then(|n| n.checked_mul(ctx.bits_comp as usize));
+        let record_bits = colour_bits
+            .and_then(|n| n.checked_add(coord_bits))
+            .ok_or_else(|| PpeError::MalformedPdf("record patch shading quá lớn".into()))?;
+        if record_bits > r.remaining_bits() {
+            return Err(PpeError::MalformedPdf(
+                "stream patch shading bị cắt giữa record".into(),
+            ));
+        }
         if flag != 0 {
-            let Some((pg, pc)) = prev.clone() else { break };
-            let (edge, c0, c1) = shared_edge(&pg, &pc, flag);
+            let prev = out.last().expect("cờ nối đã kiểm tra có patch trước");
+            let (edge, c0, c1) = shared_edge(&prev.grid, &prev.c, flag);
             grid[0] = edge[0];
             grid[1] = edge[1];
             grid[2] = edge[2];
             grid[3] = edge[3];
-            colours[0] = c0;
-            colours[1] = c1;
+            colours[0] = budget.clone_values(c0)?;
+            colours[1] = budget.clone_values(c1)?;
         }
 
         // Điểm biên còn lại, theo thứ tự đi quanh chu vi (§8.7.4.5.7).
-        let mut boundary: Vec<[f32; 2]> = Vec::with_capacity(n_points);
-        let mut ok = true;
-        for _ in 0..n_points {
-            match ctx.read_point(r) {
-                Some(p) => boundary.push(p),
-                None => {
-                    ok = false;
-                    break;
-                }
-            }
-        }
-        if !ok {
-            break;
+        let mut boundary = [[0.0; 2]; 12];
+        for point in &mut boundary[..n_points] {
+            *point = ctx
+                .read_point(r)
+                .ok_or_else(|| PpeError::MalformedPdf("thiếu điểm biên patch shading".into()))?;
         }
         // Tensor patch có thêm 4 điểm trong.
-        let mut inner: Vec<[f32; 2]> = Vec::new();
+        let mut inner = [[0.0; 2]; 4];
         if tensor {
-            for _ in 0..4 {
-                match ctx.read_point(r) {
-                    Some(p) => inner.push(p),
-                    None => {
-                        ok = false;
-                        break;
-                    }
-                }
-            }
-            if !ok {
-                break;
+            for point in &mut inner {
+                *point = ctx.read_point(r).ok_or_else(|| {
+                    PpeError::MalformedPdf("thiếu điểm trong tensor patch".into())
+                })?;
             }
         }
-        for slot in (4 - n_colours)..4 {
-            match ctx.read_colour(r) {
-                Some(c) => colours[slot] = c,
-                None => {
-                    ok = false;
-                    break;
-                }
-            }
-        }
-        if !ok {
-            break;
+        for colour in &mut colours[(4 - n_colours)..4] {
+            *colour = ctx
+                .read_colour(r, budget)?
+                .ok_or_else(|| PpeError::MalformedPdf("thiếu dữ liệu màu patch shading".into()))?;
         }
         r.align();
 
-        fill_boundary(&mut grid, &boundary, flag == 0);
-        if tensor && inner.len() == 4 {
-            // Thứ tự điểm trong của tensor patch: p11 p12 p22 p21 (§Table 85).
+        fill_boundary(&mut grid, &boundary[..n_points], flag == 0);
+        if tensor {
+            // CORRECTNESS (audit 2026-09-28 §KNOCK.01-C2c): ISO Table86 đưa
+            // p11 p12 p22 p21 vào row-major [5,6,10,9], không đảo p12/p21.
             grid[5] = inner[0];
-            grid[9] = inner[1];
+            grid[6] = inner[1];
             grid[10] = inner[2];
-            grid[6] = inner[3];
+            grid[9] = inner[3];
         } else {
             coons_interior(&mut grid);
         }
 
-        emit_patch(&mut out, &grid, &colours)?;
-        prev = Some((grid, colours));
-        if out.len() > MAX_TRIANGLES {
-            break;
-        }
+        let patch = MeshPatch { grid, c: colours };
+        patch.validate(ctx.n_values)?;
+        budget.reserve_one(&mut out)?;
+        out.push(patch);
     }
-    finish(out)
+    if out.is_empty() {
+        return Err(PpeError::MalformedPdf(
+            "shading lưới không đọc được patch nào".into(),
+        ));
+    }
+    Ok(out)
 }
 
 /// Xếp các điểm biên đã đọc vào lưới 4×4.
@@ -425,26 +813,26 @@ fn fill_boundary(grid: &mut [[f32; 2]; 16], boundary: &[[f32; 2]], full: bool) {
 }
 
 /// Cạnh và hai màu được chia sẻ từ patch trước, theo cờ 1/2/3 (§Table 85).
-fn shared_edge(
+fn shared_edge<'a>(
     grid: &[[f32; 2]; 16],
-    colours: &[Vec<f32>; 4],
+    colours: &'a [Vec<f32>; 4],
     flag: u32,
-) -> ([[f32; 2]; 4], Vec<f32>, Vec<f32>) {
+) -> ([[f32; 2]; 4], &'a [f32], &'a [f32]) {
     match flag {
         1 => (
             [grid[3], grid[7], grid[11], grid[15]],
-            colours[1].clone(),
-            colours[2].clone(),
+            &colours[1],
+            &colours[2],
         ),
         2 => (
             [grid[15], grid[14], grid[13], grid[12]],
-            colours[2].clone(),
-            colours[3].clone(),
+            &colours[2],
+            &colours[3],
         ),
         _ => (
             [grid[12], grid[8], grid[4], grid[0]],
-            colours[3].clone(),
-            colours[0].clone(),
+            &colours[3],
+            &colours[0],
         ),
     }
 }
@@ -484,37 +872,6 @@ fn coons_interior(grid: &mut [[f32; 2]; 16]) {
     }
 }
 
-/// Chia patch thành lưới tam giác, màu nội suy song tuyến từ bốn góc.
-fn emit_patch(
-    out: &mut Vec<MeshTriangle>,
-    grid: &[[f32; 2]; 16],
-    colours: &[Vec<f32>; 4],
-) -> PpeResult<()> {
-    let n = PATCH_SUBDIV;
-    // Bảng điểm (n+1)² của mặt Bézier bậc ba hai chiều.
-    let mut pts = vec![[0.0f32; 2]; (n + 1) * (n + 1)];
-    for j in 0..=n {
-        let v = j as f32 / n as f32;
-        for i in 0..=n {
-            let u = i as f32 / n as f32;
-            pts[j * (n + 1) + i] = bezier_surface(grid, u, v);
-        }
-    }
-    for j in 0..n {
-        for i in 0..n {
-            let (u0, v0) = (i as f32 / n as f32, j as f32 / n as f32);
-            let (u1, v1) = ((i + 1) as f32 / n as f32, (j + 1) as f32 / n as f32);
-            let a = (pts[j * (n + 1) + i], bilinear(colours, u0, v0));
-            let b = (pts[j * (n + 1) + i + 1], bilinear(colours, u1, v0));
-            let c = (pts[(j + 1) * (n + 1) + i], bilinear(colours, u0, v1));
-            let d = (pts[(j + 1) * (n + 1) + i + 1], bilinear(colours, u1, v1));
-            push(out, &a, &b, &c)?;
-            push(out, &b, &d, &c)?;
-        }
-    }
-    Ok(())
-}
-
 /// Mặt Bézier bậc ba từ lưới 4×4 điểm điều khiển.
 fn bezier_surface(grid: &[[f32; 2]; 16], u: f32, v: f32) -> [f32; 2] {
     let bu = bernstein(u);
@@ -535,31 +892,38 @@ fn bernstein(t: f32) -> [f32; 4] {
     [s * s * s, 3.0 * s * s * t, 3.0 * s * t * t, t * t * t]
 }
 
-/// Màu nội suy song tuyến từ bốn góc `c0..c3` (thứ tự đi quanh chu vi).
-fn bilinear(c: &[Vec<f32>; 4], u: f32, v: f32) -> Vec<f32> {
-    // Góc: c0 = (u0,v0), c1 = (u1,v0), c2 = (u1,v1), c3 = (u0,v1).
-    let n = c.iter().map(|x| x.len()).max().unwrap_or(0);
-    let get = |k: usize, i: usize| c[k].get(i).copied().unwrap_or(0.0);
-    (0..n)
-        .map(|i| {
-            let top = get(0, i) * (1.0 - u) + get(1, i) * u;
-            let bottom = get(3, i) * (1.0 - u) + get(2, i) * u;
-            top * (1.0 - v) + bottom * v
-        })
-        .collect()
-}
-
 type Vertex = ([f32; 2], Vec<f32>);
 
-fn push(out: &mut Vec<MeshTriangle>, a: &Vertex, b: &Vertex, c: &Vertex) -> PpeResult<()> {
+fn push(
+    out: &mut Vec<MeshTriangle>,
+    a: &Vertex,
+    b: &Vertex,
+    c: &Vertex,
+    budget: &mut MeshParseBudget<'_>,
+) -> PpeResult<()> {
+    let vertices = [
+        (a.0, budget.clone_values(&a.1)?),
+        (b.0, budget.clone_values(&b.1)?),
+        (c.0, budget.clone_values(&c.1)?),
+    ];
+    push_owned(out, vertices, budget)
+}
+
+fn push_owned(
+    out: &mut Vec<MeshTriangle>,
+    vertices: [Vertex; 3],
+    budget: &mut MeshParseBudget<'_>,
+) -> PpeResult<()> {
     if out.len() >= MAX_TRIANGLES {
         return Err(PpeError::Unsupported(format!(
             "shading lưới vượt trần {MAX_TRIANGLES} tam giác"
         )));
     }
+    budget.reserve_one(out)?;
+    let [a, b, c] = vertices;
     out.push(MeshTriangle {
         p: [a.0, b.0, c.0],
-        c: [a.1.clone(), b.1.clone(), c.1.clone()],
+        c: [a.1, b.1, c.1],
     });
     Ok(())
 }
@@ -599,7 +963,7 @@ impl<'a> BitReader<'a> {
         if bits == 0 || bits > 32 {
             return None;
         }
-        if self.bit + bits as usize > self.data.len() * 8 {
+        if bits as usize > self.remaining_bits() {
             return None;
         }
         let mut out: u64 = 0;
@@ -610,6 +974,10 @@ impl<'a> BitReader<'a> {
             self.bit += 1;
         }
         Some(out as u32)
+    }
+
+    fn remaining_bits(&self) -> usize {
+        self.data.len().saturating_mul(8).saturating_sub(self.bit)
     }
 
     /// Nhảy tới biên byte kế tiếp.
@@ -743,8 +1111,8 @@ mod tests {
     }
 
     #[test]
-    fn function_based_mesh_maps_t_through_the_function() {
-        // Đỉnh mang một tham số `t`; hàm biến nó thành 4 kênh CMYK.
+    fn function_based_mesh_preserves_raw_t_until_after_interpolation() {
+        // Đỉnh phải giữ một tham số `t`; t² chỉ được tính sau nội suy.
         let doc = Document::new();
         let dict = base_dict(4, 1);
         let f = crate::color::space::resolve_function(
@@ -754,7 +1122,7 @@ mod tests {
                 "Domain" => vec![0.into(), 1.into()],
                 "C0" => vec![0.into(), 0.into(), 0.into(), 0.into()],
                 "C1" => vec![0.into(), 0.into(), 0.into(), 1.into()],
-                "N" => 1,
+                "N" => 2,
                 "Range" => vec![
                     0.into(), 1.into(), 0.into(), 1.into(),
                     0.into(), 1.into(), 0.into(), 1.into(),
@@ -767,9 +1135,9 @@ mod tests {
         data.extend(vertex4(0, 255, 0, 255));
         data.extend(vertex4(0, 0, 255, 255));
         let tris = parse_mesh(&doc, &dict, 4, &data, Some(&f), 4).unwrap();
-        assert_eq!(tris[0].c[0].len(), 4, "phải ra 4 kênh");
-        assert!(tris[0].c[0][3] < 0.01, "t=0 ⇒ K 0");
-        assert!(tris[0].c[1][3] > 0.99, "t=1 ⇒ K 100%");
+        assert_eq!(tris[0].c, [vec![0.0], vec![1.0], vec![1.0]]);
+        let raw = (tris[0].c[0][0] + tris[0].c[1][0]) * 0.5;
+        assert!((f.eval(&[raw])[3] - 0.25).abs() < 1e-6);
     }
 
     #[test]
@@ -797,7 +1165,10 @@ mod tests {
             data.push(y);
         }
         data.extend_from_slice(&[0, 85, 170, 255]); // 4 màu góc
-        let tris = parse_mesh(&doc, &dict, 6, &data, None, 1).unwrap();
+        let patches = parse_patch_mesh(&doc, &dict, 6, &data, None, 1).unwrap();
+        assert_eq!(patches.len(), 1);
+        let grid = patches[0].tessellate();
+        let tris: Vec<_> = grid.triangles().collect();
         assert_eq!(tris.len(), PATCH_SUBDIV * PATCH_SUBDIV * 2);
         // Patch phủ đúng ô vuông [0,100]² sau khi giải mã.
         let xs: Vec<f32> = tris.iter().flat_map(|t| t.p.iter().map(|p| p[0])).collect();
@@ -816,8 +1187,389 @@ mod tests {
             data.push(i * 16);
         }
         data.extend_from_slice(&[0, 85, 170, 255]);
-        let tris = parse_mesh(&doc, &dict, 7, &data, None, 1).unwrap();
-        assert_eq!(tris.len(), PATCH_SUBDIV * PATCH_SUBDIV * 2);
+        let patches = parse_patch_mesh(&doc, &dict, 7, &data, None, 1).unwrap();
+        assert_eq!(patches.len(), 1);
+        assert_eq!(
+            patches[0].tessellate().triangles().count(),
+            PATCH_SUBDIV * PATCH_SUBDIV * 2
+        );
+    }
+
+    fn square_patch_record(tensor: bool, flag: u8) -> Vec<u8> {
+        let boundary = [
+            [0, 0],
+            [85, 0],
+            [170, 0],
+            [255, 0],
+            [255, 85],
+            [255, 170],
+            [255, 255],
+            [170, 255],
+            [85, 255],
+            [0, 255],
+            [0, 170],
+            [0, 85],
+        ];
+        let mut data = vec![flag];
+        for point in &boundary[if flag == 0 { 0 } else { 4 }..] {
+            data.extend_from_slice(point);
+        }
+        if tensor {
+            // Table86: p11, p12, p22, p21; row-major phải là 5,6,10,9.
+            data.extend_from_slice(&[85, 85, 170, 85, 170, 170, 85, 170]);
+        }
+        data.extend_from_slice(if flag == 0 {
+            &[0, 85, 170, 255]
+        } else {
+            &[85, 170]
+        });
+        data
+    }
+
+    #[test]
+    fn tensor_off_diagonal_uses_table_86_inner_point_order() {
+        let doc = Document::new();
+        let patches = parse_patch_mesh(
+            &doc,
+            &base_dict(7, 1),
+            7,
+            &square_patch_record(true, 0),
+            None,
+            1,
+        )
+        .unwrap();
+        let p = bezier_surface(&patches[0].grid, 0.75, 0.25);
+        // Oracle của mặt phẳng, không lấy lại dữ liệu tam giác để làm expected.
+        assert!((p[0] - 75.0).abs() < 1e-4, "x={}", p[0]);
+        assert!((p[1] - 25.0).abs() < 1e-4, "y={}", p[1]);
+        for triangle in patches[0].tessellate().triangles() {
+            for (point, uv) in triangle.p.iter().zip(triangle.uv) {
+                assert!((point[0] - uv[0] * 100.0).abs() < 1e-4);
+                assert!((point[1] - uv[1] * 100.0).abs() < 1e-4);
+            }
+        }
+    }
+
+    #[test]
+    fn compact_patch_stream_exceeds_old_expanded_triangle_guard_without_quality_loss() {
+        let doc = Document::new();
+        for shading_type in [6, 7] {
+            let data = square_patch_record(shading_type == 7, 0).repeat(2001);
+            let patches = parse_patch_mesh(
+                &doc,
+                &base_dict(shading_type, 1),
+                shading_type,
+                &data,
+                None,
+                1,
+            )
+            .unwrap();
+            assert_eq!(patches.len(), 2001);
+            assert!(patches.len() * PATCH_SUBDIV * PATCH_SUBDIV * 2 > MAX_TRIANGLES);
+            assert_eq!(
+                patches.last().unwrap().tessellate().triangles().count(),
+                200
+            );
+            assert_eq!(
+                std::mem::size_of::<MeshPatchGrid>(),
+                121 * 2 * std::mem::size_of::<f32>()
+            );
+            assert!(patches[0].estimated_bytes() < 2 * std::mem::size_of::<MeshTriangle>() * 200);
+        }
+    }
+
+    #[test]
+    fn patch_continuation_flags_reuse_the_correct_edge_and_raw_colours() {
+        let doc = Document::new();
+        let expected_edges = [
+            [
+                [100.0, 0.0],
+                [100.0, 100.0 / 3.0],
+                [100.0, 200.0 / 3.0],
+                [100.0, 100.0],
+            ],
+            [
+                [100.0, 100.0],
+                [200.0 / 3.0, 100.0],
+                [100.0 / 3.0, 100.0],
+                [0.0, 100.0],
+            ],
+            [
+                [0.0, 100.0],
+                [0.0, 200.0 / 3.0],
+                [0.0, 100.0 / 3.0],
+                [0.0, 0.0],
+            ],
+        ];
+        let expected_colours = [[1.0 / 3.0, 2.0 / 3.0], [2.0 / 3.0, 1.0], [1.0, 0.0]];
+        for shading_type in [6, 7] {
+            for flag in 1..=3 {
+                let mut data = square_patch_record(shading_type == 7, 0);
+                data.extend(square_patch_record(shading_type == 7, flag));
+                let patches = parse_patch_mesh(
+                    &doc,
+                    &base_dict(shading_type, 1),
+                    shading_type,
+                    &data,
+                    None,
+                    1,
+                )
+                .unwrap();
+                assert_eq!(patches.len(), 2);
+                for (actual, expected) in patches[1].grid[..4]
+                    .iter()
+                    .zip(expected_edges[flag as usize - 1])
+                {
+                    assert!((actual[0] - expected[0]).abs() < 1e-4);
+                    assert!((actual[1] - expected[1]).abs() < 1e-4);
+                }
+                for i in 0..2 {
+                    assert!(
+                        (patches[1].c[i][0] - expected_colours[flag as usize - 1][i]).abs() < 1e-6
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bilinear_raw_sample_preserves_cross_term_and_reuses_output_storage() {
+        let patch = MeshPatch {
+            grid: [[0.0, 0.0]; 16],
+            c: [
+                vec![0.0, 0.0],
+                vec![0.0, 1.0],
+                vec![1.0, 1.0],
+                vec![0.0, 0.0],
+            ],
+        };
+        let mut raw = Vec::with_capacity(2);
+        let allocation = raw.as_ptr();
+        patch.sample_raw_into(0.25, 0.75, &mut raw).unwrap();
+        assert_eq!(raw, vec![0.1875, 0.25], "raw[0]=u*v, raw[1]=u");
+        assert_eq!(raw.as_ptr(), allocation);
+        patch
+            .sample_raw_into_validated(1.00001, -0.00001, &mut raw)
+            .unwrap();
+        assert_eq!(raw, vec![0.0, 1.0], "UV cạnh phải được kẹp");
+    }
+
+    #[test]
+    fn patch_function_input_stays_raw_for_nonlinear_evaluation() {
+        let doc = Document::new();
+        let function = crate::color::space::resolve_function(
+            &doc,
+            &lopdf::Object::Dictionary(dictionary! {
+                "FunctionType" => 2, "Domain" => vec![0.into(), 1.into()],
+                "C0" => vec![0.into()], "C1" => vec![1.into()], "N" => 2,
+            }),
+        )
+        .unwrap();
+        let patches = parse_patch_mesh(
+            &doc,
+            &base_dict(7, 1),
+            7,
+            &square_patch_record(true, 0),
+            Some(&function),
+            1,
+        )
+        .unwrap();
+        assert!((patches[0].c[1][0] - 1.0 / 3.0).abs() < 1e-6);
+        let mut raw = Vec::new();
+        patches[0].sample_raw_into(0.5, 0.5, &mut raw).unwrap();
+        assert!((raw[0] - 0.5).abs() < 1e-6);
+        assert!((function.eval(&raw)[0] - 0.25).abs() < 1e-6);
+    }
+
+    #[test]
+    fn patch_control_bounds_conservatively_cover_affine_transformed_surface() {
+        let doc = Document::new();
+        let mut patch = parse_patch_mesh(
+            &doc,
+            &base_dict(7, 1),
+            7,
+            &square_patch_record(true, 0),
+            None,
+            1,
+        )
+        .unwrap()
+        .remove(0);
+        patch.grid[5] = [-25.0, 150.0];
+        let ctm = Matrix::new(0.0, 2.0, -3.0, 0.0, 10.0, 20.0);
+        let bounds = patch.control_bounds(&ctm).unwrap();
+        assert_eq!(bounds, [-440.0, -30.0, 10.0, 220.0]);
+        for triangle in patch.tessellate().triangles() {
+            for point in triangle.p {
+                let (x, y) = ctm.apply(point[0], point[1]);
+                assert!(x >= bounds[0] - 1e-4 && x <= bounds[2] + 1e-4);
+                assert!(y >= bounds[1] - 1e-4 && y <= bounds[3] + 1e-4);
+            }
+        }
+        assert!(patch
+            .control_bounds(&Matrix::new(f32::NAN, 0.0, 0.0, 1.0, 0.0, 0.0))
+            .is_none());
+    }
+
+    #[test]
+    fn patch_validation_rejects_malformed_deserialized_values_without_panicking() {
+        let patch = MeshPatch {
+            grid: [[0.0, 0.0]; 16],
+            c: std::array::from_fn(|_| vec![0.5]),
+        };
+        let mut json = serde_json::to_value(&patch).unwrap();
+        let mut restored: MeshPatch = serde_json::from_value(json.clone()).unwrap();
+        restored.validate(1).unwrap();
+        json["c"][2] = serde_json::json!([]);
+        restored = serde_json::from_value(json).unwrap();
+        assert!(restored.validate(1).is_err());
+        let mut raw = vec![99.0];
+        assert!(restored.sample_raw_into(0.5, 0.5, &mut raw).is_err());
+        assert!(raw.is_empty());
+        restored.c[2] = vec![f32::NAN];
+        assert!(restored
+            .sample_raw_into_validated(0.5, 0.5, &mut raw)
+            .is_err());
+        restored.c[2] = vec![0.5];
+        assert!(restored
+            .sample_raw_into(f32::INFINITY, 0.5, &mut raw)
+            .is_err());
+        restored.grid[3][0] = f32::NAN;
+        assert!(restored.validate(1).is_err());
+    }
+
+    #[test]
+    fn patch_parser_rejects_truncation_invalid_flags_and_declared_size_without_payload() {
+        let doc = Document::new();
+        let dict = base_dict(7, 1);
+        let mut data = square_patch_record(true, 0);
+        data.pop();
+        assert!(parse_patch_mesh(&doc, &dict, 7, &data, None, 1).is_err());
+        for flag in [1, 2, 3, 4, 255] {
+            assert!(
+                parse_patch_mesh(&doc, &dict, 7, &square_patch_record(true, flag), None, 1)
+                    .is_err()
+            );
+        }
+        assert!(parse_patch_mesh(&doc, &dict, 7, &[0], None, usize::MAX).is_err());
+        assert!(parse_patch_mesh(&doc, &dict, 7, &[], None, 1).is_err());
+        assert!(parse_mesh(&doc, &dict, 7, &square_patch_record(true, 0), None, 1).is_err());
+    }
+
+    #[test]
+    fn bounded_patch_parser_counts_stream_metadata_colours_and_outer_capacity() {
+        let doc = Document::new();
+        let dict = base_dict(7, 1);
+        let data = square_patch_record(true, 0).repeat(3);
+        let compact_bytes = 3 * (std::mem::size_of::<MeshPatch>() + 4 * std::mem::size_of::<f32>());
+        let exact_budget = data.len() + 6 * std::mem::size_of::<f32>() + compact_bytes;
+        let patches =
+            parse_patch_mesh_bounded(&doc, &dict, 7, &data, None, 1, exact_budget, None).unwrap();
+        assert_eq!(patches.len(), 3);
+        assert_eq!(
+            patches.capacity(),
+            3,
+            "gần budget không bắt buộc giữ capacity4"
+        );
+        assert!(matches!(
+            parse_patch_mesh_bounded(&doc, &dict, 7, &data, None, 1, exact_budget - 1, None),
+            Err(PpeError::MemoryBudgetExceeded { .. })
+        ));
+        // Nếu chỉ đếm payload input mà bỏ Vec/metadata, ca này sẽ lọt budget.
+        assert!(matches!(
+            parse_patch_mesh_bounded(&doc, &dict, 7, &data, None, 1, data.len(), None),
+            Err(PpeError::MemoryBudgetExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn bounded_free_mesh_accounts_for_reused_vertices_without_extra_state_copies() {
+        let doc = Document::new();
+        let dict = base_dict(4, 1);
+        let data = [
+            vertex4(0, 0, 0, 0),
+            vertex4(0, 255, 0, 0),
+            vertex4(0, 0, 255, 0),
+            vertex4(1, 255, 255, 255),
+        ]
+        .concat();
+        let exact_budget = data.len()
+            + 6 * std::mem::size_of::<f32>()
+            + 2 * (std::mem::size_of::<MeshTriangle>() + 3 * std::mem::size_of::<f32>());
+        let triangles =
+            parse_mesh_bounded(&doc, &dict, 4, &data, None, 1, exact_budget, None).unwrap();
+        assert_eq!(triangles.len(), 2);
+        assert!(matches!(
+            parse_mesh_bounded(&doc, &dict, 4, &data, None, 1, exact_budget - 1, None),
+            Err(PpeError::MemoryBudgetExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn bounded_lattice_accounts_for_two_live_rows_and_preserves_cell_order() {
+        let doc = Document::new();
+        let mut dict = base_dict(5, 1);
+        dict.set("VerticesPerRow", 2);
+        let data = [0, 0, 0, 255, 0, 85, 0, 255, 170, 255, 255, 255];
+        let row_bytes = 2 * std::mem::size_of::<Vertex>() + 2 * std::mem::size_of::<f32>();
+        let exact_budget = data.len()
+            + 6 * std::mem::size_of::<f32>()
+            + 2 * row_bytes
+            + 2 * (std::mem::size_of::<MeshTriangle>() + 3 * std::mem::size_of::<f32>());
+        let triangles =
+            parse_mesh_bounded(&doc, &dict, 5, &data, None, 1, exact_budget, None).unwrap();
+        assert_eq!(triangles.len(), 2);
+        assert_eq!(triangles[0].p, [[0.0, 0.0], [100.0, 0.0], [0.0, 100.0]]);
+        assert_eq!(triangles[1].p, [[100.0, 0.0], [100.0, 100.0], [0.0, 100.0]]);
+        assert!(matches!(
+            parse_mesh_bounded(&doc, &dict, 5, &data, None, 1, exact_budget - 1, None),
+            Err(PpeError::MemoryBudgetExceeded { .. })
+        ));
+        dict.set("VerticesPerRow", i64::MAX);
+        assert!(parse_mesh_bounded(&doc, &dict, 5, &data, None, 1, 4096, None).is_err());
+    }
+
+    #[test]
+    fn bounded_mesh_parsers_preserve_cancelled_error() {
+        let doc = Document::new();
+        let token = CancelToken::new();
+        let mut budget = MeshParseBudget::new(4096, 0, Some(&token)).unwrap();
+        let mut temporary = Vec::<f32>::new();
+        budget.reserve_exact(&mut temporary, 1).unwrap();
+        token.cancel();
+        assert!(matches!(
+            budget.reserve_exact(&mut temporary, 2),
+            Err(PpeError::Cancelled)
+        ));
+        for shading_type in [4, 5] {
+            assert!(matches!(
+                parse_mesh_bounded(
+                    &doc,
+                    &base_dict(shading_type, 1),
+                    shading_type,
+                    &[],
+                    None,
+                    1,
+                    4096,
+                    Some(&token)
+                ),
+                Err(PpeError::Cancelled)
+            ));
+        }
+        for shading_type in [6, 7] {
+            assert!(matches!(
+                parse_patch_mesh_bounded(
+                    &doc,
+                    &base_dict(shading_type, 1),
+                    shading_type,
+                    &[],
+                    None,
+                    1,
+                    4096,
+                    Some(&token)
+                ),
+                Err(PpeError::Cancelled)
+            ));
+        }
     }
 
     #[test]

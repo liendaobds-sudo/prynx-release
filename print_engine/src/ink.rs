@@ -603,6 +603,60 @@ struct RgbSidecar {
     mode: RgbSurfaceMode,
 }
 
+/// CORRECTNESS (audit 2026-09-28 §PPE.K.C1): dữ liệu shape chỉ cấp trong
+/// nhánh group thử nghiệm. Alpha hiện hữu vẫn là đóng góp của group, không
+/// phải alpha của backdrop. C1 chỉ chứng nhận phép tính Normal CMYK cơ bản.
+#[derive(Debug)]
+struct TransparencyGroup {
+    knockout: bool,
+    complete: bool,
+    shape: Vec<f32>,
+    /// None biểu diễn backdrop bằng 0, không cấp bốn plane trắng vô ích.
+    initial: Option<Vec<Vec<f32>>>,
+    /// Alpha vật lý của backdrop, khác alpha đóng góp của riêng group.
+    initial_alpha: GroupBackdropAlpha,
+    /// Lease bao shape và snapshot; capacity giữ nguyên khi crop tại chỗ.
+    _memory: MemoryLease,
+}
+
+/// COLOR (audit 2026-09-28 §KNOCK.C2a): alpha vật lý của nền có thể khác
+/// alpha đóng góp group. Hai giá trị hằng tránh cấp plane khi nền đục/trong.
+#[derive(Debug)]
+enum GroupBackdropAlpha {
+    Transparent,
+    Opaque,
+    Samples(Vec<f32>),
+}
+
+impl GroupBackdropAlpha {
+    fn at(&self, index: usize) -> f32 {
+        match self {
+            Self::Transparent => 0.0,
+            Self::Opaque => 1.0,
+            Self::Samples(values) => values[index],
+        }
+    }
+}
+
+/// Đường legacy chưa giữ snapshot alpha khi group non-isolated nằm trên nền
+/// bán trong. Không đoán nền ấy đục khi một group knockout bắt đầu bên trong.
+#[derive(Debug, Clone, Copy)]
+enum LegacyBackdropAlpha {
+    Transparent,
+    Opaque,
+    Unknown,
+}
+
+/// COLOR (audit 2026-09-28 §KNOCK.C2b): hệ số dùng chung cho phép ghi thật
+/// và dự báo TAC. Chỉ giữ scalar, không cấp phát snapshot cho từng ứng viên ảnh.
+#[derive(Clone, Copy)]
+struct GroupCompositeFactors {
+    shape: f32,
+    alpha: f32,
+    reference_alpha: f32,
+    knockout: bool,
+}
+
 /// Buffer mực n kênh, lưu theo **mặt phẳng** (plane-major).
 ///
 /// Plane-major (mỗi kênh một mảng liên tục) thay vì interleaved vì:
@@ -641,6 +695,8 @@ pub struct InkBuffer {
     rgb_surface_mode: RgbSurfaceMode,
     /// Scratch cho `composite_region_tac_guard` — tránh cấp phát mỗi vành.
     ring_filter_scratch: Vec<f32>,
+    transparency_group: Option<TransparencyGroup>,
+    legacy_backdrop_alpha: LegacyBackdropAlpha,
 }
 
 impl InkBuffer {
@@ -701,6 +757,8 @@ impl InkBuffer {
             rgb_sidecar: None,
             rgb_sidecar_allowed: true,
             ring_filter_scratch: Vec::new(),
+            transparency_group: None,
+            legacy_backdrop_alpha: LegacyBackdropAlpha::Opaque,
         })
     }
 
@@ -808,6 +866,23 @@ impl InkBuffer {
             crop_width,
             crop_height,
         );
+        if let Some(group) = self.transparency_group.as_mut() {
+            crop_plane_in_place(
+                &mut group.shape, source_width, crop_x, crop_y, crop_width, crop_height,
+            );
+            if let Some(initial) = group.initial.as_mut() {
+                for plane in initial {
+                    crop_plane_in_place(
+                        plane, source_width, crop_x, crop_y, crop_width, crop_height,
+                    );
+                }
+            }
+            if let GroupBackdropAlpha::Samples(initial_alpha) = &mut group.initial_alpha {
+                crop_plane_in_place(
+                    initial_alpha, source_width, crop_x, crop_y, crop_width, crop_height,
+                );
+            }
+        }
         if let Some(sidecar) = self.rgb_sidecar.as_mut() {
             crop_plane_in_place(
                 &mut sidecar.pixels,
@@ -965,6 +1040,7 @@ impl InkBuffer {
             self.budget.reserve(plane_bytes)?;
             match zeroed_plane(px, self.budget.limit) {
                 Ok(plane) => {
+                    self.invalidate_transparency_group();
                     self.planes.push(plane);
                     self.reserved_bytes += plane_bytes;
                 }
@@ -1101,6 +1177,7 @@ impl InkBuffer {
             return Ok(());
         }
 
+        self.invalidate_transparency_group();
         self.composite_rgb_region(coverage, region, paint);
 
         let first_spot = if paint.blend.is_separable() { 0 } else { 4 };
@@ -1426,6 +1503,7 @@ impl InkBuffer {
         if coverage <= 0.0 || index >= self.alpha.len() {
             return;
         }
+        self.invalidate_transparency_group();
         let a = (coverage * paint.alpha).clamp(0.0, 1.0);
         self.composite_rgb_at(index, coverage, paint);
         let first_spot = if paint.blend.is_separable() { 0 } else { 4 };
@@ -1510,6 +1588,7 @@ impl InkBuffer {
             return false;
         }
 
+        self.invalidate_transparency_group();
         let (process, _zero_spots) = self.planes.split_at_mut(4);
         let [cyan, magenta, yellow, black] = process else {
             return false;
@@ -1569,6 +1648,462 @@ impl InkBuffer {
     /// Độ phủ tích luỹ theo từng pixel — xem [`InkBuffer::alpha`].
     pub fn alpha_plane(&self) -> &[f32] {
         &self.alpha
+    }
+
+    /// Có context shape được cấp phát; chưa có nghĩa mọi primitive đã hỗ trợ.
+    pub fn has_transparency_group(&self) -> bool {
+        self.transparency_group.is_some()
+    }
+
+    /// Chỉ true khi toàn bộ ghi vào group đi qua hợp đồng shape của C1.
+    pub fn has_complete_transparency_group(&self) -> bool {
+        self.transparency_group.as_ref().is_some_and(|group| group.complete)
+    }
+
+    pub fn is_knockout_group(&self) -> bool {
+        self.transparency_group.as_ref().is_some_and(|group| group.knockout)
+    }
+
+    /// Shape tích lũy khác alpha; caller phải kiểm complete trước khi merge mới.
+    pub fn group_shape_plane(&self) -> Option<&[f32]> {
+        self.transparency_group.as_ref().map(|group| group.shape.as_slice())
+    }
+
+    pub(crate) fn invalidate_transparency_group(&mut self) {
+        if let Some(group) = self.transparency_group.as_mut() {
+            group.complete = false;
+        }
+    }
+
+    fn require_group_surface(&self, blend: BlendMode) -> PpeResult<()> {
+        if self.space.len() != self.planes.len() || self.planes.len() < 4
+            || self.rgb_sidecar.is_some() || !blend.is_separable()
+        {
+            return Err(PpeError::Unsupported(
+                "Group shape chỉ hỗ trợ blend tách kênh CMYK/spot; chưa hỗ trợ RGB".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// COLOR (audit 2026-09-28 §KNOCK.C2b): ISO 11.7.4.2 chỉ áp blend
+    /// bảo toàn trắng cho mực pha. Difference/Exclusion phải về Normal trên
+    /// spot, dù bốn kênh process vẫn dùng mode gốc; không đổi compositor legacy.
+    #[inline]
+    fn group_channel_blend(blend: BlendMode, channel: usize) -> BlendMode {
+        if channel >= 4 && matches!(blend, BlendMode::Difference | BlendMode::Exclusion) {
+            BlendMode::Normal
+        } else {
+            blend
+        }
+    }
+
+    fn physical_alpha_at(&self, index: usize) -> Option<f32> {
+        if let Some(group) = &self.transparency_group {
+            let initial = group.initial_alpha.at(index);
+            return Some(initial + (1.0 - initial) * self.alpha[index]);
+        }
+        match self.legacy_backdrop_alpha {
+            LegacyBackdropAlpha::Opaque => Some(1.0),
+            LegacyBackdropAlpha::Transparent => Some(self.alpha[index]),
+            LegacyBackdropAlpha::Unknown => None,
+        }
+    }
+
+    fn physical_backdrop_is_opaque(&self) -> bool {
+        self.transparency_group.as_ref().map_or(
+            matches!(self.legacy_backdrop_alpha, LegacyBackdropAlpha::Opaque),
+            |group| matches!(group.initial_alpha, GroupBackdropAlpha::Opaque),
+        )
+    }
+
+    /// Kiểm trước khi dựng child để nhánh blend không vẽ xong mới phát hiện
+    /// parent legacy thiếu alpha nền; caller giữ guard/fallback nguyên vẹn.
+    pub(crate) fn can_merge_transparency_group(&self, blend: BlendMode) -> bool {
+        self.require_group_surface(blend).is_ok()
+            && (!self.has_transparency_group() || self.has_complete_transparency_group())
+            && (blend.is_normal() || self.physical_alpha_at(0).is_some())
+    }
+
+    /// Tạo group C1 Normal: backdrop của con non-isolated nằm trong cha K
+    /// phải là backdrop BAN ĐẦU của cha, không phải các phần tử trước nó.
+    /// Group K=false vẫn giữ shape để khi merge vào cha K không mất coverage.
+    /// Đây không phải capability knockout đầy đủ; interpreter vẫn giữ warning.
+    pub fn child_transparency_group(
+        &self,
+        isolated: bool,
+        knockout: bool,
+    ) -> PpeResult<InkBuffer> {
+        self.require_group_surface(BlendMode::Normal)?;
+        let knockout_parent = self.transparency_group.as_ref().filter(|group| group.knockout);
+        let initial_source = if isolated {
+            None
+        } else if let Some(parent) = knockout_parent {
+            parent.initial.as_deref()
+        } else {
+            Some(self.planes.as_slice())
+        };
+        let initial_alpha_kind = if isolated {
+            0
+        } else if let Some(parent) = knockout_parent {
+            match parent.initial_alpha {
+                GroupBackdropAlpha::Transparent => 0,
+                GroupBackdropAlpha::Opaque => 1,
+                GroupBackdropAlpha::Samples(_) => 2,
+            }
+        } else if self.physical_backdrop_is_opaque() {
+            1
+        } else if self.physical_alpha_at(0).is_some() {
+            2
+        } else {
+            return Err(PpeError::Unsupported(
+                "Group shape thiếu alpha nền của group legacy non-isolated".into(),
+            ));
+        };
+        let pixel_count = self.alpha.len();
+        let extra_planes = 1 + if initial_source.is_some() { self.planes.len() } else { 0 }
+            + usize::from(initial_alpha_kind == 2);
+        let memory = self.reserve_temporary(buffer_bytes(pixel_count, extra_planes)?)?;
+        let shape = zeroed_plane(pixel_count, self.budget.limit)?;
+        let initial = initial_source.map(|planes| {
+            planes.iter().map(|plane| copy_samples(plane, self.budget.limit))
+                .collect::<PpeResult<Vec<_>>>()
+        }).transpose()?;
+        let initial_alpha = match initial_alpha_kind {
+            0 => GroupBackdropAlpha::Transparent,
+            1 => GroupBackdropAlpha::Opaque,
+            _ => {
+                let mut values = zeroed_plane(pixel_count, self.budget.limit)?;
+                for (index, value) in values.iter_mut().enumerate() {
+                    *value = knockout_parent.map_or_else(
+                        || self.physical_alpha_at(index).expect("đã kiểm nguồn alpha nền"),
+                        |parent| parent.initial_alpha.at(index),
+                    );
+                }
+                GroupBackdropAlpha::Samples(values)
+            }
+        };
+        let mut child = self.child_buffer(false, None)?;
+        if let Some(initial) = &initial {
+            for (target, source) in child.planes.iter_mut().zip(initial) {
+                target.copy_from_slice(source);
+            }
+        }
+        child.transparency_group = Some(TransparencyGroup {
+            knockout,
+            complete: self.transparency_group.as_ref().is_none_or(|group| group.complete),
+            shape,
+            initial,
+            initial_alpha,
+            _memory: memory,
+        });
+        Ok(child)
+    }
+
+    /// Composite C1 nhận coverage HÌNH HỌC chưa nhân SMask/opacity.
+    /// `/AIS false`: f=coverage, a=coverage*ca; `/AIS true`: f=a.
+    /// Mực P là premultiplied: K dùng P'=(1-f)P+(f-a)P0+a*Cs.
+    /// Không bỏ opacity=0 vì shape khác 0 vẫn xóa phần tử cũ trong group K.
+    pub fn composite_group_region(
+        &mut self,
+        coverage: &[f32],
+        region: Region,
+        paint: &InkPaint,
+        alpha_is_shape: bool,
+    ) -> PpeResult<()> {
+        if !paint.blend.is_normal() {
+            return Err(PpeError::Unsupported(
+                "Composite group C1 chỉ nhận Normal; blend phải dùng hợp đồng C2".into(),
+            ));
+        }
+        self.composite_group_region_masked(coverage, region, paint, alpha_is_shape, None)
+    }
+
+    fn validate_group_paint(&self, paint: &InkPaint) -> PpeResult<()> {
+        self.require_group_surface(paint.blend)?;
+        if paint.overprint || paint.blend_rgb.is_some()
+            || paint.ink.len() > self.planes.len()
+            || (self.planes.len() < 64 && paint.declared.0 >> self.planes.len() != 0)
+        {
+            return Err(PpeError::Unsupported(
+                "Composite group chưa hỗ trợ overprint/RGB hoặc kênh chưa đồng bộ".into(),
+            ));
+        }
+        if !self.has_complete_transparency_group() {
+            return Err(PpeError::Unsupported("Group thiếu shape đầy đủ".into()));
+        }
+        if !paint.alpha.is_finite()
+            || paint.ink.iter().any(|value| !value.is_finite())
+        {
+            return Err(PpeError::MalformedPdf("Paint của group không hợp lệ".into()));
+        }
+        Ok(())
+    }
+
+    /// COLOR (audit 2026-09-28 §KNOCK.C2a): shape vào chưa nhân alpha hằng
+    /// hay SMask. AIS chỉ đổi vai trò các nguồn alpha, không đổi clip hình học.
+    pub fn composite_group_at(
+        &mut self,
+        index: usize,
+        geometric_shape: f32,
+        paint: &InkPaint,
+        alpha_is_shape: bool,
+        soft_alpha: Option<f32>,
+    ) -> PpeResult<()> {
+        self.validate_group_sample_at(index, geometric_shape, paint, soft_alpha)?;
+        self.composite_group_at_validated(
+            index, geometric_shape, paint, alpha_is_shape, soft_alpha.unwrap_or(1.0),
+        );
+        Ok(())
+    }
+
+    /// TAC dự kiến ngay trên surface group hiện hành sau một mẫu ảnh.
+    ///
+    /// COLOR (audit 2026-09-28 §KNOCK.C2b): so mực NGUỒN là sai khi một
+    /// texel khoét sibling/backdrop nhiều mực hơn nó. Hàm thuần đọc này dùng
+    /// đúng phép tính của compositor, không đổi shape/alpha hoặc giữ thêm RAM.
+    /// Đây không phải dự báo sau merge các group cha: blend/SMask ở biên ngoài
+    /// có thể đổi thứ tự TAC, nhất là khi surface hiện tại là isolated.
+    pub fn projected_group_tac_at(
+        &self,
+        index: usize,
+        geometric_shape: f32,
+        paint: &InkPaint,
+        alpha_is_shape: bool,
+        soft_alpha: Option<f32>,
+    ) -> PpeResult<f32> {
+        self.validate_group_sample_at(index, geometric_shape, paint, soft_alpha)?;
+        let factors = self.group_composite_factors(
+            index, geometric_shape, paint.alpha, alpha_is_shape, soft_alpha.unwrap_or(1.0),
+        );
+        if factors.shape <= 0.0 {
+            return Ok(self.planes.iter().map(|plane| plane[index]).sum());
+        }
+        let group = self.transparency_group.as_ref().expect("đã kiểm context group");
+        Ok(self.planes.iter().enumerate().map(|(channel, plane)| {
+            let initial = group.initial.as_ref().map_or(0.0, |planes| planes[channel][index]);
+            Self::group_composite_channel(factors, channel, plane[index], initial, paint)
+        }).sum())
+    }
+
+    fn validate_group_sample_at(
+        &self,
+        index: usize,
+        geometric_shape: f32,
+        paint: &InkPaint,
+        soft_alpha: Option<f32>,
+    ) -> PpeResult<()> {
+        self.validate_group_paint(paint)?;
+        if index >= self.alpha.len() || !geometric_shape.is_finite()
+            || soft_alpha.is_some_and(|value| !value.is_finite())
+        {
+            return Err(PpeError::MalformedPdf("Shape hoặc alpha pixel của group không hợp lệ".into()));
+        }
+        Ok(())
+    }
+
+    pub fn composite_group_region_masked(
+        &mut self,
+        coverage: &[f32],
+        region: Region,
+        paint: &InkPaint,
+        alpha_is_shape: bool,
+        soft_mask: Option<&SoftMask>,
+    ) -> PpeResult<()> {
+        self.validate_group_paint(paint)?;
+        if coverage.len() != self.alpha.len() {
+            return Err(PpeError::MalformedPdf("Kích thước shape của group không hợp lệ".into()));
+        }
+        let region = region.clamped(self.width, self.height);
+        let width = self.width as usize;
+        // Kiểm dữ liệu trước khi ghi, tránh lỗi input để lại nửa group mới.
+        for y in region.y0..region.y1 {
+            let start = y as usize * width + region.x0 as usize;
+            let end = y as usize * width + region.x1 as usize;
+            if coverage[start..end].iter().any(|value| !value.is_finite()) {
+                return Err(PpeError::MalformedPdf("Shape của group phải hữu hạn".into()));
+            }
+            if soft_mask.is_some_and(|mask| (region.x0..region.x1).any(|x| !mask.value_at(x, y).is_finite())) {
+                return Err(PpeError::MalformedPdf("SMask của group phải hữu hạn".into()));
+            }
+        }
+        for y in region.y0..region.y1 {
+            let row = y as usize * width;
+            for x in region.x0..region.x1 {
+                let index = row + x as usize;
+                self.composite_group_at_validated(index, coverage[index], paint, alpha_is_shape,
+                    soft_mask.map_or(1.0, |mask| mask.value_at(x, y)));
+            }
+        }
+        Ok(())
+    }
+
+    fn composite_group_at_validated(
+        &mut self,
+        index: usize,
+        geometric: f32,
+        paint: &InkPaint,
+        alpha_is_shape: bool,
+        soft_alpha: f32,
+    ) {
+        let factors = self.group_composite_factors(index, geometric, paint.alpha, alpha_is_shape, soft_alpha);
+        if factors.shape <= 0.0 { return; }
+        let group = self.transparency_group.as_mut().expect("đã kiểm context group");
+        for (channel, plane) in self.planes.iter_mut().enumerate() {
+            let initial = group.initial.as_ref().map_or(0.0, |planes| planes[channel][index]);
+            plane[index] = Self::group_composite_channel(factors, channel, plane[index], initial, paint);
+        }
+        group.shape[index] = group.shape[index] + (1.0 - group.shape[index]) * factors.shape;
+        let previous_alpha = self.alpha[index];
+        self.alpha[index] = (previous_alpha * (1.0 - if factors.knockout { factors.shape } else { factors.alpha }) + factors.alpha)
+            .clamp(0.0, group.shape[index]);
+    }
+
+    #[inline]
+    fn group_composite_factors(
+        &self,
+        index: usize,
+        geometric: f32,
+        paint_alpha: f32,
+        alpha_is_shape: bool,
+        soft_alpha: f32,
+    ) -> GroupCompositeFactors {
+        let geometric = geometric.clamp(0.0, 1.0);
+        let opacity = paint_alpha.clamp(0.0, 1.0) * soft_alpha.clamp(0.0, 1.0);
+        let alpha = geometric * opacity;
+        let shape = if alpha_is_shape { alpha } else { geometric };
+        let group = self.transparency_group.as_ref().expect("đã kiểm context group");
+        let initial_alpha = group.initial_alpha.at(index);
+        let reference_alpha = if group.knockout { initial_alpha }
+            else { initial_alpha + (1.0 - initial_alpha) * self.alpha[index] };
+        GroupCompositeFactors { shape, alpha, reference_alpha, knockout: group.knockout }
+    }
+
+    #[inline]
+    fn group_composite_channel(
+        factors: GroupCompositeFactors,
+        channel: usize,
+        previous: f32,
+        initial: f32,
+        paint: &InkPaint,
+    ) -> f32 {
+        let GroupCompositeFactors { shape, alpha, reference_alpha, knockout } = factors;
+        let source = if paint.declared.contains(channel) {
+            paint.ink.get(channel).copied().unwrap_or(0.0).clamp(0.0, 1.0)
+        } else { 0.0 };
+        let reference = if knockout { initial } else { previous };
+        let blend = Self::group_channel_blend(paint.blend, channel);
+        let mixed = if blend.is_normal() || reference_alpha <= 0.0 { source }
+            else { (1.0 - reference_alpha) * source
+                + reference_alpha * blend.blend_ink(reference / reference_alpha, source) };
+        if knockout {
+            previous * (1.0 - shape) + initial * (shape - alpha) + mixed * alpha
+        } else {
+            previous * (1.0 - alpha) + mixed * alpha
+        }
+    }
+
+    /// Merge C1 Normal, không SMask/overprint: R=Pchild-(1-GA)*P0child là
+    /// mực nguồn đã nhân alpha. Dùng ca*R trực tiếp, không chia alpha nhỏ.
+    /// Khi GA=0 nhưng shape>0, group con vẫn có tác dụng knockout trên cha K.
+    pub fn merge_transparency_group(
+        &mut self,
+        child: &InkBuffer,
+        region: Region,
+        group_alpha: f32,
+        alpha_is_shape: bool,
+    ) -> PpeResult<()> {
+        self.merge_transparency_group_masked(child, region, group_alpha, alpha_is_shape, None, BlendMode::Normal)
+    }
+
+    /// Merge một object group: SMask/ca tác động shape khi AIS=true, opacity
+    /// khi AIS=false. Blend đọc màu thẳng và alpha vật lý, không đọc GA như A.
+    pub fn merge_transparency_group_masked(
+        &mut self,
+        child: &InkBuffer,
+        region: Region,
+        group_alpha: f32,
+        alpha_is_shape: bool,
+        soft_mask: Option<&SoftMask>,
+        blend: BlendMode,
+    ) -> PpeResult<()> {
+        self.require_group_surface(blend)?;
+        child.require_group_surface(blend)?;
+        if !child.has_complete_transparency_group()
+            || (self.has_transparency_group() && !self.has_complete_transparency_group())
+        {
+            return Err(PpeError::Unsupported("Không merge shape C1 từ group chưa đầy đủ".into()));
+        }
+        if self.width != child.width || self.height != child.height || !group_alpha.is_finite() {
+            return Err(PpeError::MalformedPdf("Kích thước hoặc alpha group C1 không hợp lệ".into()));
+        }
+        if self.planes.len() != child.planes.len() {
+            return Err(PpeError::Unsupported("Merge group chưa đồng bộ kênh mực".into()));
+        }
+        if !blend.is_normal() && self.physical_alpha_at(0).is_none() {
+            return Err(PpeError::Unsupported("Merge blend thiếu alpha nền của group legacy".into()));
+        }
+        let opacity = group_alpha.clamp(0.0, 1.0);
+        let child_group = child.transparency_group.as_ref().expect("đã kiểm context con C1");
+        let region = region.clamped(self.width, self.height);
+        let width = self.width as usize;
+        if let Some(mask) = soft_mask {
+            for y in region.y0..region.y1 {
+                if (region.x0..region.x1).any(|x| !mask.value_at(x, y).is_finite()) {
+                    return Err(PpeError::MalformedPdf("SMask merge group phải hữu hạn".into()));
+                }
+            }
+        }
+        for y in region.y0..region.y1 {
+            let row = y as usize * width;
+            for x in region.x0..region.x1 {
+                let index = row + x as usize;
+                let child_alpha = child.alpha[index].clamp(0.0, 1.0);
+                let factor = opacity * soft_mask.map_or(1.0, |mask| mask.value_at(x, y).clamp(0.0, 1.0));
+                let alpha = child_alpha * factor;
+                let shape = child_group.shape[index] * if alpha_is_shape { factor } else { 1.0 };
+                if shape <= 0.0 { continue; }
+                let parent_knockout = self.transparency_group.as_ref().is_some_and(|group| group.knockout);
+                let reference_alpha = if parent_knockout {
+                    self.transparency_group.as_ref().expect("đã kiểm K").initial_alpha.at(index)
+                } else { self.physical_alpha_at(index).unwrap_or(1.0) };
+                for channel in 0..self.planes.len() {
+                    let child_initial = child_group.initial.as_ref().map_or(0.0, |planes| planes[channel][index]);
+                    let source = (child.planes[channel][index] - (1.0 - child_alpha) * child_initial)
+                        .clamp(0.0, child_alpha);
+                    let previous = self.planes[channel][index];
+                    let initial = self.transparency_group.as_ref().and_then(|group| group.initial.as_ref())
+                        .map_or(0.0, |planes| planes[channel][index]);
+                    let reference = if parent_knockout { initial } else { previous };
+                    let channel_blend = Self::group_channel_blend(blend, channel);
+                    let mixed = if channel_blend.is_normal() || reference_alpha <= 0.0 || child_alpha <= 0.0 {
+                        factor * source
+                    } else {
+                        let source_color = source / child_alpha;
+                        factor * ((1.0 - reference_alpha) * source + reference_alpha * child_alpha
+                            * channel_blend.blend_ink(reference / reference_alpha, source_color))
+                    };
+                    self.planes[channel][index] = if parent_knockout {
+                        previous * (1.0 - shape) + initial * (shape - alpha) + mixed
+                    } else {
+                        previous * (1.0 - alpha) + mixed
+                    };
+                }
+                let previous_alpha = self.alpha[index];
+                let next_alpha = if parent_knockout {
+                    previous_alpha * (1.0 - shape) + alpha
+                } else {
+                    previous_alpha * (1.0 - alpha) + alpha
+                };
+                if let Some(group) = self.transparency_group.as_mut() {
+                    group.shape[index] = group.shape[index] + (1.0 - group.shape[index]) * shape;
+                    self.alpha[index] = next_alpha.clamp(0.0, group.shape[index]);
+                } else {
+                    self.alpha[index] = next_alpha.clamp(0.0, 1.0);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Buffer con cho **transparency group không cách ly** (non-isolated).
@@ -1715,11 +2250,20 @@ impl InkBuffer {
             rgb_sidecar: None,
             rgb_sidecar_allowed: rgb_surface_mode.is_some(),
             ring_filter_scratch: Vec::new(),
+            transparency_group: None,
+            legacy_backdrop_alpha: if !copy_planes {
+                LegacyBackdropAlpha::Transparent
+            } else if self.physical_backdrop_is_opaque() {
+                LegacyBackdropAlpha::Opaque
+            } else {
+                LegacyBackdropAlpha::Unknown
+            },
         })
     }
 
     /// Tô kín buffer bằng một màu mà không dựng mảng coverage trung gian.
     pub(crate) fn composite_solid(&mut self, paint: &InkPaint) -> PpeResult<()> {
+        self.invalidate_transparency_group();
         self.sync_channels()?;
         // PERF (audit 2026-08-10 §L4B2.SMASK): backdrop của luminosity mask là
         // một màu đục Normal phủ trọn buffer. Đi qua `composite_at` từng pixel sẽ
@@ -1979,6 +2523,7 @@ impl InkBuffer {
         blend: BlendMode,
         overprint: bool,
     ) {
+        self.invalidate_transparency_group();
         let n = self.planes.len().min(child.planes.len());
         let separable = blend.is_separable();
         let region = region
@@ -2075,6 +2620,7 @@ impl InkBuffer {
         blend: BlendMode,
         overprint: bool,
     ) {
+        self.invalidate_transparency_group();
         let n = self.planes.len().min(child.planes.len());
         let separable = blend.is_separable();
         let region = region
@@ -2575,6 +3121,559 @@ mod tests {
 
     fn cmyk(c: f32, m: f32, y: f32, k: f32) -> Vec<f32> {
         vec![c, m, y, k]
+    }
+
+    // Oracle riêng theo hai bước ISO 11.4.6: dựng object với shape=1,
+    // sau đó nội suy theo shape. Không gọi helper composite/blend của engine.
+    fn c2_oracle_blend(mode: BlendMode, backdrop: f64, source: f64) -> f64 {
+        match mode {
+            BlendMode::Normal => source,
+            BlendMode::Multiply => 1.0 - (1.0 - backdrop) * (1.0 - source),
+            BlendMode::Screen => backdrop * source,
+            BlendMode::Overlay => if backdrop >= 0.5 {
+                1.0 - 2.0 * (1.0 - backdrop) * (1.0 - source)
+            } else { 2.0 * backdrop * source },
+            BlendMode::Darken => backdrop.max(source),
+            BlendMode::Lighten => backdrop.min(source),
+            BlendMode::ColorDodge => if backdrop >= 1.0 { 1.0 }
+                else if source <= 0.0 { 0.0 } else { (1.0 - (1.0 - backdrop) / source).max(0.0) },
+            BlendMode::ColorBurn => if backdrop <= 0.0 { 0.0 }
+                else if source >= 1.0 { 1.0 } else { (backdrop / (1.0 - source)).min(1.0) },
+            BlendMode::HardLight => if source >= 0.5 {
+                1.0 - 2.0 * (1.0 - backdrop) * (1.0 - source)
+            } else { 2.0 * backdrop * source },
+            BlendMode::SoftLight => {
+                let b = 1.0 - backdrop;
+                let s = 1.0 - source;
+                1.0 - if s <= 0.5 {
+                    b - (1.0 - 2.0 * s) * b * (1.0 - b)
+                } else {
+                    let d = if b <= 0.25 { ((16.0 * b - 12.0) * b + 4.0) * b } else { b.sqrt() };
+                    b + (2.0 * s - 1.0) * (d - b)
+                }
+            },
+            BlendMode::Difference => 1.0 - (backdrop - source).abs(),
+            BlendMode::Exclusion => 1.0 - ((1.0 - backdrop) + (1.0 - source)
+                - 2.0 * (1.0 - backdrop) * (1.0 - source)),
+            _ => panic!("oracle chỉ dùng các phép đã khai tường minh"),
+        }
+    }
+
+    const C2_SEPARABLE_MODES: [BlendMode; 12] = [
+        BlendMode::Normal, BlendMode::Multiply, BlendMode::Screen, BlendMode::Overlay,
+        BlendMode::Darken, BlendMode::Lighten, BlendMode::ColorDodge, BlendMode::ColorBurn,
+        BlendMode::HardLight, BlendMode::SoftLight, BlendMode::Difference, BlendMode::Exclusion,
+    ];
+
+    #[test]
+    fn c2b_projected_group_tac_matches_composite_without_mutating_the_surface() {
+        for isolated in [false, true] {
+            for knockout in [false, true] {
+                for ais in [false, true] {
+                    for initial_alpha in [0.0, 0.35, 1.0] {
+                        for mode in C2_SEPARABLE_MODES {
+                            let mut space = InkSpace::new();
+                            space.register(Colorant::Spot("Named".into())).unwrap();
+                            space.register(Colorant::Spot("Unspecified".into())).unwrap();
+                            let root = InkBuffer::new(3, 1, space).unwrap();
+                            let mut parent = root.child_transparency_group(true, false).unwrap();
+                            let mut initial = InkPaint::opaque(
+                                vec![0.8, 0.3, 0.2, 0.1, 0.8, 0.6], root.space.all_channels_mask(),
+                            );
+                            initial.alpha = initial_alpha;
+                            parent.composite_group_at(1, 1.0, &initial, false, None).unwrap();
+                            let mut group = parent.child_transparency_group(isolated, knockout).unwrap();
+                            let mut prior = InkPaint::opaque(vec![0.6; 6], root.space.all_channels_mask());
+                            prior.alpha = 0.45;
+                            group.composite_group_at(1, 0.7, &prior, false, None).unwrap();
+                            let mut paint = InkPaint::opaque(
+                                vec![0.2, 0.7, 0.3, 0.8, 0.55], ChannelMask::PROCESS.with(4),
+                            );
+                            paint.blend = mode;
+                            // Gồm alpha0 có shape, lỗ Mask, soft alpha0 và giá trị
+                            // hữu hạn ngoài [0,1] cần clamp giống đường ghi thật.
+                            for (shape, alpha, soft) in [
+                                (0.0, 1.0, None), (1.0, 0.0, None),
+                                (0.65, 0.7, Some(0.0)), (0.8, 0.4, Some(0.6)),
+                                (1.0, 1.0, Some(1.0)), (-0.2, 1.0, Some(0.5)),
+                                (1.2, 1.3, Some(1.4)), (0.8, 0.5, Some(-0.3)),
+                            ] {
+                                paint.alpha = alpha;
+                                let before_planes = group.planes.clone();
+                                let before_alpha = group.alpha.clone();
+                                let before_shape = group.group_shape_plane().unwrap().to_vec();
+                                let before_memory = group.memory_used_bytes();
+                                let projected = group.projected_group_tac_at(1, shape, &paint, ais, soft).unwrap();
+                                assert_eq!(group.planes, before_planes);
+                                assert_eq!(group.alpha, before_alpha);
+                                assert_eq!(group.group_shape_plane().unwrap(), before_shape);
+                                assert_eq!(group.memory_used_bytes(), before_memory);
+                                assert!(group.has_complete_transparency_group());
+                                group.composite_group_at(1, shape, &paint, ais, soft).unwrap();
+                                let actual: f32 = group.planes.iter().map(|plane| plane[1]).sum();
+                                assert_eq!(projected, actual,
+                                    "I={isolated}, K={knockout}, AIS={ais}, A0={initial_alpha}, BM={mode:?}");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn c2b_projected_group_tac_scores_result_instead_of_incoming_ink() {
+        let mut root = InkBuffer::new(1, 1, InkSpace::new()).unwrap();
+        let full_ink = InkPaint::opaque(vec![1.0; 4], ChannelMask::PROCESS);
+        let black = InkPaint::opaque(cmyk(0.0, 0.0, 0.0, 1.0), ChannelMask::PROCESS);
+        let white = InkPaint::opaque(vec![0.0; 4], ChannelMask::PROCESS);
+        let mut group = root.child_transparency_group(false, true).unwrap();
+        group.composite_group_at(0, 1.0, &full_ink, false, None).unwrap();
+        assert_eq!(group.projected_group_tac_at(0, 0.0, &black, false, None).unwrap(), 4.0,
+            "Lỗ Mask giữ sibling 400%, dù mực nguồn hữu hiệu bằng không");
+        assert_eq!(group.projected_group_tac_at(0, 1.0, &black, false, None).unwrap(), 1.0);
+        assert_eq!(group.projected_group_tac_at(0, 1.0, &black, false, Some(0.0)).unwrap(), 0.0,
+            "SMask0 với AIS=false vẫn khoét về backdrop trắng");
+        assert_eq!(group.projected_group_tac_at(0, 1.0, &black, true, Some(0.0)).unwrap(), 4.0);
+        root.composite_at(0, 1.0, &full_ink);
+        let mut group = root.child_transparency_group(false, true).unwrap();
+        group.composite_group_at(0, 1.0, &white, false, None).unwrap();
+        assert_eq!(group.projected_group_tac_at(0, 1.0, &white, false, Some(0.0)).unwrap(), 4.0);
+        assert_eq!(group.projected_group_tac_at(0, 1.0, &white, false, Some(1.0)).unwrap(), 0.0,
+            "Tăng soft mask không đảm bảo tăng TAC sau knockout");
+    }
+
+    #[test]
+    fn c2b_projected_group_tac_rejects_the_same_invalid_inputs_as_composite() {
+        let root = InkBuffer::new(1, 1, InkSpace::new()).unwrap();
+        let mut group = root.child_transparency_group(true, true).unwrap();
+        let paint = InkPaint::opaque(vec![0.4; 4], ChannelMask::PROCESS);
+        for (index, shape, soft) in [
+            (1, 1.0, None), (0, f32::NAN, None), (0, f32::INFINITY, None),
+            (0, 1.0, Some(f32::NAN)), (0, 1.0, Some(f32::NEG_INFINITY)),
+        ] {
+            let projected = group.projected_group_tac_at(index, shape, &paint, false, soft).unwrap_err();
+            let actual = group.composite_group_at(index, shape, &paint, false, soft).unwrap_err();
+            assert_eq!(projected.to_string(), actual.to_string());
+        }
+        for invalid in 0..5 {
+            let mut invalid_paint = paint.clone();
+            match invalid {
+                0 => invalid_paint.alpha = f32::NAN,
+                1 => invalid_paint.ink[0] = f32::INFINITY,
+                2 => invalid_paint.overprint = true,
+                3 => invalid_paint.blend_rgb = Some([0.2; 3]),
+                _ => invalid_paint.blend = BlendMode::Hue,
+            }
+            let projected = group.projected_group_tac_at(0, 1.0, &invalid_paint, false, None).unwrap_err();
+            let actual = group.composite_group_at(0, 1.0, &invalid_paint, false, None).unwrap_err();
+            assert_eq!(projected.to_string(), actual.to_string());
+        }
+        assert!(root.projected_group_tac_at(0, 1.0, &paint, false, None).is_err());
+        assert!(group.planes.iter().flatten().all(|value| *value == 0.0));
+        assert_eq!(group.alpha_plane(), &[0.0]);
+        assert_eq!(group.group_shape_plane().unwrap(), &[0.0]);
+        group.invalidate_transparency_group();
+        assert!(group.projected_group_tac_at(0, 1.0, &paint, false, None).is_err());
+    }
+
+    #[test]
+    fn c2b_spot_primitive_blends_follow_white_preserving_rule() {
+        for isolated in [false, true] {
+            for knockout in [false, true] {
+                for mode in C2_SEPARABLE_MODES {
+                    let mut space = InkSpace::new();
+                    space.register(Colorant::Spot("Named".into())).unwrap();
+                    space.register(Colorant::Spot("Unspecified".into())).unwrap();
+                    let root = InkBuffer::new(1, 1, space).unwrap();
+                    let mut parent = root.child_transparency_group(true, false).unwrap();
+                    let initial_colors = [0.8, 0.3, 0.2, 0.1, 0.8, 0.6];
+                    let mut background = InkPaint::opaque(initial_colors.map(|x| x as f32).to_vec(), root.space.all_channels_mask());
+                    background.alpha = 0.25;
+                    parent.composite_group_at(0, 1.0, &background, false, None).unwrap();
+                    let mut group = parent.child_transparency_group(isolated, knockout).unwrap();
+                    let mut prior = InkPaint::opaque(vec![0.2; 6], root.space.all_channels_mask());
+                    prior.alpha = 0.5;
+                    group.composite_group_at(0, 1.0, &prior, false, None).unwrap();
+                    let mut paint = InkPaint::opaque(vec![0.4; 5], ChannelMask::PROCESS.with(4));
+                    paint.alpha = 0.5;
+                    paint.blend = mode;
+                    group.composite_group_at(0, 0.6, &paint, false, None).unwrap();
+                    let initial_alpha = if isolated { 0.0 } else { 0.25 };
+                    let physical_alpha = initial_alpha + (1.0 - initial_alpha) * 0.5;
+                    for (channel, color) in initial_colors.into_iter().enumerate() {
+                        let initial = color * initial_alpha;
+                        let previous = initial * 0.5 + 0.1;
+                        let reference_alpha = if knockout { initial_alpha } else { physical_alpha };
+                        let reference = if knockout { initial } else { previous };
+                        let reference_color = if reference_alpha > 0.0 { reference / reference_alpha } else { 0.0 };
+                        let source = if channel == 5 { 0.0 } else { 0.4 };
+                        let spot_mode = if channel >= 4 && matches!(mode, BlendMode::Difference | BlendMode::Exclusion) {
+                            BlendMode::Normal
+                        } else { mode };
+                        let mixed = (1.0 - reference_alpha) * source
+                            + reference_alpha * c2_oracle_blend(spot_mode, reference_color, source);
+                        let expected = if knockout { previous * 0.4 + initial * 0.3 + mixed * 0.3 }
+                            else { previous * 0.7 + mixed * 0.3 };
+                        c2_assert_close(group.plane(channel)[0], expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn c2b_spot_group_merge_substitutes_normal_for_difference_and_exclusion() {
+        for isolated in [false, true] {
+            for knockout in [false, true] {
+                for mode in C2_SEPARABLE_MODES {
+                    let mut space = InkSpace::new();
+                    space.register(Colorant::Spot("Named".into())).unwrap();
+                    space.register(Colorant::Spot("Unspecified".into())).unwrap();
+                    let root = InkBuffer::new(1, 1, space).unwrap();
+                    let mut backdrop = root.child_transparency_group(true, false).unwrap();
+                    let initial_colors = [0.8, 0.3, 0.2, 0.1, 0.8, 0.6];
+                    let mut background = InkPaint::opaque(initial_colors.map(|x| x as f32).to_vec(), root.space.all_channels_mask());
+                    background.alpha = 0.25;
+                    backdrop.composite_group_at(0, 1.0, &background, false, None).unwrap();
+                    let mut parent = backdrop.child_transparency_group(isolated, knockout).unwrap();
+                    let mut prior = InkPaint::opaque(vec![0.2; 6], root.space.all_channels_mask());
+                    prior.alpha = 0.5;
+                    parent.composite_group_at(0, 1.0, &prior, false, None).unwrap();
+                    let mut child = parent.child_transparency_group(false, false).unwrap();
+                    let mut paint = InkPaint::opaque(vec![0.4; 5], ChannelMask::PROCESS.with(4));
+                    paint.alpha = 0.5;
+                    child.composite_group_at(0, 0.6, &paint, false, None).unwrap();
+                    parent.merge_transparency_group_masked(&child, Region::full(1, 1), 0.5, false, None, mode).unwrap();
+                    let initial_alpha = if isolated { 0.0 } else { 0.25 };
+                    let physical_alpha = initial_alpha + (1.0 - initial_alpha) * 0.5;
+                    for (channel, color) in initial_colors.into_iter().enumerate() {
+                        let initial = color * initial_alpha;
+                        let previous = initial * 0.5 + 0.1;
+                        let reference_alpha = if knockout { initial_alpha } else { physical_alpha };
+                        let reference = if knockout { initial } else { previous };
+                        let reference_color = if reference_alpha > 0.0 { reference / reference_alpha } else { 0.0 };
+                        let source = if channel == 5 { 0.0 } else { 0.4 };
+                        let spot_mode = if channel >= 4 && matches!(mode, BlendMode::Difference | BlendMode::Exclusion) {
+                            BlendMode::Normal
+                        } else { mode };
+                        let mixed = (1.0 - reference_alpha) * source
+                            + reference_alpha * c2_oracle_blend(spot_mode, reference_color, source);
+                        let expected = if knockout { previous * 0.4 + initial * 0.45 + mixed * 0.15 }
+                            else { previous * 0.85 + mixed * 0.15 };
+                        c2_assert_close(parent.plane(channel)[0], expected);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn c2b_n_channel_domain_still_rejects_rgb_overprint_and_nonseparable() {
+        let mut space = InkSpace::new();
+        space.register(Colorant::Spot("Spot".into())).unwrap();
+        let mut root = InkBuffer::new(1, 1, space).unwrap();
+        let mut group = root.child_transparency_group(true, true).unwrap();
+        let region = Region::full(1, 1);
+        let base = InkPaint::opaque(vec![0.4; 5], root.space.all_channels_mask());
+        assert!(group.can_merge_transparency_group(BlendMode::Multiply));
+        for mode in [BlendMode::Hue, BlendMode::Saturation, BlendMode::Color, BlendMode::Luminosity] {
+            let mut paint = base.clone();
+            paint.blend = mode;
+            assert!(group.composite_group_at(0, 1.0, &paint, false, None).is_err());
+            assert!(!group.can_merge_transparency_group(mode));
+            assert!(root.merge_transparency_group_masked(&group, region, 1.0, false, None, mode).is_err());
+        }
+        let mut rgb = base.clone();
+        rgb.blend_rgb = Some([0.1, 0.2, 0.3]);
+        assert!(group.composite_group_at(0, 1.0, &rgb, false, None).is_err());
+        let mut overprint = base;
+        overprint.overprint = true;
+        assert!(group.composite_group_at(0, 1.0, &overprint, false, None).is_err());
+        assert!(group.planes.iter().flatten().all(|value| *value == 0.0));
+        assert_eq!(group.alpha_plane(), &[0.0]);
+        assert_eq!(group.group_shape_plane().unwrap(), &[0.0]);
+        assert!(group.has_complete_transparency_group());
+        let mut rgb_root = InkBuffer::new(1, 1, InkSpace::new()).unwrap();
+        assert!(rgb_root.ensure_rgb_sidecar().unwrap());
+        assert!(!rgb_root.can_merge_transparency_group(BlendMode::Normal));
+        assert!(rgb_root.child_transparency_group(true, true).is_err());
+    }
+
+    fn c2_assert_close(actual: f32, expected: f64) {
+        assert!((actual as f64 - expected).abs() < 2e-6, "actual={actual}, expected={expected}");
+    }
+
+    #[test]
+    fn c2_separable_blends_use_physical_not_group_alpha() {
+        let region = Region::full(1, 1);
+        for initial_alpha in [0.0, 0.2, 0.65, 1.0] {
+            for knockout in [false, true] {
+                for ais in [false, true] {
+                    for mode in [BlendMode::Normal, BlendMode::Multiply, BlendMode::Screen,
+                        BlendMode::Difference, BlendMode::Exclusion]
+                    {
+                        let root = InkBuffer::new(1, 1, InkSpace::new()).unwrap();
+                        let mut parent = root.child_transparency_group(true, false).unwrap();
+                        let initial_color = [0.15, 0.35, 0.65, 0.85];
+                        let mut initial = InkPaint::opaque(initial_color.map(|x| x as f32).to_vec(), ChannelMask::PROCESS);
+                        initial.alpha = initial_alpha as f32;
+                        parent.composite_group_region(&[1.0], region, &initial, false).unwrap();
+                        let mut child = parent.child_transparency_group(false, knockout).unwrap();
+                        let mut expected = initial_color.map(|color| color * initial_alpha);
+                        let mut full_alpha = initial_alpha;
+                        let mut expected_group_alpha = 0.0;
+                        let mut expected_shape = 0.0;
+                        for (geometric, opacity, mask, colors) in [
+                            (0.75, 0.6, 0.35, [0.8, 0.7, 0.3, 0.2]),
+                            (0.4, 0.3, 0.8, [0.3, 0.1, 0.8, 0.6]),
+                        ] {
+                            let factor = opacity * mask;
+                            let shape = geometric * if ais { factor } else { 1.0 };
+                            let alpha = geometric * factor;
+                            let object_opacity = if shape == 0.0 { 0.0 } else { alpha / shape };
+                            let reference_alpha = if knockout { initial_alpha } else { full_alpha };
+                            for channel in 0..4 {
+                                let reference_color = if knockout { initial_color[channel] }
+                                    else if full_alpha == 0.0 { 0.0 } else { expected[channel] / full_alpha };
+                                let temporary = (1.0 - object_opacity) * reference_alpha * reference_color
+                                    + object_opacity * ((1.0 - reference_alpha) * colors[channel]
+                                        + reference_alpha * c2_oracle_blend(mode, reference_color, colors[channel]));
+                                expected[channel] = (1.0 - shape) * expected[channel] + shape * temporary;
+                            }
+                            let temporary_alpha = reference_alpha + (1.0 - reference_alpha) * object_opacity;
+                            full_alpha = (1.0 - shape) * full_alpha + shape * temporary_alpha;
+                            expected_group_alpha = expected_group_alpha * (1.0 - if knockout { shape } else { alpha }) + alpha;
+                            expected_shape += (1.0 - expected_shape) * shape;
+                            let mut paint = InkPaint::opaque(colors.map(|x| x as f32).to_vec(), ChannelMask::PROCESS);
+                            paint.alpha = opacity as f32;
+                            paint.blend = mode;
+                            child.composite_group_at(0, geometric as f32, &paint, ais, Some(mask as f32)).unwrap();
+                        }
+                        for (channel, expected) in expected.into_iter().enumerate() {
+                            c2_assert_close(child.plane(channel)[0], expected);
+                        }
+                        c2_assert_close(child.alpha_plane()[0], expected_group_alpha);
+                        c2_assert_close(child.group_shape_plane().unwrap()[0], expected_shape);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn c2_soft_mask_zero_keeps_knockout_shape_only_when_ais_false() {
+        let root = InkBuffer::new(2, 1, InkSpace::new()).unwrap();
+        let region = Region::full(2, 1);
+        let cyan = InkPaint::opaque(cmyk(1.0, 0.0, 0.0, 0.0), ChannelMask::PROCESS);
+        let mut magenta = InkPaint::opaque(cmyk(0.0, 1.0, 0.0, 0.0), ChannelMask::PROCESS);
+        magenta.alpha = 0.5;
+        let mut mask = root.new_soft_mask(region, 0.0).unwrap();
+        mask.values_mut().copy_from_slice(&[0.0, 0.5]);
+        for ais in [false, true] {
+            let mut group = root.child_transparency_group(true, true).unwrap();
+            group.composite_group_region(&[1.0, 1.0], region, &cyan, false).unwrap();
+            group.composite_group_region_masked(&[1.0, 1.0], region, &magenta, ais, Some(&mask)).unwrap();
+            assert_eq!(group.plane(0), if ais { &[1.0, 0.75] } else { &[0.0, 0.0] });
+            assert_eq!(group.plane(1), &[0.0, 0.25]);
+            assert_eq!(group.alpha_plane(), if ais { &[1.0, 1.0] } else { &[0.0, 0.25] });
+        }
+    }
+
+    #[test]
+    fn c2_normal_knockout_retains_all_spot_planes_and_budget() {
+        let mut space = InkSpace::new();
+        space.register(Colorant::Spot("Spot A".into())).unwrap();
+        space.register(Colorant::Spot("Spot B".into())).unwrap();
+        let mut root = InkBuffer::new(1, 1, space).unwrap();
+        let region = Region::full(1, 1);
+        let initial = InkPaint::opaque(vec![0.4, 0.0, 0.0, 0.0, 0.8, 0.6], root.space.all_channels_mask());
+        root.composite_region(&[1.0], region, &initial).unwrap();
+        let baseline = root.memory_used_bytes();
+        let mut group = root.child_transparency_group(false, true).unwrap();
+        let cyan = InkPaint::opaque(cmyk(1.0, 0.0, 0.0, 0.0), ChannelMask::PROCESS);
+        group.composite_group_region(&[1.0], region, &cyan, false).unwrap();
+        assert_eq!(group.plane(4), &[0.0]);
+        let mut spot = InkPaint::opaque(vec![0.0, 0.0, 0.0, 0.0, 1.0], ChannelMask::EMPTY.with(4));
+        spot.alpha = 0.25;
+        group.composite_group_region(&[1.0], region, &spot, false).unwrap();
+        c2_assert_close(group.plane(0)[0], 0.3);
+        c2_assert_close(group.plane(4)[0], 0.85);
+        c2_assert_close(group.plane(5)[0], 0.45);
+        root.merge_transparency_group(&group, region, 0.5, false).unwrap();
+        c2_assert_close(root.plane(0)[0], 0.35);
+        c2_assert_close(root.plane(4)[0], 0.825);
+        c2_assert_close(root.plane(5)[0], 0.525);
+        let mut unsupported = cyan.clone();
+        unsupported.blend = BlendMode::Hue;
+        assert!(group.composite_group_at(0, 1.0, &unsupported, false, None).is_err());
+        drop(group);
+        assert_eq!(root.memory_used_bytes(), baseline);
+    }
+
+    #[test]
+    fn c2_legacy_isolated_backdrop_alpha_is_sampled_and_crop_stays_aligned() {
+        let root = InkBuffer::new(2, 1, InkSpace::new()).unwrap();
+        let mut parent = root.child_isolated().unwrap();
+        let mut cyan = InkPaint::opaque(cmyk(0.8, 0.0, 0.0, 0.0), ChannelMask::PROCESS);
+        cyan.alpha = 0.25;
+        parent.composite_region(&[0.4, 1.0], Region::full(2, 1), &cyan).unwrap();
+        let baseline = root.memory_used_bytes();
+        let mut group = parent.child_transparency_group(false, true).unwrap();
+        group.crop_raster_in_place(1, 0, 1, 1).unwrap();
+        let mut source = InkPaint::opaque(cmyk(0.6, 0.0, 0.0, 0.0), ChannelMask::PROCESS);
+        source.blend = BlendMode::Multiply;
+        source.alpha = 0.5;
+        group.composite_group_at(0, 1.0, &source, false, None).unwrap();
+        // P0=.25*.8=.2; B=.92; P'=.5*.2+.5*(.75*.6+.25*.92)=.44.
+        c2_assert_close(group.plane(0)[0], 0.44);
+        let nested = group.child_transparency_group(false, false).unwrap();
+        c2_assert_close(nested.physical_alpha_at(0).unwrap(), 0.25);
+        c2_assert_close(nested.plane(0)[0], 0.2);
+        drop(nested);
+        drop(group);
+        assert_eq!(root.memory_used_bytes(), baseline);
+        let unknown = parent.child_non_isolated().unwrap();
+        assert!(unknown.child_transparency_group(false, true).is_err());
+        assert!(unknown.can_merge_transparency_group(BlendMode::Normal));
+        assert!(!unknown.can_merge_transparency_group(BlendMode::Multiply));
+        assert!(parent.can_merge_transparency_group(BlendMode::Multiply));
+        assert!(!parent.can_merge_transparency_group(BlendMode::Hue));
+    }
+
+    #[test]
+    fn c2_masked_blended_merge_removes_partial_backdrop_once() {
+        let root = InkBuffer::new(1, 1, InkSpace::new()).unwrap();
+        let region = Region::full(1, 1);
+        let mut cyan = InkPaint::opaque(cmyk(0.8, 0.0, 0.0, 0.0), ChannelMask::PROCESS);
+        cyan.alpha = 0.25;
+        let mut source = InkPaint::opaque(cmyk(0.6, 0.0, 0.0, 0.0), ChannelMask::PROCESS);
+        source.alpha = 0.5;
+        for knockout in [false, true] {
+            for ais in [false, true] {
+                let mut parent = root.child_transparency_group(true, knockout).unwrap();
+                parent.composite_group_region(&[1.0], region, &cyan, false).unwrap();
+                let mut child = parent.child_transparency_group(false, false).unwrap();
+                child.composite_group_region(&[1.0], region, &source, false).unwrap();
+                let mut mask = root.new_soft_mask(region, 0.0).unwrap();
+                mask.values_mut()[0] = 0.5;
+                parent.merge_transparency_group_masked(&child, region, 0.5, ais, Some(&mask), BlendMode::Multiply).unwrap();
+                // Nền của child trong cha K là transparent, không phải cyan trước nó.
+                let expected = if knockout { if ais { 0.225 } else { 0.075 } } else { 0.26 };
+                c2_assert_close(parent.plane(0)[0], expected);
+                let alpha = if knockout { if ais { 0.3125 } else { 0.125 } } else { 0.34375 };
+                c2_assert_close(parent.alpha_plane()[0], alpha);
+            }
+        }
+    }
+
+    #[test]
+    fn c2_rejects_malformed_masks_and_nonseparable_without_partial_writes() {
+        let root = InkBuffer::new(2, 1, InkSpace::new()).unwrap();
+        let region = Region::full(2, 1);
+        let mut group = root.child_transparency_group(true, true).unwrap();
+        let mut paint = InkPaint::opaque(cmyk(0.8, 0.0, 0.0, 0.0), ChannelMask::PROCESS);
+        let mut mask = root.new_soft_mask(region, 0.0).unwrap();
+        mask.values_mut().copy_from_slice(&[1.0, f32::NAN]);
+        assert!(group.composite_group_region_masked(&[1.0, 1.0], region, &paint, false, Some(&mask)).is_err());
+        assert!(group.composite_group_at(0, 1.0, &paint, false, Some(f32::NAN)).is_err());
+        paint.blend = BlendMode::Hue;
+        assert!(group.composite_group_at(0, 1.0, &paint, false, None).is_err());
+        assert_eq!(group.alpha_plane(), &[0.0, 0.0]);
+        assert_eq!(group.group_shape_plane().unwrap(), &[0.0, 0.0]);
+        assert!(group.planes.iter().flatten().all(|value| *value == 0.0));
+    }
+
+    #[test]
+    fn c1_legacy_writes_invalidate_shape_without_changing_legacy_api() {
+        let root = InkBuffer::new(1, 1, InkSpace::new()).unwrap();
+        assert!(!root.has_transparency_group());
+        let paint = InkPaint::opaque(cmyk(0.0, 1.0, 0.0, 0.0), ChannelMask::PROCESS);
+        let region = Region::full(1, 1);
+        for mutation in 0..5 {
+            let mut group = root.child_transparency_group(false, true).unwrap();
+            assert!(group.has_complete_transparency_group());
+            match mutation {
+                0 => group.composite_at(0, 1.0, &paint),
+                1 => group.composite_region(&[1.0], region, &paint).unwrap(),
+                2 => group.composite_solid(&paint).unwrap(),
+                3 => {
+                    let child = group.child_non_isolated().unwrap();
+                    group.merge_non_isolated(&child, region, 1.0, None, BlendMode::Normal, false);
+                }
+                _ => {
+                    let child = group.child_isolated().unwrap();
+                    group.merge_isolated(&child, region, 1.0, None, BlendMode::Normal, false);
+                }
+            }
+            assert!(group.has_transparency_group());
+            assert!(!group.has_complete_transparency_group());
+            assert!(group.composite_group_region(&[1.0], region, &paint, false).is_err());
+            let child = group.child_transparency_group(true, false).unwrap();
+            assert!(!child.has_complete_transparency_group());
+        }
+        let mut group = root.child_transparency_group(true, true).unwrap();
+        assert!(!group.composite_process_shading_pixels_parallel(
+            region, BlendMode::Normal, false, None,
+            |_, _, _| Some(([0.0, 1.0, 0.0, 0.0], ChannelMask::PROCESS, 1.0)),
+        ));
+        assert!(group.has_complete_transparency_group(), "nhánh parallel từ chối chưa ghi gì");
+        group.space_mut().register(Colorant::Spot("C1 unsupported".into())).unwrap();
+        group.sync_channels().unwrap();
+        assert!(!group.has_complete_transparency_group());
+    }
+
+    #[test]
+    fn c1_crop_keeps_shape_backdrop_and_full_capacity_budget_together() {
+        let mut root = InkBuffer::new(2, 2, InkSpace::new()).unwrap();
+        for (index, cyan) in [0.25, 0.5, 0.75, 1.0].into_iter().enumerate() {
+            root.composite_at(index, 1.0, &InkPaint::opaque(cmyk(cyan, 0.0, 0.0, 0.0), ChannelMask::PROCESS));
+        }
+        let baseline = root.memory_used_bytes();
+        let mut group = root.child_transparency_group(false, true).unwrap();
+        let mut magenta = InkPaint::opaque(cmyk(0.0, 1.0, 0.0, 0.0), ChannelMask::PROCESS);
+        magenta.alpha = 0.5;
+        group.composite_group_region(&[0.25, 0.5, 0.75, 1.0], Region::full(2, 2), &magenta, false).unwrap();
+        let planes = group.planes.clone();
+        let alpha = group.alpha.clone();
+        let used = root.memory_used_bytes();
+        group.crop_raster_in_place(1, 0, 1, 2).unwrap();
+        for (actual, old) in group.planes.iter().zip(&planes) {
+            assert_eq!(actual, &vec![old[1], old[3]]);
+        }
+        assert_eq!(group.alpha, vec![alpha[1], alpha[3]]);
+        assert_eq!(group.group_shape_plane().unwrap(), &[0.5, 1.0]);
+        assert!(group.has_complete_transparency_group());
+        assert_eq!(root.memory_used_bytes(), used, "crop giữ capacity, không giảm reservation giả");
+        let nested = group.child_transparency_group(false, false).unwrap();
+        assert_eq!(nested.plane(0), &[0.5, 1.0], "con đọc backdrop ban đầu đã crop, không đọc màu trước nó");
+        assert_eq!(nested.plane(1), &[0.0, 0.0]);
+        drop(nested);
+        drop(group);
+        assert_eq!(root.memory_used_bytes(), baseline);
+    }
+
+    #[test]
+    fn c1_rejects_unsupported_or_malformed_paint_before_writing() {
+        let root = InkBuffer::new(1, 1, InkSpace::new()).unwrap();
+        let mut group = root.child_transparency_group(true, true).unwrap();
+        let region = Region::full(1, 1);
+        let base = InkPaint::opaque(cmyk(0.0, 1.0, 0.0, 0.0), ChannelMask::PROCESS);
+        let mut overprint = base.clone();
+        overprint.overprint = true;
+        assert!(group.composite_group_region(&[1.0], region, &overprint, false).is_err());
+        let mut non_normal = base.clone();
+        non_normal.blend = BlendMode::Multiply;
+        assert!(group.composite_group_region(&[1.0], region, &non_normal, false).is_err());
+        let mut rgb = base.clone();
+        rgb.blend_rgb = Some([1.0, 0.0, 0.0]);
+        assert!(group.composite_group_region(&[1.0], region, &rgb, false).is_err());
+        assert!(group.composite_group_region(&[f32::NAN], region, &base, false).is_err());
+        assert!(group.composite_group_region(&[], region, &base, false).is_err());
+        assert_eq!(group.alpha_plane(), &[0.0]);
+        assert_eq!(group.group_shape_plane().unwrap(), &[0.0]);
+        assert!(group.planes.iter().flatten().all(|value| *value == 0.0));
+        assert!(group.has_complete_transparency_group());
     }
 
     #[test]

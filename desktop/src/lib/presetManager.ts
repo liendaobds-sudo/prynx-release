@@ -74,6 +74,7 @@ export interface ImpositionPreset {
     gridStrategy: GridStrategyKind;
     /** Optional để preset cũ mặc định về tắt. */
     alternateRotation?: 'none' | 'row' | 'column';
+    alternateRotationAlignment?: 'foot_to_foot' | 'head_to_head';
     duplexFlow: 'normal' | 'double';
     align: string;
     clusterMode: 'none' | 'row' | 'column';

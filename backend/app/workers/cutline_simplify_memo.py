@@ -20,6 +20,7 @@ import sys
 from threading import Lock
 import time
 from uuid import uuid4
+from app.utils.cutline_debug_log import log_cutline
 from app.workers.cutline_preview_cancel import check_preview_cancelled
 
 
@@ -37,6 +38,15 @@ def _memo_budget_bytes(total_ram_mb):
     if total_ram_mb is None or total_ram_mb <= 0 or total_ram_mb >= 16 * 1024:
         return None
     return (16 if total_ram_mb < 8 * 1024 else 64) * 1024 * 1024
+
+
+def _current_memo_budget_bytes():
+    # PERF (audit 2026-09-28 §PERF28.03): chỉ lớp runtime đọc installed;
+    # policy và broker nhận RAM minh thị vẫn độc lập với máy chạy.
+    from app.core.system_memory import read_memory_status_mb, read_memory_tier_mb
+
+    total_mb, _available_mb = read_memory_status_mb()
+    return _memo_budget_bytes(read_memory_tier_mb(total_mb))
 
 
 def _object_bytes(value, seen=None):
@@ -171,13 +181,11 @@ def with_simplify_memo(function):
         shared = kwargs.pop("_shared_simplify_memo", None)
         # Không làm mất memo scope của preview đang thu kết quả để bàn giao.
         if supplied is not None:
-            from app.core.system_memory import read_memory_status_mb
-            scope = simplify_memo_scope(supplied, budget_bytes=_memo_budget_bytes(read_memory_status_mb()[0]))
+            scope = simplify_memo_scope(supplied, budget_bytes=_current_memo_budget_bytes())
         elif _MEMO.get() is not None:
             scope = nullcontext()
         else:
-            from app.core.system_memory import read_memory_status_mb
-            scope = simplify_memo_scope(budget_bytes=_memo_budget_bytes(read_memory_status_mb()[0]))
+            scope = simplify_memo_scope(budget_bytes=_current_memo_budget_bytes())
         token = _SHARED_MEMO.set(shared) if shared is not None else None
         try:
             with scope:
@@ -237,6 +245,7 @@ def memoized_simplify(function):
             return function(path_groups, **options)
         cached = memo.get(key)
         if cached is not None:
+            log_cutline("SIMPLIFY", "MEMO_HIT", f"local key={key[:12] if key else 'None'}")
             return _restore_cached(path_groups, cached)
         shared, owner = _SHARED_MEMO.get(), uuid4().hex
         if shared is not None:
@@ -247,6 +256,7 @@ def memoized_simplify(function):
                     state, cached = shared.claim(key, owner)
                     if state == "hit":
                         check_preview_cancelled()
+                        log_cutline("SIMPLIFY", "MEMO_HIT", f"shared key={key[:12] if key else 'None'}")
                         return _restore_cached(path_groups, cached)
                     if state == "compute":
                         break
@@ -268,6 +278,7 @@ def memoized_simplify(function):
                 _SHARED_MEMO.set(None)
                 shared = None
         try:
+            log_cutline("SIMPLIFY", "MEMO_MISS", f"computing key={key[:12] if key else 'None'}")
             result, stats = function(path_groups, **options)
             check_preview_cancelled()
             record = {"rings": [[deepcopy(ring) for ring in [group["exterior"], *(group.get("interiors") or [])]]

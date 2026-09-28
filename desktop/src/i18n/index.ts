@@ -1,8 +1,7 @@
-import i18n from 'i18next';
+import i18n, { type BackendModule } from 'i18next';
 import { initReactI18next } from 'react-i18next';
 
 import vi from './locales/vi.json';
-import en from './locales/en.json';
 
 export type AppLanguage = 'vi' | 'en';
 export const APP_LANGUAGES: AppLanguage[] = ['vi', 'en'];
@@ -15,12 +14,64 @@ export const APP_LANGUAGES: AppLanguage[] = ['vi', 'en'];
 // thẳng vào resources, nên chỉ cần: giữ nsSeparator ':' + TẮT keySeparator để slug key
 // (chứa '_') không bị tách. Gọi: t('preprocess.dataMerge:can_danh_so_trang').
 const NAMESPACES = Object.keys(vi);
+type TranslationCatalog = Record<string, Record<string, string>>;
 
-i18n.use(initReactI18next).init({
+// PERF (audit 2026-09-28 §PERF28.05): mọi namespace dùng chung một lần import.
+// VI luôn sẵn sàng; changeLanguage chỉ phát languageChanged sau khi EN đã nạp,
+// kể cả khi ngôn ngữ được khôi phục bất đồng bộ từ thiết lập Tauri.
+let englishCatalogPromise: Promise<TranslationCatalog> | null = null;
+let englishLoadFailed = false;
+
+function loadEnglishCatalog(): Promise<TranslationCatalog> {
+  if (!englishCatalogPromise) {
+    englishCatalogPromise = import('./locales/en.json')
+      .then(({ default: catalog }) => {
+        if (import.meta.env?.DEV) reportDivergentTranslations(catalog);
+        return catalog;
+      })
+      .catch((error: unknown) => {
+        englishLoadFailed = true;
+        throw error;
+      });
+  }
+  return englishCatalogPromise;
+}
+
+i18n.on('languageChanging', (language: string) => {
+  // Giữ promise lỗi đến hết lượt hiện tại để hàng namespace không import lại
+  // liên tiếp. Chọn EN lần sau mới thử lại; lựa chọn VI không cần chờ EN.
+  if (language?.split('-')[0] === 'en' && englishLoadFailed) {
+    englishCatalogPromise = null;
+    englishLoadFailed = false;
+  }
+});
+
+const lazyEnglishBackend: BackendModule = {
+  type: 'backend',
+  init() { /* Catalog đóng gói cục bộ, không cần cấu hình kết nối. */ },
+  read(language, namespace, callback) {
+    if (language !== 'en') {
+      callback(null, {});
+      return;
+    }
+    void loadEnglishCatalog().then(
+      (catalog) => callback(null, catalog[namespace] ?? {}),
+      (error: unknown) => callback(
+        error instanceof Error ? error : new Error('Không nạp được dữ liệu tiếng Anh.'),
+        true,
+      ),
+    );
+  },
+};
+
+i18n.use(lazyEnglishBackend).use(initReactI18next).init({
   resources: {
     vi: vi as Record<string, Record<string, string>>,
-    en: en as Record<string, Record<string, string>>,
   },
+  partialBundledLanguages: true,
+  // Lỗi chunk dùng fallback VI ngay; cờ retry của backend cho phép lượt chọn
+  // tiếp theo nạp lại, không dựng chuỗi timer tự thử trong lúc app khởi động.
+  maxRetries: 0,
   lng: 'vi',
   fallbackLng: 'vi',
   ns: NAMESPACES,
@@ -53,13 +104,9 @@ const VI_TO_KEY = new Map<string, string>();
 const VI_TO_KEY_BY_NS = new Map<string, Map<string, string>>();
 {
   const dict = vi as Record<string, Record<string, string>>;
-  const enDict = en as Record<string, Record<string, string>>;
   const nsOrder = Object.keys(dict).sort((a, b) =>
     (a === 'catalog' ? -1 : 0) - (b === 'catalog' ? -1 : 0)
   );
-  // Gom va chạm divergent vào 1 chỗ → in GỌN (1 dòng tóm tắt), không spam console
-  // mỗi va chạm 1 dòng (che mất log thật). Bật chi tiết: localStorage.tvDebug = '1'.
-  const _divergent: string[] = [];
   for (const ns of nsOrder) {
     const nsMap = new Map<string, string>();
     VI_TO_KEY_BY_NS.set(ns, nsMap);
@@ -69,31 +116,40 @@ const VI_TO_KEY_BY_NS = new Map<string, Map<string, string>>();
         const existing = VI_TO_KEY.get(val);
         if (!existing) {
           VI_TO_KEY.set(val, `${ns}:${key}`);
-        } else if (import.meta.env?.DEV) {
-          // Va chạm: chuỗi VN đã map ở ns khác. Chỉ ghi nhận nếu bản EN KHÁC nhau
-          // (divergent) — đó là "mìn ngủ": tv() match-đầu-tiên sẽ trả sai ngữ cảnh.
-          // Trùng nhưng EN giống nhau (Đóng→Close ở 16 ns) thì vô hại, im lặng.
-          const [exNs, exKey] = existing.split(/:(.*)/);
-          const enWin = enDict[exNs]?.[exKey];
-          const enThis = enDict[ns]?.[key];
-          if (enWin && enThis && enWin !== enThis) {
-            _divergent.push(
-              `  "${val}": thắng ${existing}→"${enWin}", bỏ qua ${ns}:${key}→"${enThis}" ` +
-              `(cần bản này: tv("${val}", "${ns}"))`
-            );
-          }
         }
       }
     }
   }
-  if (import.meta.env?.DEV && _divergent.length > 0) {
-    let _tvDebug = false;
-    try { _tvDebug = localStorage.getItem('tvDebug') === '1'; } catch { /* SSR / no storage */ }
-    if (_tvDebug) {
-      console.groupCollapsed(`[tv] ${_divergent.length} va chạm divergent (chi tiết)`);
-      console.warn(_divergent.join('\n'));
-      console.groupEnd();
+}
+
+function reportDivergentTranslations(enDict: TranslationCatalog): void {
+  // PERF (audit 2026-09-28 §PERF28.05): diagnostic DEV không được kéo EN vào
+  // startup VI. Khi EN nạp xong, vẫn kiểm mọi va chạm nếu tvDebug được bật.
+  try {
+    if (localStorage.getItem('tvDebug') !== '1') return;
+  } catch {
+    return;
+  }
+  const divergent: string[] = [];
+  for (const [ns, entries] of Object.entries(vi)) {
+    for (const [key, value] of Object.entries(entries)) {
+      const winner = VI_TO_KEY.get(value);
+      if (!winner || winner === `${ns}:${key}`) continue;
+      const [winnerNs, winnerKey] = winner.split(/:(.*)/);
+      const enWinner = enDict[winnerNs]?.[winnerKey];
+      const enThis = enDict[ns]?.[key];
+      if (enWinner && enThis && enWinner !== enThis) {
+        divergent.push(
+          `  "${value}": thắng ${winner}→"${enWinner}", bỏ qua ${ns}:${key}→"${enThis}" ` +
+          `(cần bản này: tv("${value}", "${ns}"))`,
+        );
+      }
     }
+  }
+  if (divergent.length > 0) {
+    console.groupCollapsed(`[tv] ${divergent.length} va chạm divergent (chi tiết)`);
+    console.warn(divergent.join('\n'));
+    console.groupEnd();
   }
 }
 

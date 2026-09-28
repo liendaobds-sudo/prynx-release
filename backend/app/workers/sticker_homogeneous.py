@@ -279,14 +279,18 @@ def _raster_artwork_bbox(page: Any, dpi: int) -> Optional[Rect]:
         arr = np.frombuffer(pm.samples, dtype=np.uint8)
         arr = arr[: h * w * n].reshape(h, w, n)
         gray = arr[:, :, :3].min(axis=2) if n >= 3 else arr[:, :, 0]
-        ys, xs = np.where(gray < 250)  # pixel "có mực" = không trắng
-        if len(xs) == 0:
+        ink = gray < 250
+        row_any = np.any(ink, axis=1)
+        if not np.any(row_any):
             return None
+        col_any = np.any(ink, axis=0)
+        y_indices = np.flatnonzero(row_any)
+        x_indices = np.flatnonzero(col_any)
         scale = float(dpi) / 72.0  # px / point
-        x0 = float(xs.min()) / scale
-        x1 = float(xs.max() + 1) / scale
-        y0 = float(ys.min()) / scale
-        y1 = float(ys.max() + 1) / scale
+        x0 = float(x_indices[0]) / scale
+        x1 = float(x_indices[-1] + 1) / scale
+        y0 = float(y_indices[0]) / scale
+        y1 = float(y_indices[-1] + 1) / scale
         # KHÔNG lật trục y: nhánh vector (extract_vector_paths) trả rect CÙNG quy ước
         # với hàng ảnh đã chia scale (đã xác minh bằng thực nghiệm — §6.1). Lật y sẽ
         # khiến clip lệch so với nhánh vector → consumer show_pdf_page lấy sai vùng.

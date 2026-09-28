@@ -328,8 +328,11 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
         // mới nằm trong nút thu gọn Nâng cao.
         expect(screen.queryByRole('button', { name: '1. Đường cắt (Dieline)' })).toBeNull();
         expect(screen.queryByRole('button', { name: '2. Tràn lề (bù xén)' })).toBeNull();
-        expect(screen.getByRole('button', { name: '3. Nâng cao' })).toBeTruthy();
-        expect(screen.getByText('Crop trang theo tem')).toBeTruthy();
+        const advancedBtn = screen.getByRole('button', { name: '3. Nâng cao' });
+        expect(advancedBtn).toBeTruthy();
+        fireEvent.click(advancedBtn);
+        expect(screen.getByText('Tách ra từng tem')).toBeTruthy();
+        expect(screen.getByText('Giữ nguyên tấm')).toBeTruthy();
         expect(screen.getByText('Chỉ tạo đường cắt trang đầu')).toBeTruthy();
         expect(screen.getByText('Đặc ruột')).toBeTruthy();
         expect(screen.getByText('Bỏ nền trắng')).toBeTruthy();
@@ -638,7 +641,7 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
         fireEvent.click(contourButton);
         expect(contourButton.getAttribute('aria-pressed')).toBe('true');
         expect(screen.queryByRole('slider', { name: 'Độ bo cong đường bế' })).toBeNull();
-        expect(screen.getByRole('button', { name: /Giữ nguyên/ }).getAttribute('aria-pressed')).toBe('true');
+        expect(screen.getByRole('button', { name: /🎯 Giữ nguyên/ }).getAttribute('aria-pressed')).toBe('true');
 
         fireEvent.click(screen.getByRole('button', { name: 'Thực thi' }));
         await waitFor(() => expect(authenticatedFetch).toHaveBeenCalledTimes(1));

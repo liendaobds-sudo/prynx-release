@@ -12,12 +12,13 @@ import json
 import logging
 import math
 import threading
+import time
 
 import cv2
 import numpy as np
 from PIL import Image
 
-from app.core.system_memory import plan_worker_count, read_memory_status_mb
+from app.core.system_memory import plan_worker_count, read_memory_status_mb, read_memory_tier_mb
 from app.workers.cutline_preview_cancel import check_preview_cancelled
 from app.core.sticker_sheet_session import (
     StickerSheetPageState,
@@ -34,6 +35,8 @@ from app.workers.sticker_engine import (
     fit_prepared_alpha_cutline_geometry,
     simplify_alpha_cutline_result,
     prepare_alpha_cutline_geometry,
+    extract_alpha_base_geometry,
+    offset_alpha_base_geometry,
     should_presmooth_cutline_alpha,
 )
 from app.workers.cutline_geometry import build_filleted_polygon_beziers
@@ -220,9 +223,12 @@ def _preview_fit_cache_key(
 def _preview_cache_limit():
     """Chỉ thu hẹp baseline tùy chọn trên máy yếu; >=16 GB giữ đầy đủ."""
     total_mb, _available_mb = read_memory_status_mb()
-    if total_mb is not None and total_mb < 8 * 1024:
+    # PERF (audit 2026-09-28 §PERF28.03 B2k): cache dùng hạng RAM lắp đặt,
+    # không tự hạ máy đủ 8/16 GiB vì vùng bộ nhớ dành cho phần cứng.
+    tier_mb = read_memory_tier_mb(total_mb)
+    if tier_mb is not None and tier_mb < 8 * 1024:
         return 2
-    if total_mb is not None and total_mb < 16 * 1024:
+    if tier_mb is not None and tier_mb < 16 * 1024:
         return 8
     return None
 
@@ -1049,6 +1055,7 @@ def build_sticker_cutline_preview(
 ) -> dict[str, object]:
     """Trả SVG path theo hệ preview; không ghi hay thay revision của session."""
     check_preview_cancelled()
+    t_preview_start = time.perf_counter()
     from app.workers.cutline_cubic_simplify import (
         CUTLINE_SIMPLIFY_ALGORITHM,
         CUTLINE_SIMPLIFY_MAX_MM,
@@ -1176,30 +1183,60 @@ def build_sticker_cutline_preview(
             separators=(",", ":"),
         ).encode("utf-8")).hexdigest()
         with session.operation_lock:
-            cached = getattr(session, "_cutline_preview_geometry_cache", None)
-        if isinstance(cached, dict) and cached.get("key") == geometry_key:
+            geom_cache = getattr(session, "_cutline_preview_geometry_cache", None)
+            if not isinstance(geom_cache, dict) or "entries" not in geom_cache:
+                geom_cache = {"entries": {}}
+                setattr(session, "_cutline_preview_geometry_cache", geom_cache)
+            cached = geom_cache["entries"].get(geometry_key)
+        if isinstance(cached, dict):
             analysis_width = int(cached["analysis_width"])
             analysis_height = int(cached["analysis_height"])
             prepared_instances = list(cached["instances"])
         else:
-            original_labels = np.load(labels_path, allow_pickle=False)
-            valid_ids = {
-                int(instance["id"])
-                for instance in page.manifest.get("instances", [])
-            }
-            labels = apply_export_edits(original_labels, edits, valid_ids)
-            page_view = _page_session_view(session, page)
-            # QUALITY (audit 2026-08-20 §CUTLINE.EDGE): với marker composite,
-            # giữ dải alpha mềm 2 px quanh nhãn; nếu cắt về 0 theo labels nhị
-            # phân thì marching-squares mất dữ liệu chuyển tiếp và đường bế bị
-            # bậc thang dù fidelity cao.
-            rgba = _build_edited_rgba(
-                page_view,
-                original_labels,
-                labels,
-                preserve_alpha_fringe=preserve_alpha_fringe,
-            )
-            analysis_height, analysis_width = labels.shape
+            # PERF (audit 2026-09-28 §CUTLABELS.CACHE): cache labels & RGBA trong RAM
+            # của session; không đọc lại file đĩa labels.npy khi chỉ đổi thông số hình học.
+            labels_cache_key = hashlib.sha256(json.dumps({
+                    "source_key": source_key,
+                    "page": page_number,
+                    "revision": revision,
+                    "edits": edits,
+                    "preserve_alpha_fringe": preserve_alpha_fringe,
+                }, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+            with session.operation_lock:
+                labels_cached = getattr(session, "_cutline_labels_rgba_cache", None)
+            if isinstance(labels_cached, dict) and labels_cached.get("key") == labels_cache_key:
+                labels = labels_cached["labels"]
+                rgba = labels_cached["rgba"]
+                analysis_width = int(labels_cached["analysis_width"])
+                analysis_height = int(labels_cached["analysis_height"])
+            else:
+                original_labels = np.load(labels_path, allow_pickle=False)
+                valid_ids = {
+                    int(instance["id"])
+                    for instance in page.manifest.get("instances", [])
+                }
+                labels = apply_export_edits(original_labels, edits, valid_ids)
+                page_view = _page_session_view(session, page)
+                # QUALITY (audit 2026-08-20 §CUTLINE.EDGE): với marker composite,
+                # giữ dải alpha mềm 2 px quanh nhãn; nếu cắt về 0 theo labels nhị
+                # phân thì marching-squares mất dữ liệu chuyển tiếp và đường bế bị
+                # bậc thang dù fidelity cao.
+                rgba = _build_edited_rgba(
+                    page_view,
+                    original_labels,
+                    labels,
+                    preserve_alpha_fringe=preserve_alpha_fringe,
+                )
+                analysis_height, analysis_width = labels.shape
+                with session.operation_lock:
+                    setattr(session, "_cutline_labels_rgba_cache", {
+                        "key": labels_cache_key,
+                        "labels": labels,
+                        "rgba": rgba,
+                        "analysis_width": analysis_width,
+                        "analysis_height": analysis_height,
+                    })
+
             prepare_jobs = _cutline_instance_alpha_jobs(
                 labels,
                 rgba[:, :, 3],
@@ -1237,16 +1274,23 @@ def build_sticker_cutline_preview(
                 prepare_instance,
                 prepare_jobs,
             )
+
             # PERF (audit 2026-08-10 §CUTLINE.LIVE3): chỉ giữ working-set mới nhất
             # của một session; đổi trang/revision/edit/offset sẽ thay cache, không
             # tích lũy vô hạn theo số lần kéo slider.
             with session.operation_lock:
-                setattr(session, "_cutline_preview_geometry_cache", {
-                    "key": geometry_key,
+                geom_cache = getattr(session, "_cutline_preview_geometry_cache", None)
+                if not isinstance(geom_cache, dict) or "entries" not in geom_cache:
+                    geom_cache = {"entries": {}}
+                    setattr(session, "_cutline_preview_geometry_cache", geom_cache)
+                geom_cache["entries"][geometry_key] = {
                     "analysis_width": analysis_width,
                     "analysis_height": analysis_height,
                     "instances": prepared_instances,
-                })
+                }
+                if len(geom_cache["entries"]) > 20:
+                    oldest_geom = next(iter(geom_cache["entries"]))
+                    geom_cache["entries"].pop(oldest_geom, None)
 
         scale_x = preview_width / max(1, analysis_width)
         scale_y = preview_height / max(1, analysis_height)
@@ -1575,4 +1619,13 @@ def build_sticker_cutline_preview(
                 cutline_denoise=requested_denoise_value, cutline_simplify_mm=cutline_simplify_mm,
             ),
         }
+        log_cutline(
+            "BACKEND",
+            "CUTLINE_PREVIEW",
+            f"page={page_number} instances={len(response_paths)}",
+            total_ms=round((time.perf_counter() - t_preview_start) * 1000, 1),
+            offset_mm=offset_mm,
+            corner_style=corner_style,
+            hit_cache=isinstance(cached_fit, dict),
+        )
         return response

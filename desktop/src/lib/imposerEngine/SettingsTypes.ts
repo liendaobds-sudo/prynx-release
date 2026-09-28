@@ -1,6 +1,6 @@
 // src/lib/imposerEngine/SettingsTypes.ts
 
-import type { GridStrategyKind } from '../../components/imposition-tools/types';
+import type { AlternateRotationAlignment, GridStrategyKind } from '../../components/imposition-tools/types';
 
 export enum ImpositionMode {
     Booklet = 'booklet',
@@ -65,6 +65,7 @@ export interface GuillotineSettings extends BaseSettings {
     gridStrategy?: GridStrategyKind;
     /** Xoay thêm 180° theo hàng/cột; không thay đổi cách solver dựng lưới. */
     alternateRotation?: 'none' | 'row' | 'column';
+    alternateRotationAlignment?: AlternateRotationAlignment;
     cutStack?: boolean;
 
     markType?: 'none' | 'corners' | 'guillotine';
@@ -105,6 +106,7 @@ export interface DieCutSettings extends BaseSettings {
     gridStrategy?: GridStrategyKind;
     /** Chỉ có hiệu lực khi mọi tem là RECTANGLE (bao gồm hình vuông); CNC luôn tắt. */
     alternateRotation?: 'none' | 'row' | 'column';
+    alternateRotationAlignment?: AlternateRotationAlignment;
     
     cutType?: 'default' | 'one_dao';
     fillBlockGap?: number;

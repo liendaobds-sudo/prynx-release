@@ -24,14 +24,23 @@ _TRAJECTORY_RECT_MIN_CONVEXITY_RATIO = 0.99
 
 def _bleed_roi_bbox(mask: np.ndarray, margin: int = 8):
     """Trả bbox ``(y0, y1, x0, x1)`` của mask, có nới và kẹp biên."""
-    ys, xs = np.where(mask > 0)
-    if ys.size == 0:
+    if mask is None or mask.size == 0:
         return None
+    # PERF (audit 2026-09-28): Dùng phép chiếu 1D theo 2 trục (row/col projection)
+    # thay cho np.where(mask > 0). Với mask diện tích lớn (hàng triệu px), np.where
+    # cấp phát mảng toạ độ int64 (N, 2) lên tới >120 MiB mỗi worker, gây vỡ RAM
+    # (ArrayMemoryError) khi nhiều worker chạy song song. Phép chiếu 1D chỉ tốn vài chục KB.
+    row_any = np.any(mask > 0, axis=1)
+    if not np.any(row_any):
+        return None
+    col_any = np.any(mask > 0, axis=0)
+    y_indices = np.flatnonzero(row_any)
+    x_indices = np.flatnonzero(col_any)
     height, width = mask.shape[:2]
-    y0 = max(0, int(ys.min()) - margin)
-    y1 = min(height, int(ys.max()) + 1 + margin)
-    x0 = max(0, int(xs.min()) - margin)
-    x1 = min(width, int(xs.max()) + 1 + margin)
+    y0 = max(0, int(y_indices[0]) - margin)
+    y1 = min(height, int(y_indices[-1]) + 1 + margin)
+    x0 = max(0, int(x_indices[0]) - margin)
+    x1 = min(width, int(x_indices[-1]) + 1 + margin)
     return y0, y1, x0, x1
 
 
@@ -148,7 +157,7 @@ def _sharp_bleed_join_corners(
     contours, _ = cv2.findContours(
         np.ascontiguousarray(footprint, dtype=np.uint8),
         cv2.RETR_EXTERNAL,
-        cv2.CHAIN_APPROX_NONE,
+        cv2.CHAIN_APPROX_SIMPLE,
     )
     corners: list[tuple[int, int]] = []
     for contour in contours:
@@ -199,6 +208,10 @@ def _apply_bleed_join_corner_guard(
     )
     if not corners:
         return
+    # PERF (audit 2026-09-28): Giới hạn tối đa 64 góc nhọn để tránh bão patch distanceTransform
+    # trên mask raster có cạnh răng cưa/nhiễu
+    if len(corners) > 64:
+        corners = corners[:64]
 
     # QUALITY (feedback 2026-08-12 §SEAM.3): fringe raster tại góc gãy đi theo
     # cả hai trục. EDT Euclid tạo cung tròn nên bỏ sót một nêm chéo; dùng khoảng
@@ -299,6 +312,9 @@ def _build_feathered_bleed_join_mask(
         solid_overlap_px=solid,
         feather_px=feather,
     )
+
+    if y0 == 0 and y1 == bleed_mask.shape[0] and x0 == 0 and x1 == bleed_mask.shape[1]:
+        return sub_alpha
 
     alpha = np.zeros_like(bleed_mask, dtype=np.uint8)
     alpha[y0:y1, x0:x1] = sub_alpha

@@ -233,6 +233,7 @@ def _py_get_src_page_idx(sheet_idx, cell_on_sheet_idx, layout_type, total_capaci
 # ── Public API (Rust-first, Python-fallback) ────────────────
 
 _ALTERNATE_ROTATION_MODES = frozenset({'none', 'row', 'column'})
+_ALTERNATE_ROTATION_ALIGNMENTS = frozenset({'foot_to_foot', 'head_to_head'})
 
 
 def normalize_alternate_rotation(value: Any, *, strict: bool = False) -> str:
@@ -243,6 +244,16 @@ def normalize_alternate_rotation(value: Any, *, strict: bool = False) -> str:
     if strict:
         raise ValueError("Chế độ xoay đối đầu phải là none, row hoặc column.")
     return 'none'
+
+
+def normalize_alternate_rotation_alignment(value: Any, *, strict: bool = False) -> str:
+    """Chuẩn hóa kiểu tiếp xúc (đối đầu / đối đuôi) khi xoay xen kẽ."""
+    alignment = str(value or 'foot_to_foot').strip().lower()
+    if alignment in _ALTERNATE_ROTATION_ALIGNMENTS:
+        return alignment
+    if strict:
+        raise ValueError("Kiểu tiếp xúc phải là foot_to_foot hoặc head_to_head.")
+    return 'foot_to_foot'
 
 
 def rectangle_inking_is_allowed(
@@ -271,15 +282,24 @@ def rectangle_inking_is_allowed(
     return str(shape_type or '').strip().upper() == 'RECTANGLE'
 
 
-def apply_alternate_rotation(layout: Dict[str, Any], mode: str) -> Dict[str, Any]:
+def apply_alternate_rotation(
+    layout: Dict[str, Any],
+    mode: str,
+    alignment: str = 'foot_to_foot',
+) -> Dict[str, Any]:
     """Xoay 180° xen kẽ theo hàng/cột mà không đổi hình học lưới.
 
     `isRotated` vẫn là góc nền 0/90° do solver chọn; renderer đã có
     hợp đồng ghép thêm `isRotated180`, nên các ô lẻ thành 180/270°.
+    - alignment='foot_to_foot' (mặc định): dải 0 giữ 0°, dải 1 xoay 180° -> đối đuôi.
+    - alignment='head_to_head': dải 0 xoay 180°, dải 1 giữ 0° -> đối đầu.
     """
     normalized_mode = normalize_alternate_rotation(mode)
     if normalized_mode == 'none':
         return layout
+
+    normalized_alignment = normalize_alternate_rotation_alignment(alignment)
+    invert_phase = (normalized_alignment == 'head_to_head')
 
     # INKING (audit 2026-08-12 §INK-DIE-01): N-Up dùng `cells`, còn bình tem bế
     # dùng `items`. Giữ một phép biến đổi duy nhất để Preview và PDF không thể
@@ -321,7 +341,7 @@ def apply_alternate_rotation(layout: Dict[str, Any], mode: str) -> Dict[str, Any
             coordinate_key = 'y' if is_rotated else 'x'
         coordinate = round(float(cell.get(coordinate_key, 0.0)), 6)
         band_index = coordinate_indexes_by_group.get(group_key, {}).get(coordinate, 0)
-        cell['isRotated180'] = bool(band_index % 2)
+        cell['isRotated180'] = not bool(band_index % 2) if invert_phase else bool(band_index % 2)
         rotated_cells.append(cell)
 
     result = dict(layout)
@@ -340,6 +360,7 @@ def solve_optimal_layout(
     usable_w, usable_h, orig_w, orig_h, gap_x, gap_y,
     strategy='simple_auto', secondary_gap=None, alternate_rotation='none',
     *, required_items: Optional[int] = None,
+    alternate_rotation_alignment: str = 'foot_to_foot',
 ):
     if _USE_RUST:
         res = _rust_solve_optimal(usable_w, usable_h, orig_w, orig_h, gap_x, gap_y, strategy, secondary_gap)
@@ -364,7 +385,7 @@ def solve_optimal_layout(
                 'overallWidth': original['width'],
                 'overallHeight': original['height'],
             }
-    res = apply_alternate_rotation(res, alternate_rotation)
+    res = apply_alternate_rotation(res, alternate_rotation, alternate_rotation_alignment)
     # ── DEBUG MARKER (Task: chẩn đoán grid-preference) ──
     try:
         cells = res.get('cells', [])
@@ -511,13 +532,17 @@ def _py_solve_manual(item_w, item_h, gap_x, gap_y, cols, rows):
     }
 
 
-def solve_manual(item_w, item_h, gap_x, gap_y, cols, rows, alternate_rotation='none'):
+def solve_manual(
+    item_w, item_h, gap_x, gap_y, cols, rows,
+    alternate_rotation='none',
+    alternate_rotation_alignment='foot_to_foot',
+):
     if _USE_RUST and _rust_solve_manual is not None:
         result = _rust_solve_manual(item_w, item_h, gap_x, gap_y, int(cols), int(rows))
     else:
         _allow_python_path()
         result = _py_solve_manual(item_w, item_h, gap_x, gap_y, cols, rows)
-    return apply_alternate_rotation(result, alternate_rotation)
+    return apply_alternate_rotation(result, alternate_rotation, alternate_rotation_alignment)
 
 
 def compute_ratio_stack_alloc(capacity: int, qtys: List[int]) -> Dict[str, Any]:

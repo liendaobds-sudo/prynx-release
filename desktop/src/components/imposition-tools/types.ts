@@ -160,6 +160,9 @@ export const DEFAULT_CUT_BORDER_CONFIG: CutBorderConfig = {
 /** Xoay artwork 180° xen kẽ, độc lập với thuật toán chọn bố cục lưới. */
 export type AlternateRotation = 'none' | 'row' | 'column';
 
+/** Kiểu tiếp xúc khi xoay 180° xen kẽ: đối đuôi (mặc định) hoặc đối đầu. */
+export type AlternateRotationAlignment = 'foot_to_foot' | 'head_to_head';
+
 export interface NupSettings {
     /** FIX (audit 2026-08-29 §SR-MODE-1): tác vụ phải đi cùng payload đến backend. */
     taskMode: 'step_repeat' | 'nup';
@@ -176,6 +179,7 @@ export interface NupSettings {
     hiddenOcgLayerIds?: number[];
     gridStrategy: GridStrategyKind;
     alternateRotation: AlternateRotation;
+    alternateRotationAlignment?: AlternateRotationAlignment;
     clusterTileW?: number;
     clusterTileH?: number;
     clusterMode: 'none' | 'row' | 'column';

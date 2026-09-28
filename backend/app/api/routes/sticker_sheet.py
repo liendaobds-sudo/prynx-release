@@ -93,6 +93,9 @@ router = APIRouter(
 
 @router.post("/debug-log")
 async def cutline_debug_log_route(payload: CutlineDebugLogPayload):
+    from app.utils.cutline_debug_log import cutline_debug_log_enabled
+    if not cutline_debug_log_enabled():
+        return {"ok": True}
     log_cutline(payload.source, payload.stage, payload.message, **payload.fields)
     return {"ok": True}
 
@@ -353,10 +356,11 @@ async def detect_sticker_source_endpoint(
         # biên (CutContour/vector/Alpha/nền phẳng) chỉ là bước chuẩn bị preview
         # trung bình, không được chiếm hàng đợi heavy. AI/auto vẫn giữ scheduler
         # vì có thể nạp model và chạy inference nặng.
-        if request.strategy in {"existing-cut", "vector", "alpha", "simple-bg", "page-box"}:
-            promoted = await run_in_threadpool(_detect_and_promote)
-        else:
-            promoted = await run_heavy_in_threadpool(_detect_and_promote)
+        with CutlineTimer("API", "DETECT", f"session={session_id[:8]} page={request.page_number} strategy={request.strategy}"):
+            if request.strategy in {"existing-cut", "vector", "alpha", "simple-bg", "page-box"}:
+                promoted = await run_in_threadpool(_detect_and_promote)
+            else:
+                promoted = await run_heavy_in_threadpool(_detect_and_promote)
     except asyncio.CancelledError:
         abort_source_detection(session_id, page_number=request.page_number)
         raise
@@ -478,27 +482,46 @@ async def preview_sticker_cutline_endpoint(
             from app.workers.sticker_classic_page_preview import build_classic_page_preview
             preview_builder = build_classic_page_preview
             classic_options["classic_force_contour"] = request.classic_force_contour
-        res = await run_in_threadpool(
-            preview_builder,
-            session,
-            page_number=request.page_number,
-            base_revision=request.base_revision,
-            edits=[edit.model_dump() for edit in request.edits],
-            dpi=request.dpi,
-            dpi_y=request.dpi_y,
-            offset_mm=request.offset_mm,
-            bleed_mm=request.bleed_mm,
-            cut_mode=request.cut_mode,
-            corner_style=request.corner_style,
-            fill_holes=request.fill_holes,
-            cutline_smoothness=request.cutline_smoothness,
-            cutline_fidelity=request.cutline_fidelity,
-            curve_tension=request.curve_tension,
-            min_detail_area_mm2=request.min_detail_area_mm2,
-            cutline_denoise=request.cutline_denoise,
-            cutline_simplify_mm=request.cutline_simplify_mm,
-            **classic_options,
+        from app.workers.cutline_preview_cancel import (
+            PreviewCancellation,
+            cancellation_scope,
+            PreviewCancelled,
         )
+
+        token = PreviewCancellation()
+
+        def _run_with_token():
+            with cancellation_scope(token):
+                return preview_builder(
+                    session,
+                    page_number=request.page_number,
+                    base_revision=request.base_revision,
+                    edits=[edit.model_dump() for edit in request.edits],
+                    dpi=request.dpi,
+                    dpi_y=request.dpi_y,
+                    offset_mm=request.offset_mm,
+                    bleed_mm=request.bleed_mm,
+                    cut_mode=request.cut_mode,
+                    corner_style=request.corner_style,
+                    fill_holes=request.fill_holes,
+                    cutline_smoothness=request.cutline_smoothness,
+                    cutline_fidelity=request.cutline_fidelity,
+                    curve_tension=request.curve_tension,
+                    min_detail_area_mm2=request.min_detail_area_mm2,
+                    cutline_denoise=request.cutline_denoise,
+                    cutline_simplify_mm=request.cutline_simplify_mm,
+                    **classic_options,
+                )
+
+        try:
+            res = await run_in_threadpool(_run_with_token)
+        except asyncio.CancelledError:
+            token.cancel()
+            raise
+        except PreviewCancelled:
+            raise HTTPException(status_code=499, detail="Yêu cầu đường bế đã bị hủy.")
+        finally:
+            token.close()
         paths_list = res.paths if hasattr(res, "paths") else (res.get("paths", []) if isinstance(res, dict) else [])
         fit_modes = [p.get("quality", {}).get("fit_mode") if isinstance(p, dict) else getattr(getattr(p, "quality", None), "fit_mode", None) for p in paths_list]
         kinds = [p.get("quality", {}).get("kind") if isinstance(p, dict) else getattr(getattr(p, "quality", None), "kind", None) for p in paths_list]

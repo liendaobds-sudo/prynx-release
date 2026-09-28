@@ -20,7 +20,7 @@ from app.core.ppe_viewer_session import (
     ViewerSessionIdentity,
     resolve_viewer_session_identity,
 )
-from app.core.system_memory import read_memory_status_mb
+from app.core.system_memory import read_memory_status_mb, read_memory_tier_mb
 
 
 logger = logging.getLogger(__name__)
@@ -119,7 +119,9 @@ def render_concurrency_for_total_ram(total_ram_mb: int | None) -> int | None:
 
 def _render_gate_for_current_loop() -> asyncio.Semaphore | None:
     total_ram_mb, _available_ram_mb = read_memory_status_mb()
-    limit = render_concurrency_for_total_ram(total_ram_mb)
+    # PERF (audit 2026-09-28 §PERF28.03 B2i): vùng RAM dành cho phần cứng
+    # không làm máy lắp đủ 8/16 GiB bị hạ hạng; policy thuần vẫn giữ nguyên.
+    limit = render_concurrency_for_total_ram(read_memory_tier_mb(total_ram_mb))
     if limit is None:
         return None
     loop = asyncio.get_running_loop()

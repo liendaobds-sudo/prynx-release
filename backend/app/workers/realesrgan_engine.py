@@ -525,11 +525,14 @@ def _default_tile_size() -> int:
             return max(64, int(override))
         except ValueError:
             logger.warning("Bỏ qua PRYNX_UPSCALE_TILE không hợp lệ: %s", override)
-    from app.core.system_memory import read_memory_status_mb
+    from app.core.system_memory import read_memory_status_mb, read_memory_tier_mb
     total_mb, _available_mb = read_memory_status_mb()
-    if total_mb is not None and total_mb < 8 * 1024:
+    # PERF (audit 2026-09-28 §PERF28.03): reserved RAM không hạ nhầm tile;
+    # giữ model, padding, scale, override và xử lý lỗi GPU hiện hữu.
+    tier_mb = read_memory_tier_mb(total_mb)
+    if tier_mb is not None and tier_mb < 8 * 1024:
         return 256
-    if total_mb is not None and total_mb < 16 * 1024:
+    if tier_mb is not None and tier_mb < 16 * 1024:
         return 384
     return 512
 

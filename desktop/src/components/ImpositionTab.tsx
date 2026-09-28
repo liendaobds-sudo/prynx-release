@@ -4,7 +4,7 @@ import { localFileUrl } from '../lib/localFileTransport';
 import { TOOL_REGISTRY, TOOL_CATEGORIES, findToolByUniqueKey, getToolsByCategory, getToolUniqueKey } from '../lib/toolRegistry';
 
 import PDFUploader from './PDFUploader';
-import AcrobatViewer, { type PageOverlayRenderContext } from './AcrobatViewer';
+import AcrobatViewer, { type AutoTrimOptions, type PageOverlayRenderContext } from './AcrobatViewer';
 import type { ThumbnailCutlinePreviewItem } from './acrobat/thumbnailCutlinePreview';
 import { useObjectEditHistory } from '../hooks/useObjectEditHistory';
 import { useEditSession, type UseEditSession } from '../hooks/useEditSession';
@@ -915,6 +915,20 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 store.getState(),
             ) : undefined,
     );
+    // WBR28.02 (audit 2026-09-28): Edit barrier có thể đổi File sau render.
+    // Chỉ mang ảnh/nguồn tem vào Undo nếu owner vẫn khớp revision được commit.
+    const workingFileHistorySourceRef = useRef({
+        revision: renderedDocumentRevision,
+        sourceImageFile,
+        sourceImageOwner,
+        stickerSourceFile: stickerSheetSourceVisible ? stickerSheetSourceFile : null,
+    });
+    workingFileHistorySourceRef.current = {
+        revision: renderedDocumentRevision,
+        sourceImageFile,
+        sourceImageOwner,
+        stickerSourceFile: stickerSheetSourceVisible ? stickerSheetSourceFile : null,
+    };
     const currentViewerDocumentIdentity = workspaceDocumentIdentity(
         file,
         viewerPageOrder,
@@ -1506,6 +1520,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         existingPath?: string,
         recipeTicket?: RecipeOperationTicket | null,
         expectedDocumentRevision?: WorkspaceDocumentRevisionToken | null,
+        assertCanPublish?: () => void,
     ) => {
         // Chụp vé trước MỌI await. Chỉ caller đã noteOperation và giữ đúng ticket mới
         // được ghi Step; undefined/null đều là cấm ghi. Không suy đoán pending tại commit.
@@ -1531,6 +1546,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         assertRecipeCommitAllowed();
         // REVISION (audit 2026-08-25 §REV.03): chặn trước mọi I/O tốn thời gian.
         assertDocumentRevisionCurrent();
+        assertCanPublish?.();
         let committedBlob = newBlob;
         let committedName = newName;
         let committedPath = existingPath;
@@ -1624,28 +1640,49 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         // REVISION (audit 2026-08-25 §REV.03): kiểm lại ngay sát publish; xoay,
         // xóa, reorder hoặc edit trong lúc ghi temp không được bị kết quả cũ ghi đè.
         assertDocumentRevisionCurrent();
+        // WBR28.03 (audit 2026-09-28): tab đóng trong lúc ghi native path không
+        // làm đổi store revision, nên phải kiểm cả lease/signal ngay sát publish.
+        assertCanPublish?.();
+        const sourceState = expectedDocumentRevision ? store.getState() : null;
+        const sourceOwner = workingFileHistorySourceRef.current;
+        const sourceOwnerCurrent = sourceState && isWorkspaceDocumentRevisionCurrent(
+            sourceOwner.revision,
+            sourceState,
+        );
+        const previousFile = sourceState ? sourceState.file : file;
+        const previousPdfUrl = sourceState ? sourceState.pdfUrl : pdfUrl;
         // RECIPE (audit 2026-08-17 §REC.5): số Step trong draft TRƯỚC khi commit này
         // ghi thêm Step. Gắn vào entry history để Undo (về đúng revision trước) rút lại
         // Step tương ứng — recipe lưu ra không còn chứa thao tác người dùng đã hoàn tác.
         const recipeDraftLenBefore = recipeRecorder.isRecordingFor(recipeOwnerTabId)
             ? recipeRecorder.draftSteps.length
             : null;
-        if (file) {
+        if (previousFile) {
+            // WBR28.02: Undo giữ đúng nguồn sau Edit barrier, không lấy closure
+            // của File/thứ tự/góc xoay trước khi transaction bắt đầu.
+            const historyEntry = createWorkspaceHistoryEntry({
+                file: previousFile,
+                pageOrder: sourceState ? sourceState.viewerPageOrder : viewerPageOrder,
+                pageInstanceIds: sourceState ? sourceState.viewerPageInstanceIds : viewerPageInstanceIds,
+                pageRotations: sourceState ? sourceState.viewerPageRotations : viewerPageRotations,
+                pageRevisionDirty: sourceState ? sourceState.viewerDirty : viewerDirty,
+                sourceImageFile: sourceState
+                    ? (sourceOwnerCurrent
+                        && sourceOwner.sourceImageOwner?.pdfFile === previousFile
+                        && sourceOwner.sourceImageOwner.editGeneration === sourceState.editGeneration
+                        ? sourceOwner.sourceImageFile : null)
+                    : sourceImageFile,
+                stickerSourceFile: sourceState
+                    ? (sourceOwnerCurrent ? sourceOwner.stickerSourceFile : null)
+                    : (stickerSheetSourceVisible ? stickerSheetSourceFile : null),
+                recipeDraftLen: recipeDraftLenBefore,
+            });
             // Cắt bớt entry cũ nhất khi vượt ngưỡng → chặn leak RAM (audit 2026-07-06).
             setHistory(prev => {
                 // Strip bytes khi file có path đĩa → entry undo chỉ giữ tên+path (đọc lại
                 // qua getFileArrayBuffer khi cần), chặn leak RAM (audit 2026-07-06). File
                 // không path → giữ nguyên bytes (fallback). handleUndo đã xử lý cả 2 nhánh.
-                const next = [...prev, createWorkspaceHistoryEntry({
-                    file,
-                    pageOrder: viewerPageOrder,
-                    pageInstanceIds: viewerPageInstanceIds,
-                    pageRotations: viewerPageRotations,
-                    pageRevisionDirty: viewerDirty,
-                    sourceImageFile,
-                    stickerSourceFile: stickerSheetSourceVisible ? stickerSheetSourceFile : null,
-                    recipeDraftLen: recipeDraftLenBefore,
-                })];
+                const next = [...prev, historyEntry];
                 return next.length > MAX_HISTORY ? next.slice(next.length - MAX_HISTORY) : next;
             });
         }
@@ -1663,7 +1700,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             : null);
         setOriginalFileName(committedName);
         setFile(newFile);
-        if (pdfUrl && !pdfUrl.startsWith('https://')) URL.revokeObjectURL(pdfUrl);
+        if (previousPdfUrl && !previousPdfUrl.startsWith('https://')) URL.revokeObjectURL(previousPdfUrl);
         setPdfUrl(URL.createObjectURL(committedBlob));
         setFileSizeStr((newFile.size / (1024 * 1024)).toFixed(2) + ' MB');
         setIsSaved(false);
@@ -1775,6 +1812,89 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         (signal?: AbortSignal) => cropUploadCache.ensure(signal),
         [cropUploadCache],
     );
+    const autoTrimControllerRef = useRef<AbortController | null>(null);
+    useEffect(() => () => autoTrimControllerRef.current?.abort(), []);
+    const handleAutoTrimApply = useCallback(async (options: AutoTrimOptions): Promise<boolean> => {
+        // WBR28.02–03 (audit 2026-09-28): artifact đã bake toàn bộ page state
+        // phải đi qua commitWorkingFile; onEditCommit chỉ dành sửa đối tượng.
+        const blockRecording = () => {
+            if (!shouldBlockUnrecordedCommit(recipeOwnerTabId)) return false;
+            toast.info(t('tabs.imposition:thao_tac_chua_ghi_duoc_vao_quy_trinh'));
+            return true;
+        };
+        if (autoTrimControllerRef.current || blockRecording()) return false;
+        const controller = new AbortController();
+        autoTrimControllerRef.current = controller;
+        try {
+            const lease = await cropUploadCache.ensureLease(controller.signal);
+            lease.assertCurrent();
+            const requestedMode = options.mode ?? 'trim';
+            const response = await authenticatedFetch(`${getApiUrl()}/preflight/auto-trim`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    file_id: lease.fileId,
+                    pages: options.pages,
+                    margin_mm: options.marginMm,
+                    trim_sides: options.trimSides,
+                    mode: requestedMode,
+                }),
+                signal: controller.signal,
+            });
+            lease.assertCurrent();
+            if (!response.ok) {
+                const failure = await response.json().catch(() => null) as { detail?: unknown } | null;
+                lease.assertCurrent();
+                throw new Error(typeof failure?.detail === 'string'
+                    ? failure.detail
+                    : 'Không thể khử viền PDF. Hãy thử lại.');
+            }
+            const result = await response.json() as {
+                success?: boolean;
+                output_filename?: unknown;
+                mode?: unknown;
+            };
+            lease.assertCurrent();
+            if (result.success !== true || typeof result.output_filename !== 'string' || !result.output_filename.trim()) {
+                throw new Error('Máy xử lý chưa trả về file PDF khử viền. Hãy thử lại.');
+            }
+            // WBR28.FILL: sidecar cũ có thể bỏ qua field `mode` rồi vẫn trả 200.
+            // Fill phải fail-closed trước download/commit; trim vẫn tương thích
+            // response cũ không có echo nhưng không chấp nhận echo trái ngược.
+            if (requestedMode === 'fill' && result.mode !== 'fill') {
+                throw new Error('Backend chưa hỗ trợ phủ viền theo màu biên. Hãy khởi động lại PrynX rồi thử lại.');
+            }
+            if (requestedMode === 'trim' && result.mode !== undefined && result.mode !== 'trim') {
+                throw new Error('Backend trả sai chế độ xử lý viền. Hãy khởi động lại PrynX rồi thử lại.');
+            }
+            const download = await authenticatedFetch(
+                `${getApiUrl()}/preflight/download/${encodeURIComponent(result.output_filename)}`,
+                { signal: controller.signal },
+            );
+            lease.assertCurrent();
+            if (!download.ok) throw new Error('Không tải được PDF khử viền. Hãy thử lại.');
+            const artifact = await download.blob();
+            lease.assertCurrent();
+            if (artifact.size === 0) throw new Error('PDF khử viền trả về rỗng. Hãy thử lại.');
+            if (blockRecording()) return false;
+            await commitWorkingFile(
+                artifact,
+                result.output_filename,
+                undefined,
+                null,
+                lease.snapshot,
+                lease.assertCurrent,
+            );
+            return true;
+        } catch (error) {
+            if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')
+                || error instanceof StaleWorkspaceDocumentRevisionError) return false;
+            if (blockRecording()) return false;
+            throw error;
+        } finally {
+            if (autoTrimControllerRef.current === controller) autoTrimControllerRef.current = null;
+        }
+    }, [commitWorkingFile, cropUploadCache, recipeOwnerTabId, t]);
     const getPreparedWorkingFile = useCallback(async (): Promise<File> => {
         // REVISION (audit 2026-08-25 §REV.06): execution ảnh chờ Edit barrier,
         // materialize đúng snapshot rồi CAS trước khi raster/inference. Preview
@@ -3413,6 +3533,9 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         ) && (
             config.alternateRotation === 'row' || config.alternateRotation === 'column'
         ) ? config.alternateRotation : 'none';
+        const effectiveAlternateRotationAlignment = effectiveAlternateRotation !== 'none'
+            ? (config.alternateRotationAlignment || 'foot_to_foot')
+            : 'foot_to_foot';
         const settings = {
             imposerMode: config.cncMode ? 'cnc' : (config.isDieCutMode ? 'diecut' : 'guillotine'),
             impositionMode: ImpositionMode.NUp,
@@ -3426,6 +3549,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             rows: config.rows || 0,
             gridStrategy: config.gridStrategy,
             alternateRotation: effectiveAlternateRotation,
+            alternateRotationAlignment: effectiveAlternateRotationAlignment,
             clusterMode: config.clusterMode,
             clusterCount: config.clusterCount,
             clusterGap: config.clusterGap,
@@ -4516,6 +4640,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                     onObjectDelete={handleDeleteObjects}
                                     fetchObjectsForPage={fetchPdfObjectsForPage}
                                     onEditCommit={handleEditCommit}
+                                    onAutoTrimApply={handleAutoTrimApply}
                                     onDocumentUndo={handleUndo}
                                     editSession={editSession}
                                     onVdpBoxCreate={handleVdpBoxCreate}

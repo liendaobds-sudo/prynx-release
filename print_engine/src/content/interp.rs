@@ -12,7 +12,7 @@ use crate::cancel::CancelToken;
 use crate::color::icc::{ColorManager, SoftProofSettings};
 use crate::color::space::{resolve_colorspace, resolve_function, OutputPreviewFilter};
 use crate::color::ColorSpace;
-use crate::content::gstate::{GraphicsState, StateDepthOverflow, StateStack};
+use crate::content::gstate::{BBoxClipKey, GraphicsState, StateDepthOverflow, StateStack};
 use crate::content::inline_image::INLINE_OP;
 use crate::error::{PpeError, PpeResult, RenderWarnings};
 use crate::geom::{Matrix, Rect, Region};
@@ -27,9 +27,9 @@ use crate::raster::mask::{rect_path, stroke_to_path, FillRule};
 use crate::raster::Rasterizer;
 use crate::session::SharedResourceCache;
 use crate::shading::eval::SampledShading;
-use crate::shading::mesh::MeshTriangle;
+use crate::shading::mesh::MeshPatchGrid;
 use crate::shading::{
-    resolve_shading_colorspace, resolve_shading_with_colorspace, Shading, ShadingKind,
+    resolve_shading_colorspace, resolve_shading_with_colorspace_bounded, Shading, ShadingKind,
 };
 use crate::text::font::{load_font, FontProgram, LoadedFont, Type3Data};
 use crate::text::outlines::{
@@ -221,6 +221,11 @@ pub struct RenderOptions {
     /// PDF/Acrobat, không được giãn cực đại 7×7 vừa sai biên vừa tốn 49 lookup.
     conservative_image_sampling: bool,
 
+    /// COLOR (audit 2026-09-28 §KNOCK.PREVIEW): chứng nhận riêng toán học
+    /// knockout process cho preview; chỉ constructor softproof/viewer bật,
+    /// không áp cho đo/xuất mực hoặc nội dung sinh trong SMask/pattern/Type3.
+    preview_vector_knockout: bool,
+
     /// Tín hiệu hủy hợp tác; `None` giữ nguyên hành vi API stateless cũ.
     cancel_token: Option<CancelToken>,
 
@@ -258,6 +263,7 @@ impl Default for RenderOptions {
             flatten_spots: false,
             simulate_overprint: true,
             conservative_image_sampling: false,
+            preview_vector_knockout: false,
             cancel_token: None,
             optional_content_usage: OptionalContentUsage::Print,
             render_annotations: false,
@@ -300,6 +306,9 @@ impl RenderOptions {
         RenderOptions {
             anti_alias: true,
             flatten_spots: true,
+            // COLOR (audit 2026-09-28 §KNOCK.PROCESS): chỉ subtree process
+            // đã kiểm số học đạt certificate; mọi miền khác vẫn phát guard.
+            preview_vector_knockout: true,
             ..Default::default()
         }
     }
@@ -445,6 +454,17 @@ enum ShadingCoverage<'a> {
 }
 
 impl ShadingCoverage<'_> {
+    /// COLOR (audit 2026-09-28 §KNOCK.C2c): group nhận clip hình học và
+    /// soft alpha riêng; Dense của pattern chưa tham gia hợp đồng này.
+    fn without_soft_mask(self) -> Self {
+        match self {
+            Self::GraphicsState { clip, width, .. } => Self::GraphicsState {
+                clip, soft_mask: None, width,
+            },
+            Self::Dense(_) => self,
+        }
+    }
+
     #[inline]
     fn at(self, index: usize) -> f32 {
         match self {
@@ -521,6 +541,9 @@ pub struct Renderer<'a> {
     /// `tiling_half_cell` phồng 3.67/255 @100 DPI, 12.75 @72), trong khi RIP
     /// tham chiếu không thể hiện độ nở đó trên nội dung ô pattern.
     pattern_cell_depth: u32,
+    /// COLOR (audit 2026-09-28 §KNOCK.PREVIEW): CharProc d0/d1 đều là miền
+    /// chữ, không được coi Form K lồng trong glyph là vector độc lập đã chứng nhận.
+    type3_depth: u32,
     /// Loại object chủ khi đang chạy content của Pattern.
     ///
     /// Output Preview phân loại theo object dùng Pattern (Text/LineArt/Image), không
@@ -562,6 +585,13 @@ pub struct Renderer<'a> {
     next_explicit_mask_event: u64,
     /// Độ sâu surface phụ do `render_form_into` dựng; 0 là output trang.
     render_surface_depth: u32,
+    /// COLOR (audit 2026-09-28 §KNOCK.C2): khi một group có primitive chưa
+    /// giữ shape, phát lại TOÀN group bằng đường cũ, không trộn hai mô hình.
+    suppress_group_math: bool,
+    /// COLOR (audit 2026-09-28 §KNOCK.PREVIEW): dấu bất tương thích chỉ tăng,
+    /// không rollback theo q/Q, surface con hoặc replay. K cha phải thấy toàn bộ
+    /// subtree; bộ đếm chạm MAX mất quyền chứng nhận, không thể vòng về false-clean.
+    uncertified_vector_ops: u64,
     /// Số lớp optional content đang **tắt** mà con trỏ đang nằm trong.
     ///
     /// Là bộ đếm ở mức renderer (không phải mức stream) để một Form XObject được
@@ -642,6 +672,24 @@ fn merge_render_warnings(target: &mut RenderWarnings, source: &RenderWarnings) {
     }
 }
 
+/// Hai lượt cùng một group không được cộng đôi lỗi; cache giải mã còn sống
+/// nên lượt replay cũng không được xóa diagnostic chỉ phát ở lượt đầu.
+fn merge_replayed_warnings(target: &mut RenderWarnings, source: &RenderWarnings) {
+    for (name, count) in &source.skipped_ops {
+        if let Some((_, current)) = target.skipped_ops.iter_mut().find(|(known, _)| known == name) {
+            *current = (*current).max(*count);
+        } else {
+            target.skipped_ops.push((name.clone(), *count));
+        }
+    }
+    target.dropped_objects = target.dropped_objects.max(source.dropped_objects);
+    target.unsupported_transparency |= source.unsupported_transparency;
+    target.hidden_content_risk |= source.hidden_content_risk;
+    for name in &source.approximated_colorspaces { target.note_approximated_colorspace(name); }
+    for name in &source.substituted_fonts { target.note_substituted_font(name); }
+    for name in &source.colorspaces_used { target.note_colorspace_used(name); }
+}
+
 impl<'a> Renderer<'a> {
     pub fn new(
         doc: &'a Document,
@@ -684,6 +732,7 @@ impl<'a> Renderer<'a> {
             smask_depth: 0,
             cur_depth: 0,
             pattern_cell_depth: 0,
+            type3_depth: 0,
             pattern_preview_owner: None,
             suppress_color_ops: 0,
             paint_serial: 0,
@@ -696,6 +745,8 @@ impl<'a> Renderer<'a> {
             deferred_event_diagnostics: HashMap::new(),
             next_explicit_mask_event: 0,
             render_surface_depth: 0,
+            suppress_group_math: false,
+            uncertified_vector_ops: 0,
             oc: OptionalContent::load_for_usage(doc, optional_content_usage),
             oc_hidden: 0,
             stream_ctx: vec![(StreamKey::Page, 0)],
@@ -917,6 +968,15 @@ impl<'a> Renderer<'a> {
         &self.warnings
     }
 
+    fn note_uncertified_vector_operation(&mut self) {
+        self.uncertified_vector_ops = self.uncertified_vector_ops.saturating_add(1);
+    }
+
+    fn note_knockout_guard(&mut self) {
+        self.warnings.unsupported_transparency = true;
+        self.warnings.note_skipped_op("Group /K true (knockout)");
+    }
+
     pub(crate) fn note_unsupported_annotation(&mut self, reason: &str) {
         self.warnings.dropped_objects = self.warnings.dropped_objects.saturating_add(1);
         self.warnings.note_skipped_op(reason);
@@ -961,6 +1021,9 @@ impl<'a> Renderer<'a> {
 
     /// Ghi fail-loud một lần ở đầu mỗi episode vượt trần q-depth.
     fn note_state_depth_overflow(&mut self, overflow: StateDepthOverflow) {
+        // COLOR (audit 2026-09-28 §KNOCK.PREVIEW): nội dung bị bỏ không phải
+        // subtree vector đã chứng nhận, kể cả warning episode đã được ghi trước.
+        self.note_uncertified_vector_operation();
         if !overflow.starts_episode() {
             return;
         }
@@ -1076,6 +1139,11 @@ impl<'a> Renderer<'a> {
             }
         };
         // Resource kế thừa, CTM, clip, glyph counters và warning vẫn chạy mỗi lần.
+        if program.quality == pdf::DecodeQuality::Recovered {
+            // Snapshot K nằm sau form_source; kiểm lại tại execute để Form K
+            // tự phục hồi decode cũng không nhận certificate của subtree rỗng.
+            self.note_uncertified_vector_operation();
+        }
         self.execute_program(&program.program, resources, stack, depth)
     }
 
@@ -1104,6 +1172,7 @@ impl<'a> Renderer<'a> {
     ) -> PpeResult<()> {
         self.opts.check_cancelled()?;
         if depth > self.opts.max_form_depth {
+            self.note_uncertified_vector_operation();
             // CORRECTNESS (audit 2026-08-31 §PPE-A01): stream lồng bị bỏ phải
             // hạ soundness, không chỉ xuất hiện trong danh sách operator bỏ qua.
             if stack
@@ -1118,6 +1187,7 @@ impl<'a> Renderer<'a> {
         }
 
         if program.failed_inline_images() > 0 {
+            self.note_uncertified_vector_operation();
             self.warnings.dropped_objects += program.failed_inline_images();
             self.warnings
                 .note_skipped_op("BI (ảnh nội tuyến không đọc được)");
@@ -1198,6 +1268,8 @@ impl<'a> Renderer<'a> {
                 "gs" => {
                     if let (Some(name), Some(res)) = (name_operand(operands, 0), resources) {
                         self.apply_ext_gstate(&name, res, stack, depth)?;
+                    } else {
+                        self.note_uncertified_vector_operation();
                     }
                 }
 
@@ -1437,6 +1509,7 @@ impl<'a> Renderer<'a> {
                             self.draw_image(&img, resources, stack)?;
                         }
                         None => {
+                            self.note_uncertified_vector_operation();
                             self.warnings.dropped_objects += 1;
                             self.warnings
                                 .note_skipped_op("BI (chỉ số ảnh nội tuyến sai)");
@@ -1448,6 +1521,8 @@ impl<'a> Renderer<'a> {
                 "Do" => {
                     if let (Some(name), Some(res)) = (name_operand(operands, 0), resources) {
                         self.do_xobject(&name, res, stack, depth)?;
+                    } else {
+                        self.note_uncertified_vector_operation();
                     }
                 }
 
@@ -1455,6 +1530,8 @@ impl<'a> Renderer<'a> {
                 "sh" => {
                     if let (Some(name), Some(res)) = (name_operand(operands, 0), resources) {
                         self.do_shading_op(&name, res, stack)?;
+                    } else {
+                        self.note_uncertified_vector_operation();
                     }
                 }
                 // ── Marked content / optional content ─────────────────────────
@@ -1629,7 +1706,12 @@ impl<'a> Renderer<'a> {
                 // nên ở đây không cần gì.
                 "d0" | "d1" | "BX" | "EX" => {}
 
-                other => self.warnings.note_skipped_op(other),
+                other => {
+                    // Generic skipped_ops không chặn Viewer. Không thể lấy sự
+                    // im lặng của compositor làm chứng cứ cho operator chưa biết.
+                    self.note_uncertified_vector_operation();
+                    self.warnings.note_skipped_op(other);
+                }
             }
         }
 
@@ -1789,6 +1871,31 @@ impl<'a> Renderer<'a> {
         if self.retained.is_some() {
             return self.retain_path(built, fill, stroke.is_some(), pending_clip, stack, resources);
         }
+        let gs = stack.current();
+        // COLOR (audit 2026-09-28 §KNOCK.C2b): solid path process với blend
+        // tách kênh đã đi qua compositor C1, kể cả AIS/SMask. Kiểm trước
+        // alpha0 để shape trong suốt vẫn khoét sibling của K.
+        if (fill.is_some() || stroke.is_some()) && (
+            !self.supports_group_blend(gs.blend_mode)
+            || (fill.is_some() && (gs.fill_overprint || !gs.fill_cs.supports_process_group_blending()
+                || gs.fill_comps.len() != gs.fill_cs.n_components() || gs.fill_comps.iter().any(|v| !v.is_finite())))
+            || (stroke.is_some() && (gs.stroke_overprint || !gs.stroke_cs.supports_process_group_blending()
+                || gs.stroke_comps.len() != gs.stroke_cs.n_components() || gs.stroke_comps.iter().any(|v| !v.is_finite())))
+            || (built.is_none() && had_segments)
+        ) {
+            self.note_uncertified_vector_operation();
+        }
+        let gs = stack.current();
+        if self.buffer.has_transparency_group() && (
+            !self.supports_group_blend(gs.blend_mode)
+            || (fill.is_some() && (fill_uses_pattern || gs.fill_overprint
+                || !gs.fill_cs.supports_process_group_blending()))
+            || (stroke.is_some() && (stroke_uses_pattern || gs.stroke_overprint
+                || !gs.stroke_cs.supports_process_group_blending()))
+        ) {
+            // Hạ completeness trước raster: alpha0 vẫn có thể khoét sibling.
+            self.buffer.invalidate_transparency_group();
+        }
         let Some(user_path) = built else {
             // Đường dẫn rỗng: nếu có `W` thì clip thành rỗng (đúng spec).
             if pending_clip.is_some() {
@@ -1811,7 +1918,27 @@ impl<'a> Renderer<'a> {
 
         let ctm = stack.current().ctm;
         let device_path = user_path.clone().transform(to_ts(&ctm));
+        if device_path.is_none() && (fill.is_some() || stroke.is_some()) {
+            self.note_uncertified_vector_operation();
+        }
 
+        // ISO 11.7.4.4: fill+stroke là một object, bên trong là group K không
+        // cách ly. Nét trong suốt phải khoét fill, không pha thêm lần thứ hai.
+        // Nhánh OP đặc biệt chưa qua compositor shape nên vẫn giữ guard.
+        let compound_parent = if fill.is_some() && stroke.is_some()
+            && self.buffer.has_complete_transparency_group()
+        {
+            match self.buffer.child_transparency_group(false, true) {
+                Ok(child) => Some(std::mem::replace(&mut self.buffer, child)),
+                Err(PpeError::MemoryBudgetExceeded { .. } | PpeError::Unsupported(_)) => {
+                    self.note_uncertified_vector_operation();
+                    self.buffer.invalidate_transparency_group();
+                    None
+                }
+                Err(error) => return Err(error),
+            }
+        } else { None };
+        let paint_result = (|| -> PpeResult<()> {
         if let (Some(rule), Some(dev)) = (fill, device_path.as_ref()) {
             // Pattern đi đường riêng: màu không phải một giá trị mà là một hàm của
             // vị trí, nên không dựng được `InkPaint` duy nhất cho cả hình.
@@ -1830,6 +1957,8 @@ impl<'a> Renderer<'a> {
                 if let Some(paint) = paint {
                     let clip = stack.current().clip.clone();
                     let soft = stack.current().soft_mask.clone();
+                    let group_math = self.use_c1_path_composite(stack.current(), &paint, false);
+                    let alpha_is_shape = stack.current().alpha_is_shape;
                     let paint_serial_before = self.paint_serial;
                     let mut painted_region = Region::EMPTY;
                     let Renderer {
@@ -1840,7 +1969,7 @@ impl<'a> Renderer<'a> {
                     } = self;
                     let opaque_paint =
                         paint.alpha >= 1.0 - 1e-6 && soft.is_none() && paint.blend.is_normal();
-                    let conservative = !self.opts.anti_alias
+                    let conservative = !group_math && !self.opts.anti_alias
                         && self.opts.device_scale >= CONSERVATIVE_VECTOR_MIN_DEVICE_SCALE
                         && (self.opts.device_scale >= CONSERVATIVE_OPAQUE_ONLY_BELOW_SCALE
                             || opaque_paint)
@@ -1853,7 +1982,7 @@ impl<'a> Renderer<'a> {
                             rule,
                             self.opts.anti_alias,
                             clip.as_deref(),
-                            soft.as_deref(),
+                            if group_math { None } else { soft.as_deref() },
                         )
                     } else {
                         raster.fill_path_in_clip_region(
@@ -1861,7 +1990,7 @@ impl<'a> Renderer<'a> {
                             rule,
                             self.opts.anti_alias,
                             clip.as_deref(),
-                            soft.as_deref(),
+                            if group_math { None } else { soft.as_deref() },
                             stack.current().clip_region,
                         )
                     };
@@ -1871,8 +2000,14 @@ impl<'a> Renderer<'a> {
                         let cov_region = cov.region;
                         #[cfg(feature = "perf-probe")]
                         let _composite_span = crate::perf_probe::span(crate::perf_probe::COMPOSITE);
-                        buffer.composite_region(cov.data, cov.region, &paint)?;
-                        if paint.alpha > 0.0 {
+                        if group_math {
+                            buffer.composite_group_region_masked(
+                                cov.data, cov.region, &paint, alpha_is_shape, soft.as_deref(),
+                            )?;
+                        } else {
+                            buffer.composite_region(cov.data, cov.region, &paint)?;
+                        }
+                        if paint.alpha > 0.0 || (group_math && !alpha_is_shape) {
                             *paint_serial = paint_serial.wrapping_add(1);
                             painted_region = painted_region.union(cov_region);
                         }
@@ -1940,6 +2075,8 @@ impl<'a> Renderer<'a> {
                 if let Some(paint) = paint {
                     let clip = stack.current().clip.clone();
                     let soft = stack.current().soft_mask.clone();
+                    let group_math = self.use_c1_path_composite(stack.current(), &paint, true);
+                    let alpha_is_shape = stack.current().alpha_is_shape;
                     let paint_serial_before = self.paint_serial;
                     let mut painted_region = Region::EMPTY;
                     let Renderer {
@@ -1954,7 +2091,7 @@ impl<'a> Renderer<'a> {
                     // nét của RIP tham chiếu MỎNG hơn quy tắc "chạm là phủ"; binarize
                     // nét ở 72 DPI làm nét nhạt đè lên đỉnh TAC của shading lân cận
                     // và hạ đỉnh (banner: −2.1 → −5.1 điểm khi bật).
-                    let conservative = !self.opts.anti_alias
+                    let conservative = !group_math && !self.opts.anti_alias
                         && self.opts.device_scale >= CONSERVATIVE_OPAQUE_ONLY_BELOW_SCALE;
                     #[cfg(feature = "perf-probe")]
                     let coverage_span = crate::perf_probe::span(crate::perf_probe::COVERAGE);
@@ -1964,7 +2101,7 @@ impl<'a> Renderer<'a> {
                             FillRule::NonZero,
                             self.opts.anti_alias,
                             clip.as_deref(),
-                            soft.as_deref(),
+                            if group_math { None } else { soft.as_deref() },
                         )
                     } else {
                         raster.fill_path_in_clip_region(
@@ -1972,7 +2109,7 @@ impl<'a> Renderer<'a> {
                             FillRule::NonZero,
                             self.opts.anti_alias,
                             clip.as_deref(),
-                            soft.as_deref(),
+                            if group_math { None } else { soft.as_deref() },
                             stack.current().clip_region,
                         )
                     };
@@ -1982,8 +2119,14 @@ impl<'a> Renderer<'a> {
                         let cov_region = cov.region;
                         #[cfg(feature = "perf-probe")]
                         let _composite_span = crate::perf_probe::span(crate::perf_probe::COMPOSITE);
-                        buffer.composite_region(cov.data, cov.region, &paint)?;
-                        if paint.alpha > 0.0 {
+                        if group_math {
+                            buffer.composite_group_region_masked(
+                                cov.data, cov.region, &paint, alpha_is_shape, soft.as_deref(),
+                            )?;
+                        } else {
+                            buffer.composite_region(cov.data, cov.region, &paint)?;
+                        }
+                        if paint.alpha > 0.0 || (group_math && !alpha_is_shape) {
                             *paint_serial = paint_serial.wrapping_add(1);
                             painted_region = painted_region.union(cov_region);
                         }
@@ -2000,11 +2143,42 @@ impl<'a> Renderer<'a> {
             }
         }
 
+        Ok(())
+        })();
+        // Khôi phục surface cả khi lỗi/hủy; không để buffer con trở thành trang.
+        if let Some(parent) = compound_parent {
+            let child = std::mem::replace(&mut self.buffer, parent);
+            if paint_result.is_ok() && child.has_complete_transparency_group() {
+                self.buffer.merge_transparency_group(
+                    &child, Region::full(child.width(), child.height()), 1.0, false,
+                )?;
+            } else {
+                self.buffer.invalidate_transparency_group();
+            }
+        }
+        paint_result?;
         if let (Some(rule), Some(dev)) = (pending_clip, device_path.as_ref()) {
             self.intersect_clip(stack, dev, rule)?;
         }
 
         Ok(())
+    }
+
+    /// COLOR (audit 2026-09-28 §KNOCK.C2): blend tách kênh áp quy tắc
+    /// white-preserving riêng cho spot trong InkBuffer, chưa nhận RGB/HSL.
+    fn supports_group_blend(&self, blend: BlendMode) -> bool {
+        blend.is_separable()
+    }
+
+    fn use_c1_path_composite(&self, gs: &GraphicsState, paint: &InkPaint, stroke: bool) -> bool {
+        let colorspace = if stroke { &gs.stroke_cs } else { &gs.fill_cs };
+        self.buffer.has_complete_transparency_group()
+            && !self.buffer.has_rgb_sidecar()
+            && self.blend_space == BlendSpace::DeviceCmyk
+            && colorspace.supports_process_group_blending()
+            && self.supports_group_blend(paint.blend)
+            && !paint.overprint
+            && paint.blend_rgb.is_none()
     }
 
     /// Giao clip hiện hành với một đường dẫn (đã ở toạ độ thiết bị).
@@ -2167,9 +2341,11 @@ impl<'a> Renderer<'a> {
         depth: u32,
     ) -> PpeResult<()> {
         let Some(egs_dict) = pdf::dict_get_dict(self.doc, resources, "ExtGState") else {
+            self.note_uncertified_vector_operation();
             return Ok(());
         };
         let Some(entry) = pdf::dict_get_dict(self.doc, egs_dict, name) else {
+            self.note_uncertified_vector_operation();
             return Ok(());
         };
 
@@ -2211,9 +2387,12 @@ impl<'a> Renderer<'a> {
             if let Some(obj) = &smask_obj {
                 stack.current_mut().retained.mask = self.retain_soft_mask(obj, stack, depth)?;
             }
-            if let Some(ais) = pdf::dict_get(self.doc, entry, "AIS").and_then(as_bool) {
-                stack.current_mut().retained.alpha_is_shape = ais;
-            }
+        }
+        // COLOR (audit 2026-09-28 §KNOCK.C1): AIS là graphics state chung,
+        // không chỉ metadata của GPU. q/Q tự bảo toàn cả hai biểu diễn.
+        if let Some(ais) = pdf::dict_get(self.doc, entry, "AIS").and_then(as_bool) {
+            stack.current_mut().alpha_is_shape = ais;
+            stack.current_mut().retained.alpha_is_shape = ais;
         }
         let soft_mask = match &smask_obj {
             _ if self.retained.is_some() => None,
@@ -2314,6 +2493,27 @@ impl<'a> Renderer<'a> {
             gs.overprint_mode = 0;
         }
         Ok(())
+    }
+
+    /// CORRECTNESS (audit 2026-09-28 §KNOCK.BBOX): BBox Form/Group là giao
+    /// hình học, không phải opacity. Giao lại cùng BBox AA sẽ nhân coverage c².
+    /// Chỉ bỏ đúng BBox đã có; luôn giữ clip mới chặt hơn (W/text clip) và region.
+    fn apply_form_bbox_clip(&self, gs: &mut GraphicsState, bbox: Option<Rect>) {
+        let (width, height) = (self.raster.width(), self.raster.height());
+        let region = self.intersect_bbox_region(gs.clip_region, bbox, &gs.ctm, width, height);
+        let key = bbox
+            .and_then(|bbox| rect_path(bbox.x0, bbox.y0, bbox.width(), bbox.height()))
+            .and_then(|path| path.transform(to_ts(&gs.ctm)))
+            .and_then(|path| BBoxClipKey::from_device_path(&path, width, height, self.opts.anti_alias));
+        if !key.is_some_and(|key| gs.has_applied_bbox_clip(key)) {
+            gs.clip = self.intersect_bbox_with_region(gs.clip.clone(), bbox, &gs.ctm, gs.clip_region);
+            // None có thể là fast path phủ toàn raster hoặc dựng mask không
+            // thành công; không dùng nó làm chứng cứ đã áp một BBox hữu hạn.
+            if gs.clip.is_some() {
+                if let Some(key) = key { gs.remember_bbox_clip(key); }
+            }
+        }
+        gs.clip_region = Some(region);
     }
 
     /// Giao clip với `/BBox` của một form (đã có `/Matrix` trong `ctm`).
@@ -2585,6 +2785,24 @@ impl<'a> Renderer<'a> {
                 ))
             }
         };
+        let mask_group = pdf::dict_get_dict(self.doc, &stream.dict, "Group");
+        let mask_knockout = mask_group
+            .and_then(|group| pdf::dict_get(self.doc, group, "K")).and_then(as_bool).unwrap_or(false);
+        let mask_isolated = mask_group
+            .and_then(|group| pdf::dict_get(self.doc, group, "I")).and_then(as_bool).unwrap_or(false);
+        // COLOR (audit 2026-09-28 §KNOCK.PREVIEW): /G được dựng bằng surface
+        // SMask cũ, không đi qua do_transparency_group. Không được bỏ qua K hoặc
+        // đặt BC thành backdrop nội bộ của group Luminosity khai isolated rồi
+        // trả kết quả như đã dựng đúng transparency.
+        if mask_knockout || (luminosity && mask_isolated) {
+            self.note_uncertified_vector_operation();
+            self.warnings.unsupported_transparency = true;
+            self.warnings.note_skipped_op(if mask_knockout {
+                "SMask /G Group /K true (knockout chưa chứng nhận)"
+            } else {
+                "SMask /G Luminosity /I true (backdrop cách ly chưa chứng nhận)"
+            });
+        }
         let form_matrix = pdf::dict_get(self.doc, &stream.dict, "Matrix")
             .and_then(|o| pdf::num_array(self.doc, o))
             .and_then(|v| (v.len() >= 6).then(|| Matrix::new(v[0], v[1], v[2], v[3], v[4], v[5])))
@@ -2600,19 +2818,33 @@ impl<'a> Renderer<'a> {
         let tr = pdf::dict_get(self.doc, smask, "TR")
             .filter(|o| !matches!(pdf::name_str(o).as_deref(), Some("Identity")))
             .cloned();
+        // COLOR (audit 2026-09-28 §KNOCK.MASK): transfer không-Identity là
+        // một biến đổi riêng của mask; chỉ chứng nhận khi provenance LUT được
+        // mang qua mọi đường render. Lô này giữ guard cho LUT lạ.
+        if tr.is_some() {
+            self.note_uncertified_vector_operation();
+        }
 
         // Mặt nạ dựng theo CTM **tại thời điểm `gs`**, không theo CTM lúc vẽ.
         let ctm = form_matrix.then(&stack.current().ctm);
 
         let mask_cs = if luminosity {
             Some(match &group_cs {
-                Some(o) => resolve_colorspace(self.doc, o, form_res.as_ref(), &mut self.warnings)
-                    .unwrap_or(ColorSpace::DeviceGray),
+                Some(o) => match resolve_colorspace(self.doc, o, form_res.as_ref(), &mut self.warnings) {
+                    Ok(cs) => cs,
+                    Err(_) => {
+                        self.note_uncertified_vector_operation();
+                        ColorSpace::DeviceGray
+                    }
+                },
                 None => ColorSpace::DeviceGray,
             })
         } else {
             None
         };
+        if luminosity && mask_cs.as_ref().is_some_and(|cs| !cs.supports_process_group_blending()) {
+            self.note_uncertified_vector_operation();
+        }
         // MEMORY (audit 2026-08-09 §PRE.0B): chỉ đường managed mới duy trì
         // `blend_rgb` đủ để dùng sidecar làm luminosity. Unmanaged cấp sidecar
         // rồi vẫn fallback CMYK, vừa tốn RAM vừa có thể làm render bị từ chối.
@@ -2827,9 +3059,11 @@ impl<'a> Renderer<'a> {
             return self.retain_xobject(name, resources, stack, depth);
         }
         let Some(xobjects) = pdf::dict_get_dict(self.doc, resources, "XObject") else {
+            self.note_uncertified_vector_operation();
             return Ok(());
         };
         let Ok(entry_ref) = xobjects.get(name.as_bytes()) else {
+            self.note_uncertified_vector_operation();
             return Ok(());
         };
         // Lấy khoá stream NGAY, dạng dữ liệu thuần: nó phải sống qua các lệnh `&mut
@@ -2843,6 +3077,7 @@ impl<'a> Renderer<'a> {
         let image_ref = entry_ref.clone();
         let entry = pdf::deref(self.doc, entry_ref);
         let Object::Stream(stream) = entry else {
+            self.note_uncertified_vector_operation();
             return Ok(());
         };
 
@@ -2893,6 +3128,7 @@ impl<'a> Renderer<'a> {
                 let source = self.form_source(pdf::ref_id(entry_ref), stream)?;
                 let decompression_failed = source.quality() == pdf::DecodeQuality::Recovered;
                 if decompression_failed {
+                    self.note_uncertified_vector_operation();
                     let form_ctm = form_matrix.then(&stack.current().ctm);
                     let visible_region = self.intersect_bbox_region(
                         stack.current().clip_region,
@@ -2999,19 +3235,7 @@ impl<'a> Renderer<'a> {
                 // `BBox` là clip bắt buộc (§8.10.2): nội dung tràn ra ngoài BBox
                 // phải bị cắt. Bỏ qua sẽ cho mực ra ngoài vùng hợp lệ.
                 let ctm = stack.current().ctm;
-                let clip = stack.current().clip.clone();
-                let clip_region = self.intersect_bbox_region(
-                    stack.current().clip_region,
-                    bbox,
-                    &ctm,
-                    self.buffer.width(),
-                    self.buffer.height(),
-                );
-                let next_clip =
-                    self.intersect_bbox_with_region(clip, bbox, &ctm, stack.current().clip_region);
-                let gs = stack.current_mut();
-                gs.clip = next_clip;
-                gs.clip_region = Some(clip_region);
+                self.apply_form_bbox_clip(stack.current_mut(), bbox);
                 let saved_depth = stack.logical_depth();
                 let result = self.execute_with_ctm(
                     StreamSource::Form(&source),
@@ -3031,6 +3255,7 @@ impl<'a> Renderer<'a> {
             }
             "Image" => self.draw_image(&image_ref, Some(resources), stack)?,
             other => {
+                self.note_uncertified_vector_operation();
                 self.warnings.note_skipped_op(&format!("Do (/{other})"));
             }
         }
@@ -3069,8 +3294,8 @@ impl<'a> Renderer<'a> {
         let blend = gs.blend_mode;
         let soft = gs.soft_mask.clone();
         let overprint = gs.fill_overprint;
+        let alpha_is_shape = gs.alpha_is_shape;
         let ctm = form_matrix.then(&gs.ctm);
-        let parent_clip = gs.clip.clone();
         let parent_clip_region = gs.clip_region;
         let group_region = self.intersect_bbox_region(
             parent_clip_region,
@@ -3088,24 +3313,61 @@ impl<'a> Renderer<'a> {
             return Ok(());
         }
 
-        if knockout {
-            // Knockout group: mỗi phần tử composite với nền **ban đầu** của group,
-            // không với phần tử vẽ trước nó. Chưa dựng ⇒ vùng chồng lấn sẽ đọc ra
-            // nhiều mực hơn thực tế.
-            self.warnings.unsupported_transparency = true;
-            self.warnings.note_skipped_op("Group /K true (knockout)");
+        // COLOR (audit 2026-09-28 §KNOCK.PREVIEW): completeness của buffer
+        // không thay thế chứng nhận subtree. Ảnh có thể giữ shape đầy đủ
+        // nhưng chưa nằm trong miền đã kiểm. Snapshot trước boundary để
+        // non-K child có boundary lạ cũng hạ certificate của K cha.
+        let vector_snapshot = self.uncertified_vector_ops;
+        let vector_boundary = !isolated && self.supports_group_blend(blend) && !overprint
+            // Producer tăng nonce trước snapshot của Form K con. Kiểm context
+            // ngay boundary để SMask, ô pattern và glyph không đi vòng exclusion.
+            && self.smask_depth == 0 && self.pattern_cell_depth == 0 && self.type3_depth == 0
+            && self.blend_space == BlendSpace::DeviceCmyk
+            && group_blend_space == BlendSpace::DeviceCmyk
+            && !self.buffer.has_rgb_sidecar();
+        if !vector_boundary || self.suppress_group_math || self.opts.collect_text_outlines {
+            self.note_uncertified_vector_operation();
         }
+        let mut knockout_guard_emitted = false;
 
+        // COLOR (audit 2026-09-28 §KNOCK.C1): group con K=false trong cha K
+        // cũng phải giữ shape và dùng backdrop của đúng tầng. Ngoài context K
+        // thì đường raster cũ không cấp thêm bất kỳ plane/snapshot nào.
+        let needs_group_math = knockout || self.buffer.has_transparency_group();
+        let eligible_group_math = needs_group_math && !self.suppress_group_math
+            // Thu outline có side effect glyph/ordinal, không được chạy hai lượt.
+            && !self.opts.collect_text_outlines
+            && self.blend_space == BlendSpace::DeviceCmyk
+            && group_blend_space == BlendSpace::DeviceCmyk
+            && !self.buffer.has_rgb_sidecar()
+            && (!self.buffer.has_transparency_group() || self.buffer.has_complete_transparency_group())
+            && self.buffer.can_merge_transparency_group(blend) && !overprint;
+        let c1_child = if eligible_group_math {
+            match self.buffer.child_transparency_group(isolated, knockout) {
+                Ok(child) => Some(child),
+                // Allocation chưa vẽ gì: giữ đường cũ vốn đã có warning K,
+                // không biến thiếu buffer thử nghiệm thành lỗi cứng mới của Viewer.
+                Err(PpeError::MemoryBudgetExceeded { .. } | PpeError::Unsupported(_)) => None,
+                Err(error) => return Err(error),
+            }
+        } else {
+            None
+        };
+        if needs_group_math && c1_child.is_none() {
+            self.note_uncertified_vector_operation();
+            self.buffer.invalidate_transparency_group();
+            if knockout {
+                self.note_knockout_guard();
+                knockout_guard_emitted = true;
+            }
+        }
         let transparent = ca < 1.0 - 1e-6 || soft.is_some();
-        if !transparent && blend.is_normal() && !isolated {
+        if c1_child.is_none() && !transparent && blend.is_normal() && !isolated {
             if !self.save_internal_state(stack) {
                 return Ok(());
             }
             stack.current_mut().ctm = ctm;
-            let clip = stack.current().clip.clone();
-            let gs = stack.current_mut();
-            gs.clip = self.intersect_bbox_with_region(clip, bbox, &ctm, parent_clip_region);
-            gs.clip_region = Some(group_region);
+            self.apply_form_bbox_clip(stack.current_mut(), bbox);
             let saved_depth = stack.logical_depth();
             let result = self.execute_source(source, resources, stack, depth + 1);
             while stack.logical_depth() > saved_depth {
@@ -3127,11 +3389,12 @@ impl<'a> Renderer<'a> {
         initial.stroke_alpha = 1.0;
         initial.blend_mode = BlendMode::Normal;
         initial.soft_mask = None;
-        initial.clip = self.intersect_bbox_with_region(parent_clip, bbox, &ctm, parent_clip_region);
-        initial.clip_region = Some(group_region);
+        self.apply_form_bbox_clip(&mut initial, bbox);
 
         let rgb_group = group_blend_space == BlendSpace::DeviceRgb && self.color.is_some();
-        let child = if rgb_group && isolated {
+        let child = if let Some(child) = c1_child {
+            child
+        } else if rgb_group && isolated {
             self.buffer.child_isolated_rgb()?
         } else if rgb_group {
             if self.buffer.ensure_rgb_sidecar()? {
@@ -3151,6 +3414,9 @@ impl<'a> Renderer<'a> {
         self.blend_space = group_blend_space;
         #[cfg(feature = "perf-probe")]
         drop(setup_span);
+        let tracked_child = child.has_transparency_group();
+        let saved_warnings = tracked_child.then(|| self.warnings.clone());
+        let saved_stream_ctx = tracked_child.then(|| self.stream_ctx.clone());
         let rendered = self.render_form_into(
             child,
             source,
@@ -3161,6 +3427,35 @@ impl<'a> Renderer<'a> {
         );
         self.blend_space = saved_blend_space;
         let (mut child, child_painted_region, child_explicit_mask_events) = rendered?;
+
+        // COLOR (audit 2026-09-28 §KNOCK.C2): không được legacy-merge buffer
+        // đã pha theo backdrop shape mới. Propagate invalid lên group tracking
+        // ngoài cùng, rồi phát lại đúng một lần bằng đường cũ còn guard.
+        if tracked_child && !child.has_complete_transparency_group() {
+            self.note_uncertified_vector_operation();
+            if knockout {
+                // Snapshot warnings nằm trước guard của invocation này. Replay
+                // được phát guard kể cả khi suppress=true; merge-max giữ đúng số.
+                self.note_knockout_guard();
+            }
+            if self.buffer.has_transparency_group() {
+                self.buffer.invalidate_transparency_group();
+                return Ok(());
+            }
+            drop(child);
+            let discarded_warnings = std::mem::replace(
+                &mut self.warnings, saved_warnings.expect("đã snapshot tracked child"),
+            );
+            self.stream_ctx = saved_stream_ctx.expect("đã snapshot tracked child");
+            let suppressed = std::mem::replace(&mut self.suppress_group_math, true);
+            let result = self.do_transparency_group(
+                source, resources, form_matrix, bbox, isolated, knockout,
+                group_blend_space, stack, depth,
+            );
+            self.suppress_group_math = suppressed;
+            merge_replayed_warnings(&mut self.warnings, &discarded_warnings);
+            return result;
+        }
         #[cfg(feature = "perf-probe")]
         let _finish_span = crate::perf_probe::span(crate::perf_probe::GROUP_FINISH);
 
@@ -3190,6 +3485,14 @@ impl<'a> Renderer<'a> {
         // Spot chỉ xuất hiện bên trong group vẫn phải có kẽm ở trang cha.
         self.buffer.adopt_channels_from(&child)?;
         self.opts.check_cancelled()?;
+        let c1_merge = child.has_complete_transparency_group()
+            && (!self.buffer.has_transparency_group() || self.buffer.has_complete_transparency_group())
+            && group_blend_space == BlendSpace::DeviceCmyk
+            && !self.buffer.has_rgb_sidecar()
+            && self.supports_group_blend(blend) && !overprint;
+        if !c1_merge {
+            self.note_uncertified_vector_operation();
+        }
 
         // CORRECTNESS (audit 2026-08-31 §PPE-A02/A05): paint nội bộ child đã
         // được cô lập; boundary chỉ commit phần vừa có child alpha vừa qua external
@@ -3202,7 +3505,20 @@ impl<'a> Renderer<'a> {
             .as_deref()
             .is_some_and(|mask| self.soft_mask_has_pending_events(mask));
         let child_width = child.width() as usize;
-        let group_painted_region = if ca <= 0.0 || child_merge_region.is_empty() {
+        let group_painted_region = if c1_merge && self.buffer.has_transparency_group() {
+            // GA có thể bằng0 mà F vẫn dương. Bỏ vùng này sẽ làm group cha
+            // quên thao tác knockout trong suốt khi còn một tầng group nữa.
+            if alpha_is_shape && ca <= 0.0 {
+                Region::EMPTY
+            } else {
+                let shape = child.group_shape_plane().expect("C1 có plane shape");
+                bounding_region_where_cancelled(
+                    child_merge_region, self.opts.cancel_token.as_ref(),
+                    |x, y| shape[y as usize * child_width + x as usize] > 0.0
+                        && (!alpha_is_shape || soft.as_deref().is_none_or(|mask| mask.value_at(x, y) > 0.0)),
+                )?
+            }
+        } else if ca <= 0.0 || child_merge_region.is_empty() {
             Region::EMPTY
         } else {
             match soft.as_deref() {
@@ -3270,7 +3586,11 @@ impl<'a> Renderer<'a> {
             }
         }
 
-        if isolated {
+        if c1_merge {
+            self.buffer.merge_transparency_group_masked(
+                &child, group_region, ca, alpha_is_shape, soft.as_deref(), blend,
+            )?;
+        } else if isolated {
             self.buffer
                 .merge_isolated(&child, group_region, ca, soft.as_deref(), blend, overprint);
         } else {
@@ -3289,6 +3609,12 @@ impl<'a> Renderer<'a> {
             // commit event child sau khi boundary đó hoàn tất.
             self.note_surface_paint(soft.as_deref(), group_painted_region)?;
             self.accept_explicit_mask_events(visible_child_events);
+        }
+        let verified_vector = self.opts.preview_vector_knockout && vector_boundary && c1_merge
+            && !self.suppress_group_math && !self.opts.collect_text_outlines
+            && vector_snapshot != u64::MAX && self.uncertified_vector_ops == vector_snapshot;
+        if knockout && !knockout_guard_emitted && !verified_vector {
+            self.note_knockout_guard();
         }
         Ok(())
     }
@@ -3406,6 +3732,190 @@ impl<'a> Renderer<'a> {
         }
     }
 
+    /// COLOR (audit 2026-09-28 §KNOCK.C2b): ảnh là một object. Giữ riêng
+    /// hình học/stencil/Mask và opacity/SMask, kể cả mẫu alpha bằng không.
+    fn draw_group_image(
+        &mut self,
+        img: &SampledImage,
+        stack: &mut StateStack,
+        ctm: &Matrix,
+    ) -> PpeResult<()> {
+        let gs = stack.current();
+        let base_alpha = gs.fill_alpha.clamp(0.0, 1.0);
+        let alpha_is_shape = gs.alpha_is_shape;
+        let blend = gs.blend_mode;
+        let clip = gs.clip.clone();
+        let clip_region = gs.clip_region;
+        // ISO 11.6.4.3: mask gắn với ảnh THAY THẾ mask graphics state.
+        let soft = if img.overrides_graphics_soft_mask() { None } else { gs.soft_mask.clone() };
+        let stencil_paint = if img.stencil.is_some() {
+            let Some(paint) = self.make_paint(stack, false)? else { return Ok(()); };
+            Some(paint)
+        } else { None };
+        let sampler = ImageSampler::new(img, self.buffer.space_mut(), &mut self.warnings, self.color)?;
+        self.buffer.sync_channels()?;
+        let Some(device_path) = rect_path(0.0, 0.0, 1.0, 1.0)
+            .and_then(|path| path.transform(to_ts(ctm))) else { return Ok(()); };
+        let (a, b, c, d, e, f) = (ctm.a as f64, ctm.b as f64, ctm.c as f64,
+            ctm.d as f64, ctm.e as f64, ctm.f as f64);
+        let det = a * d - b * c;
+        if !det.is_finite() || det.abs() <= f64::EPSILON { return Ok(()); }
+        let (ia, ib, ic, id) = (d / det, -b / det, -c / det, a / det);
+        let inv64 = [ia, ib, ic, id, -(ia * e + ic * f), -(ib * e + id * f)];
+        let Some(inv) = ctm.invert() else { return Ok(()); };
+        let conservative = self.opts.conservative_image_sampling;
+        let grid = if conservative { (1, 1) }
+            else { preview_image_sample_grid(&inv64, img.width, img.height) };
+        let n = self.buffer.space().len();
+        let mut sample_scratch = Vec::with_capacity(n);
+        // CMYK/Gray/Indexed(CMYK/Gray) đều ánh xạ tuyến tính sang process.
+        // Mẫu alpha0 không cần màu nhưng vẫn trả intrinsic shape.
+        let sample = |sx: u32, sy: u32, buffer: &mut InkBuffer,
+                      warnings: &mut RenderWarnings, scratch: &mut Vec<f32>|
+            -> PpeResult<([f32; 4], f32, f32, ChannelMask)> {
+            let shape = img.intrinsic_shape_at(sx, sy);
+            let opacity = img.soft_mask_at(sx, sy).unwrap_or(1.0);
+            if let Some(paint) = &stencil_paint {
+                return Ok((std::array::from_fn(|ch| paint.ink.get(ch).copied().unwrap_or(0.0)),
+                    shape, opacity, paint.declared));
+            }
+            let declared = sampler.ink_into(sx, sy, scratch, buffer.space_mut(), warnings, self.color)?
+                .unwrap_or(ChannelMask::EMPTY);
+            let ink = std::array::from_fn(|ch| scratch.get(ch).copied().unwrap_or(0.0));
+            Ok((ink, shape, opacity, declared))
+        };
+        let Some(cov) = self.raster.fill_path_in_clip_region(
+            &device_path, FillRule::NonZero, self.opts.anti_alias, clip.as_deref(), None, clip_region,
+        ) else { return Ok(()); };
+        let w = self.buffer.width() as usize;
+        let h = self.buffer.height() as i64;
+        let mut paint = InkPaint::opaque(vec![0.0; n], ChannelMask::PROCESS);
+        paint.alpha = base_alpha;
+        paint.blend = blend;
+        let mut painted_region = Region::EMPTY;
+        for y in cov.region.y0..cov.region.y1 {
+            self.opts.check_cancelled()?;
+            for x in cov.region.x0..cov.region.x1 {
+                let index = y as usize * w + x as usize;
+                let geometric = cov.data[index];
+                if geometric <= 0.0 { continue; }
+                let center_soft = soft.as_deref().map_or(1.0, |mask| mask.value_at(x, y));
+                let peak_soft = if conservative {
+                    soft.as_deref().map_or(1.0, |mask| soft_mask_peak(mask, x as i64, y as i64, w as i64, h))
+                } else { center_soft };
+                let mut host_soft = center_soft;
+                let mut shape_sum = 0.0;
+                let mut alpha_sum = 0.0;
+                let mut ink_sum = [0.0; 4];
+                let mut count = 0u32;
+                let mut declared = ChannelMask::EMPTY;
+                for sample_y in 0..grid.1 {
+                    let py = y as f64 + (sample_y as f64 + 0.5) / grid.1 as f64;
+                    for sample_x in 0..grid.0 {
+                        let px = x as f64 + (sample_x as f64 + 0.5) / grid.0 as f64;
+                        let u = inv64[0] * px + inv64[2] * py + inv64[4];
+                        let v = inv64[1] * px + inv64[3] * py + inv64[5];
+                        if grid != (1, 1) && (!(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&v)) {
+                            continue;
+                        }
+                        let sx = tex_index(u * img.width as f64, img.width);
+                        let sy = tex_index((1.0 - v) * img.height as f64, img.height);
+                        let mut chosen = sample(sx, sy, &mut self.buffer, &mut self.warnings, &mut sample_scratch)?;
+                        if conservative {
+                            // COLOR (audit 2026-09-28 §KNOCK.C2b): knockout có
+                            // thể khoét một nền nhiều mực bằng mẫu nguồn ít mực.
+                            // So TAC sau composite; mask lớn hơn không mặc nhiên
+                            // bảo thủ hơn. Không sửa surface trong lúc chọn mẫu.
+                            let mut score = |buffer: &InkBuffer,
+                                value: &([f32; 4], f32, f32, ChannelMask), mask: f32| {
+                                paint.ink[..4].copy_from_slice(&value.0);
+                                paint.declared = value.3;
+                                buffer.projected_group_tac_at(index, geometric * value.1,
+                                    &paint, alpha_is_shape, Some(value.2 * mask))
+                            };
+                            let mut best_score = score(&self.buffer, &chosen, center_soft)?;
+                            if peak_soft != center_soft {
+                                let peak_score = score(&self.buffer, &chosen, peak_soft)?;
+                                if peak_score > best_score {
+                                    best_score = peak_score;
+                                    host_soft = peak_soft;
+                                }
+                            }
+                            let mut candidates = Vec::new();
+                            let alt_x = texel_tie_alternate(u * img.width as f64, img.width, sx);
+                            let alt_y = texel_tie_alternate((1.0 - v) * img.height as f64, img.height, sy);
+                            if let Some(ax) = alt_x { candidates.push((ax, sy)); }
+                            if let Some(ay) = alt_y { candidates.push((sx, ay)); }
+                            if let (Some(ax), Some(ay)) = (alt_x, alt_y) { candidates.push((ax, ay)); }
+                            if stencil_paint.is_some()
+                                || best_score >= IMAGE_FOOTPRINT_TAC_THRESHOLD {
+                                candidates.extend(image_sample_candidates(inv, x as i64, y as i64,
+                                    img.width, img.height, (sx, sy)).into_iter().skip(1));
+                            }
+                            for (cx, cy) in candidates {
+                                let candidate = sample(cx, cy, &mut self.buffer, &mut self.warnings, &mut sample_scratch)?;
+                                let mut candidate_soft = center_soft;
+                                let mut candidate_score = score(&self.buffer, &candidate, center_soft)?;
+                                if peak_soft != center_soft {
+                                    let peak_score = score(&self.buffer, &candidate, peak_soft)?;
+                                    if peak_score > candidate_score {
+                                        candidate_score = peak_score;
+                                        candidate_soft = peak_soft;
+                                    }
+                                }
+                                if candidate_score > best_score {
+                                    best_score = candidate_score;
+                                    chosen = candidate;
+                                    host_soft = candidate_soft;
+                                }
+                            }
+                        }
+                        let (ink, shape, opacity, source_channels) = chosen;
+                        let alpha = shape * opacity;
+                        shape_sum += shape;
+                        alpha_sum += alpha;
+                        for ch in 0..4 { ink_sum[ch] += ink[ch] * alpha; }
+                        declared = declared.union(source_channels);
+                        count += 1;
+                    }
+                }
+                if count == 0 {
+                    // Mép AA rất mảnh có thể nằm giữa mọi điểm lưới. Hình học
+                    // đã xác nhận coverage>0: lấy texel biên, không làm rơi nét.
+                    let px = x as f64 + 0.5;
+                    let py = y as f64 + 0.5;
+                    let u = inv64[0] * px + inv64[2] * py + inv64[4];
+                    let v = inv64[1] * px + inv64[3] * py + inv64[5];
+                    let (ink, shape, opacity, channels) = sample(
+                        tex_index(u * img.width as f64, img.width),
+                        tex_index((1.0 - v) * img.height as f64, img.height),
+                        &mut self.buffer, &mut self.warnings, &mut sample_scratch,
+                    )?;
+                    shape_sum = shape;
+                    alpha_sum = shape * opacity;
+                    for ch in 0..4 { ink_sum[ch] = ink[ch] * alpha_sum; }
+                    declared = channels;
+                    count = 1;
+                }
+                if shape_sum <= 0.0 { continue; }
+                let intrinsic_shape = shape_sum / count as f32;
+                let image_soft = alpha_sum / shape_sum;
+                for ch in 0..4 { paint.ink[ch] = if alpha_sum > 0.0 { ink_sum[ch] / alpha_sum } else { 0.0 }; }
+                paint.declared = declared;
+                self.buffer.composite_group_at(index, geometric * intrinsic_shape, &paint,
+                    alpha_is_shape, Some(image_soft * host_soft))?;
+                if !alpha_is_shape || base_alpha * image_soft * host_soft > 0.0 {
+                    include_pixel(&mut painted_region, x, y);
+                }
+            }
+        }
+        if !painted_region.is_empty() {
+            self.note_surface_paint(soft.as_deref(), painted_region)?;
+            if img.explicit_mask_decode_failed { self.defer_explicit_mask_failure(painted_region); }
+        }
+        Ok(())
+    }
+
     /// Vẽ một ảnh XObject.
     ///
     /// # Hướng lấy mẫu
@@ -3496,9 +4006,42 @@ impl<'a> Renderer<'a> {
         {
             return Ok(());
         }
+        // COLOR (audit 2026-09-28 §KNOCK.MASK): ảnh process/Gray/Indexed được
+        // giữ nguyên intrinsic shape và SMask ở draw_group_image. Ảnh có matte
+        // hoặc explicit mask lỗi chưa có đủ provenance để mở certificate.
+        // Trong lúc dựng SMask, surface con không có transparency-group nhưng
+        // ảnh process vẫn là primitive exact của mask; cho phép riêng context đó
+        // để một ảnh Gray hợp lệ không làm bẩn K cha.
+        let image_process_source = source_color_space.is_some_and(group_image_colorspace_supported);
+        let image_preview_candidate = image_process_source
+            && !img.has_matte()
+            && !img.explicit_mask_decode_failed
+            && !stencil_uses_pattern
+            && !stack.current().fill_overprint
+            && self.supports_group_blend(stack.current().blend_mode)
+            && self.blend_space == BlendSpace::DeviceCmyk
+            && !self.buffer.has_rgb_sidecar()
+            && ((self.buffer.has_complete_transparency_group() && self.smask_depth == 0)
+                || self.smask_depth > 0);
+        if !image_preview_candidate {
+            self.note_uncertified_vector_operation();
+        }
         // CORRECTNESS (audit 2026-08-31 §PPE-A05): metadata lỗi nằm trong mẫu
         // cache, nhưng diagnostic là của từng placement có coverage hữu hiệu.
         let explicit_mask_warning_pending = img.explicit_mask_decode_failed;
+
+        if self.buffer.has_transparency_group() {
+            let gs = stack.current();
+            let supported = self.buffer.has_complete_transparency_group()
+                && self.blend_space == BlendSpace::DeviceCmyk
+                && !self.buffer.has_rgb_sidecar() && !gs.fill_overprint
+                && self.supports_group_blend(gs.blend_mode) && !stencil_uses_pattern
+                && source_color_space.is_some_and(group_image_colorspace_supported);
+            if supported {
+                return self.draw_group_image(&img, stack, &ctm);
+            }
+            self.buffer.invalidate_transparency_group();
+        }
 
         // Ảnh có `/SMask` lấy mẫu trên lưới CĂNG-BBOX thay vì lưới CTM chính
         // xác — xem `mask_sample_ctm`. Không có bước này, mọi ảnh mờ thu nhỏ
@@ -3626,6 +4169,8 @@ impl<'a> Renderer<'a> {
             let mut initial = stack.current().clone();
             initial.clip = Some(Arc::new(stencil_mask));
             initial.clip_region = Some(pattern_host_region);
+            // Mask dựng từ stencil không đi qua hợp đồng BBox Form/Group.
+            initial.clear_bbox_clip_history();
             // `soft_mask` và `fill_alpha` vẫn nằm trong state tạm: pattern painter
             // sẽ nhân mỗi lớp đúng một lần rồi xoá soft mask ở cell con.
             let mut pattern_stack = StateStack::new(initial);
@@ -4116,6 +4661,7 @@ impl<'a> Renderer<'a> {
         {
             Some(e) => e.clone(),
             None => {
+                self.note_uncertified_vector_operation();
                 self.warnings
                     .note_skipped_op(&format!("sh: không có /Shading /{name} trong resources"));
                 self.warnings.dropped_objects += 1;
@@ -4131,6 +4677,7 @@ impl<'a> Renderer<'a> {
         ) {
             Ok(colorspace) => colorspace,
             Err(e) => {
+                self.note_uncertified_vector_operation();
                 merge_render_warnings(&mut self.warnings, &metadata_warnings);
                 self.warnings.note_skipped_op(&format!("sh ({e})"));
                 self.warnings.dropped_objects += 1;
@@ -4141,10 +4688,16 @@ impl<'a> Renderer<'a> {
             return Ok(());
         }
         merge_render_warnings(&mut self.warnings, &metadata_warnings);
-        let shading = match resolve_shading_with_colorspace(self.doc, &entry, colorspace) {
+        let remaining_bytes = self.buffer.memory_limit_bytes().min(self.opts.memory_budget_bytes)
+            .saturating_sub(self.buffer.memory_used_bytes());
+        let shading = match resolve_shading_with_colorspace_bounded(
+            self.doc, &entry, colorspace, remaining_bytes, self.opts.cancellation_token(),
+        ) {
             Ok(shading) => shading,
+            Err(e @ (PpeError::Cancelled | PpeError::MemoryBudgetExceeded { .. })) => return Err(e),
             Err(e) => {
                 // Kiểu lưới hoặc dict hỏng: ghi nhận để kết quả bị từ chối an toàn.
+                self.note_uncertified_vector_operation();
                 self.warnings.note_skipped_op(&format!("sh ({e})"));
                 self.warnings.dropped_objects += 1;
                 return Ok(());
@@ -4194,6 +4747,26 @@ impl<'a> Renderer<'a> {
         } else {
             gs.fill_overprint
         };
+        // COLOR (audit 2026-09-28 §KNOCK.C2c): chỉ direct sh có clip và
+        // SMask còn tách riêng. Pattern/Type1 hai biến chưa vào miền này.
+        let group_math = self.buffer.has_complete_transparency_group()
+            && self.blend_space == BlendSpace::DeviceCmyk
+            && !self.buffer.has_rgb_sidecar() && !overprint
+            && self.supports_group_blend(gs.blend_mode)
+            && shading.colorspace.supports_process_group_blending()
+            && !matches!(shading.kind, ShadingKind::FunctionBased { .. })
+            && matches!(coverage, ShadingCoverage::GraphicsState { .. });
+        if self.buffer.has_transparency_group() && !group_math {
+            self.buffer.invalidate_transparency_group();
+        }
+        // COLOR (audit 2026-09-28 §KNOCK.PROCESS): direct shading process
+        // giữ shape độc lập opacity. Không suy từ alternate CMYK để mở spot,
+        // pattern, hàm hai biến hoặc mask/AIS chưa được nghiệm thu.
+        if !group_math {
+            self.note_uncertified_vector_operation();
+        }
+        let coverage = if group_math { coverage.without_soft_mask() } else { coverage };
+        let alpha_is_shape = gs.alpha_is_shape;
         // `OPM = 1`: thành phần bằng 0 không ghi đè kênh tương ứng (§11.7.4.4).
         // Phải áp ở đây nữa, không chỉ ở `make_paint`: shading dựng `InkPaint`
         // trực tiếp cho từng pixel, nên bỏ sót sẽ làm gradient đen overprint khoét
@@ -4226,11 +4799,9 @@ impl<'a> Renderer<'a> {
 
         // Lưới đi đường riêng: màu của nó nằm ở đỉnh tam giác, không phải là hàm của
         // vị trí, nên bảng LUT theo `t` không dùng được.
-        if let ShadingKind::Mesh { triangles } = &shading.kind {
-            let triangles = triangles.clone();
+        if matches!(shading.kind, ShadingKind::Mesh { .. } | ShadingKind::Patches { .. }) {
             return self.paint_mesh(
-                &triangles,
-                &shading.colorspace,
+                shading,
                 ctm,
                 coverage,
                 soft_for_events.as_deref(),
@@ -4240,6 +4811,8 @@ impl<'a> Renderer<'a> {
                 overprint,
                 blend,
                 opm_one,
+                group_math,
+                alpha_is_shape,
             );
         }
 
@@ -4259,7 +4832,7 @@ impl<'a> Renderer<'a> {
         let n = self.buffer.space().len();
         let region = region.clamped(self.buffer.width(), self.buffer.height());
 
-        if !shading_rgb_sidecar && sampled.uses_only_process_channels() {
+        if !group_math && !shading_rgb_sidecar && sampled.uses_only_process_channels() {
             let cancel_token = self.opts.cancel_token.as_ref();
             let painted = AtomicBool::new(false);
             let paint_x0 = AtomicU32::new(region.x1);
@@ -4338,7 +4911,6 @@ impl<'a> Renderer<'a> {
         let mut ink_scratch: Vec<f32> = vec![0.0; n];
         let paint_serial_before = self.paint_serial;
         let mut painted_region = Region::EMPTY;
-
         for y in region.y0..region.y1 {
             self.opts.check_cancelled()?;
             for x in region.x0..region.x1 {
@@ -4362,7 +4934,7 @@ impl<'a> Renderer<'a> {
                     ink: std::mem::take(&mut ink_scratch),
                     declared,
                     overprint,
-                    alpha: (cov * alpha).clamp(0.0, 1.0),
+                    alpha: (if group_math { alpha } else { cov * alpha }).clamp(0.0, 1.0),
                     blend,
                     blend_rgb: if shading_rgb_sidecar {
                         sampled_rgb
@@ -4373,8 +4945,15 @@ impl<'a> Renderer<'a> {
                 if opm_one {
                     paint = paint.with_overprint_mode_1();
                 }
-                self.buffer.composite_at(index, 1.0, &paint);
-                if paint.alpha > 0.0 {
+                let has_shape = if group_math {
+                    let mask = soft_for_events.as_deref().map_or(1.0, |mask| mask.value_at(x, y));
+                    self.buffer.composite_group_at(index, cov, &paint, alpha_is_shape, Some(mask))?;
+                    !alpha_is_shape || paint.alpha * mask > 0.0
+                } else {
+                    self.buffer.composite_at(index, 1.0, &paint);
+                    paint.alpha > 0.0
+                };
+                if has_shape {
                     self.paint_serial = self.paint_serial.wrapping_add(1);
                     if exact_paint_region {
                         include_pixel(&mut painted_region, x, y);
@@ -4394,17 +4973,13 @@ impl<'a> Renderer<'a> {
         Ok(())
     }
 
-    /// Tô một lưới tam giác (shading kiểu 4–7).
-    ///
-    /// Mỗi tam giác được quét theo hộp bao của nó và lọc bằng **toạ độ trọng tâm**
-    /// (barycentric). Màu ba đỉnh được quy sang mực **một lần cho mỗi tam giác** rồi
-    /// nội suy tuyến tính — xem [`crate::shading::mesh`] về lý do không gọi ICC theo
-    /// từng pixel.
+    /// COLOR (audit 2026-09-28 §KNOCK.C2c): một shading là một object.
+    /// Resolve nguồn/ownership trước, composite mỗi pixel đúng một lần. Patch
+    /// được bung từng cái, giữ lưới 10×10 nhưng không giữ hàng triệu triangle.
     #[allow(clippy::too_many_arguments)]
     fn paint_mesh(
         &mut self,
-        triangles: &[MeshTriangle],
-        cs: &ColorSpace,
+        shading: &Shading,
         ctm: &Matrix,
         coverage: ShadingCoverage<'_>,
         soft_for_events: Option<&SoftMask>,
@@ -4414,146 +4989,239 @@ impl<'a> Renderer<'a> {
         overprint: bool,
         blend: BlendMode,
         opm_one: bool,
+        group_math: bool,
+        alpha_is_shape: bool,
     ) -> PpeResult<()> {
-        let w = self.buffer.width() as usize;
-        let region = region.clamped(self.buffer.width(), self.buffer.height());
-        if region.is_empty() {
-            return Ok(());
+        #[derive(Clone, Copy)]
+        struct MeshPixel {
+            owner: usize,
+            // Barycentric cho type4/5; (internal u,v,0) cho type6/7.
+            coordinates: [f32; 3],
+        }
+        let empty = MeshPixel { owner: usize::MAX, coordinates: [0.0; 3] };
+        let width = self.buffer.width();
+        let height = self.buffer.height();
+        let w = width as usize;
+        let cs = &shading.colorspace;
+        let expected_values = if shading.function.is_some() { 1 } else { cs.n_components() };
+        let Some(inverse) = ctm.invert() else { return Ok(()); };
+        let mut hull = Region::EMPTY;
+        let mut resource_bytes = 0usize;
+        match &shading.kind {
+            ShadingKind::Mesh { triangles } => {
+                resource_bytes = resource_bytes.saturating_add(
+                    triangles.capacity().saturating_sub(triangles.len())
+                        .saturating_mul(std::mem::size_of::<crate::shading::mesh::MeshTriangle>()),
+                );
+                for tri in triangles {
+                    self.opts.check_cancelled()?;
+                    if expected_values == 0
+                        || tri.p.iter().flatten().any(|value| !value.is_finite())
+                        || tri.c.iter().any(|values| values.len() != expected_values
+                            || values.iter().any(|value| !value.is_finite()))
+                    {
+                        return Err(PpeError::MalformedPdf("Giá trị nguồn mesh không hợp lệ".into()));
+                    }
+                    resource_bytes = resource_bytes.saturating_add(std::mem::size_of_val(tri))
+                        .saturating_add(tri.c.iter().map(|values|
+                            values.capacity().saturating_mul(std::mem::size_of::<f32>())).sum::<usize>());
+                    let verts = tri.p.map(|point| ctm.apply(point[0], point[1]));
+                    if verts.iter().any(|point| !point.0.is_finite() || !point.1.is_finite()) {
+                        return Err(PpeError::MalformedPdf("Tọa độ mesh sau biến đổi không hữu hạn".into()));
+                    }
+                    hull = hull.union(Region::from_bounds(
+                        verts.iter().map(|p| p.0).fold(f32::INFINITY, f32::min),
+                        verts.iter().map(|p| p.1).fold(f32::INFINITY, f32::min),
+                        verts.iter().map(|p| p.0).fold(f32::NEG_INFINITY, f32::max),
+                        verts.iter().map(|p| p.1).fold(f32::NEG_INFINITY, f32::max),
+                        width, height,
+                    ));
+                }
+            }
+            ShadingKind::Patches { patches } => {
+                resource_bytes = resource_bytes.saturating_add(
+                    patches.capacity().saturating_sub(patches.len())
+                        .saturating_mul(std::mem::size_of::<crate::shading::mesh::MeshPatch>()),
+                );
+                for patch in patches {
+                    self.opts.check_cancelled()?;
+                    patch.validate(expected_values)?;
+                    resource_bytes = resource_bytes.saturating_add(patch.estimated_bytes());
+                    let [x0, y0, x1, y1] = patch.control_bounds(ctm).ok_or_else(||
+                        PpeError::MalformedPdf("Tọa độ patch sau biến đổi không hữu hạn".into()))?;
+                    hull = hull.union(Region::from_bounds(x0, y0, x1, y1, width, height));
+                }
+            }
+            _ => return Err(PpeError::MalformedPdf("Painter mesh nhận shading khác kiểu".into())),
+        }
+        let region = intersect_regions(intersect_regions(region.clamped(width, height), hull),
+            self.bbox_region(shading.bbox, ctm, width, height));
+        if region.is_empty() { return Ok(()); }
+        let row_len = (region.x1 - region.x0) as usize;
+        let count = row_len.checked_mul((region.y1 - region.y0) as usize)
+            .ok_or_else(|| self.buffer.temporary_allocation_error(usize::MAX))?;
+        let bytes = count.checked_mul(std::mem::size_of::<MeshPixel>())
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<MeshPatchGrid>()))
+            .and_then(|bytes| bytes.checked_add(resource_bytes))
+            .ok_or_else(|| self.buffer.temporary_allocation_error(usize::MAX))?;
+        let _memory = self.buffer.reserve_temporary(bytes)?;
+        let mut pixels = Vec::new();
+        pixels.try_reserve_exact(count)
+            .map_err(|_| self.buffer.temporary_allocation_error(bytes))?;
+        pixels.resize(count, empty);
+
+        // Scratch chỉ lưu phần tử thắng và tham số; chưa cấp N plane màu hoặc
+        // chạy Function/ICC cho các triangle bị patch sau che mất.
+        let mut raster_triangle = |points: [[f32; 2]; 3],
+            uv: Option<[[f32; 2]; 3]>, owner: usize| -> PpeResult<()> {
+            let verts = points.map(|point| ctm.apply(point[0], point[1]));
+            // COLOR (audit 2026-09-28 §KNOCK.C2c): tích/chia barycentric
+            // dùng f64 để nhánh gập không thắng chỉ vì round-off f32.
+            let [(x1, y1), (x2, y2), (x3, y3)] =
+                verts.map(|(x, y)| (f64::from(x), f64::from(y)));
+            let denom = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3);
+            if !denom.is_finite() || denom.abs() < 1e-9 { return Ok(()); }
+            let tri_region = intersect_regions(region, Region::from_bounds(
+                x1.min(x2).min(x3) as f32, y1.min(y2).min(y3) as f32,
+                x1.max(x2).max(x3) as f32, y1.max(y2).max(y3) as f32, width, height,
+            ));
+            for y in tri_region.y0..tri_region.y1 {
+                self.opts.check_cancelled()?;
+                let py = f64::from(y) + 0.5;
+                for x in tri_region.x0..tri_region.x1 {
+                    let index = y as usize * w + x as usize;
+                    if coverage.at(index) <= 0.0 { continue; }
+                    let px = f64::from(x) + 0.5;
+                    let l1 = ((y2 - y3) * (px - x3) + (x3 - x2) * (py - y3)) / denom;
+                    let l2 = ((y3 - y1) * (px - x3) + (x1 - x3) * (py - y3)) / denom;
+                    let l3 = 1.0 - l1 - l2;
+                    if !l1.is_finite() || !l2.is_finite() || !l3.is_finite()
+                        || l1 < -1e-4 || l2 < -1e-4 || l3 < -1e-4 { continue; }
+                    // Lề cạnh chỉ chống khe trắng, không được ngoại suy màu
+                    // hoặc đầu vào Function ra ngoài miền của đỉnh.
+                    let mut weights = [l1.max(0.0), l2.max(0.0), l3.max(0.0)];
+                    let sum = weights.iter().sum::<f64>();
+                    for value in &mut weights { *value /= sum; }
+                    let coordinates = if let Some(uv) = uv {
+                        [
+                            (weights[0]*f64::from(uv[0][0]) + weights[1]*f64::from(uv[1][0])
+                                + weights[2]*f64::from(uv[2][0])).clamp(0.0, 1.0) as f32,
+                            (weights[0]*f64::from(uv[0][1]) + weights[1]*f64::from(uv[1][1])
+                                + weights[2]*f64::from(uv[2][1])).clamp(0.0, 1.0) as f32,
+                            0.0,
+                        ]
+                    } else { weights.map(|weight| weight as f32) };
+                    let local = (y - region.y0) as usize * row_len + (x - region.x0) as usize;
+                    let prior = pixels[local];
+                    // PDF v lớn nhất, rồi u. Grid hiện dùng internal u=PDF v.
+                    // Quyền ưu tiên patch đứng trước UV, không theo thứ tự scan.
+                    if uv.is_some() && prior.owner == owner {
+                        // UV thuộc [0,1], còn control point lưu f32. Hai nghiệm
+                        // primary bằng nhau có thể lệch vài ulp dù tính bằng f64.
+                        // Đây chỉ là tie số học của lưới xấp xỉ, không là chứng
+                        // nhận nghiệm Bézier exact. Tie cả hai giữ triangle trước.
+                        const UV_ROUND_OFF: f32 = 8.0 * f32::EPSILON;
+                        let primary_delta = coordinates[0] - prior.coordinates[0];
+                        if primary_delta < -UV_ROUND_OFF
+                            || (primary_delta.abs() <= UV_ROUND_OFF
+                                && coordinates[1] <= prior.coordinates[1])
+                        { continue; }
+                    }
+                    pixels[local] = MeshPixel { owner, coordinates };
+                }
+            }
+            Ok(())
+        };
+        match &shading.kind {
+            ShadingKind::Mesh { triangles } => {
+                for (owner, tri) in triangles.iter().enumerate() {
+                    self.opts.check_cancelled()?;
+                    raster_triangle(tri.p, None, owner)?;
+                }
+            }
+            ShadingKind::Patches { patches } => {
+                for (owner, patch) in patches.iter().enumerate() {
+                    self.opts.check_cancelled()?;
+                    let Some([x0, y0, x1, y1]) = patch.control_bounds(ctm) else { continue; };
+                    if intersect_regions(region, Region::from_bounds(x0, y0, x1, y1, width, height)).is_empty() {
+                        continue;
+                    }
+                    let grid = patch.tessellate();
+                    for tri in grid.triangles() { raster_triangle(tri.p, Some(tri.uv), owner)?; }
+                }
+            }
+            _ => unreachable!(),
         }
 
-        let mut ink_scratch: Vec<f32> = Vec::new();
+        let preserve_rgb = self.blend_space == BlendSpace::DeviceRgb && !overprint
+            && cs.supports_device_rgb_blending() && self.buffer.has_rgb_sidecar();
+        let mut raw = Vec::with_capacity(expected_values);
         let paint_serial_before = self.paint_serial;
         let mut painted_region = Region::EMPTY;
-        let preserve_rgb = self.blend_space == BlendSpace::DeviceRgb
-            && !overprint
-            && cs.supports_device_rgb_blending()
-            && self.buffer.has_rgb_sidecar();
-        for tri in triangles {
+        let mut channels = self.buffer.space().len();
+        for y in region.y0..region.y1 {
             self.opts.check_cancelled()?;
-            // Quy màu ba đỉnh sang mực trước khi quét pixel.
-            let mut verts: [(f32, f32); 3] = [(0.0, 0.0); 3];
-            let mut inks: [Vec<f32>; 3] = Default::default();
-            let mut rgbs = [[0.0f32; 3]; 3];
-            let mut declared = ChannelMask::EMPTY;
-            let mut usable = true;
-            for k in 0..3 {
-                verts[k] = ctm.apply(tri.p[k][0], tri.p[k][1]);
-                if preserve_rgb {
-                    rgbs[k] = cs.to_device_rgb_for_blending(&tri.c[k]).unwrap_or([0.0; 3]);
+            for x in region.x0..region.x1 {
+                let local = (y - region.y0) as usize * row_len + (x - region.x0) as usize;
+                let sample = pixels[local];
+                if sample.owner == usize::MAX { continue; }
+                if let Some(bbox) = &shading.bbox {
+                    let (sx, sy) = inverse.apply(x as f32 + 0.5, y as f32 + 0.5);
+                    if sx < bbox.x0 || sx > bbox.x1 || sy < bbox.y0 || sy > bbox.y1 { continue; }
                 }
-                match cs.to_ink(
-                    &tri.c[k],
-                    self.buffer.space_mut(),
-                    &mut self.warnings,
-                    self.color,
-                )? {
-                    Some((ink, mask)) => {
-                        inks[k] = ink;
-                        declared = declared.union(mask);
-                    }
-                    // Colorant `/None`: tam giác này không lên mực.
-                    None => {
-                        usable = false;
-                        break;
-                    }
-                }
-            }
-            if !usable {
-                continue;
-            }
-            self.buffer.sync_channels()?;
-            let n = self.buffer.space().len();
-            for ink in inks.iter_mut() {
-                ink.resize(n, 0.0);
-            }
-
-            let (x1, y1) = verts[0];
-            let (x2, y2) = verts[1];
-            let (x3, y3) = verts[2];
-            let denom = (y2 - y3) * (x1 - x3) + (x3 - x2) * (y1 - y3);
-            if !denom.is_finite() || denom.abs() < 1e-9 {
-                continue; // tam giác suy biến: không chiếm diện tích nào
-            }
-
-            let tri_region = Region::from_bounds(
-                x1.min(x2).min(x3),
-                y1.min(y2).min(y3),
-                x1.max(x2).max(x3),
-                y1.max(y2).max(y3),
-                self.buffer.width(),
-                self.buffer.height(),
-            );
-            let bx0 = tri_region.x0.max(region.x0);
-            let bx1 = tri_region.x1.min(region.x1);
-            let by0 = tri_region.y0.max(region.y0);
-            let by1 = tri_region.y1.min(region.y1);
-            if bx0 >= bx1 || by0 >= by1 {
-                continue;
-            }
-
-            for y in by0..by1 {
-                self.opts.check_cancelled()?;
-                let py = y as f32 + 0.5;
-                for x in bx0..bx1 {
-                    let index = y as usize * w + x as usize;
-                    let cov = coverage.at(index);
-                    if cov <= 0.0 {
-                        continue;
-                    }
-                    let pxc = x as f32 + 0.5;
-                    let l1 = ((y2 - y3) * (pxc - x3) + (x3 - x2) * (py - y3)) / denom;
-                    let l2 = ((y3 - y1) * (pxc - x3) + (x1 - x3) * (py - y3)) / denom;
-                    let l3 = 1.0 - l1 - l2;
-                    // Lề nhỏ để pixel nằm đúng trên cạnh chung của hai tam giác
-                    // không bị cả hai bỏ — bỏ sót ở cạnh làm lưới rạn thành vệt
-                    // trắng, tức báo **thiếu** mực.
-                    if l1 < -1e-4 || l2 < -1e-4 || l3 < -1e-4 {
-                        continue;
-                    }
-                    ink_scratch.clear();
-                    for c in 0..n {
-                        ink_scratch.push(l1 * inks[0][c] + l2 * inks[1][c] + l3 * inks[2][c]);
-                    }
-                    let mut paint = InkPaint {
-                        ink: std::mem::take(&mut ink_scratch),
-                        declared,
-                        overprint,
-                        alpha: (cov * alpha).clamp(0.0, 1.0),
-                        blend,
-                        blend_rgb: if preserve_rgb {
-                            Some([
-                                (l1 * rgbs[0][0] + l2 * rgbs[1][0] + l3 * rgbs[2][0])
-                                    .clamp(0.0, 1.0),
-                                (l1 * rgbs[0][1] + l2 * rgbs[1][1] + l3 * rgbs[2][1])
-                                    .clamp(0.0, 1.0),
-                                (l1 * rgbs[0][2] + l2 * rgbs[1][2] + l3 * rgbs[2][2])
-                                    .clamp(0.0, 1.0),
-                            ])
-                        } else {
-                            None
-                        },
-                    };
-                    if opm_one {
-                        paint = paint.with_overprint_mode_1();
-                    }
-                    self.buffer.composite_at(index, 1.0, &paint);
-                    if paint.alpha > 0.0 {
-                        self.paint_serial = self.paint_serial.wrapping_add(1);
-                        if exact_paint_region {
-                            include_pixel(&mut painted_region, x, y);
+                match &shading.kind {
+                    ShadingKind::Mesh { triangles } => {
+                        let tri = &triangles[sample.owner];
+                        raw.clear();
+                        for channel in 0..expected_values {
+                            raw.push(sample.coordinates[0] * tri.c[0][channel]
+                                + sample.coordinates[1] * tri.c[1][channel]
+                                + sample.coordinates[2] * tri.c[2][channel]);
                         }
                     }
-                    ink_scratch = paint.ink;
+                    ShadingKind::Patches { patches } => {
+                        patches[sample.owner].sample_raw_into_validated(
+                            sample.coordinates[0], sample.coordinates[1], &mut raw,
+                        )?;
+                    }
+                    _ => unreachable!(),
+                }
+                let mapped = shading.function.as_ref().map(|function| function.eval(&raw));
+                let components = mapped.as_deref().unwrap_or(&raw);
+                let Some((mut ink, declared)) = cs.to_ink(
+                    components, self.buffer.space_mut(), &mut self.warnings, self.color,
+                )? else { continue; };
+                if channels != self.buffer.space().len() {
+                    self.buffer.sync_channels()?;
+                    channels = self.buffer.space().len();
+                }
+                ink.resize(channels, 0.0);
+                let index = y as usize * w + x as usize;
+                let cov = coverage.at(index);
+                let mut paint = InkPaint {
+                    ink, declared, overprint,
+                    alpha: (if group_math { alpha } else { cov * alpha }).clamp(0.0, 1.0),
+                    blend,
+                    blend_rgb: if preserve_rgb { cs.to_device_rgb_for_blending(components) } else { None },
+                };
+                if opm_one { paint = paint.with_overprint_mode_1(); }
+                let has_shape = if group_math {
+                    let mask = soft_for_events.map_or(1.0, |mask| mask.value_at(x, y));
+                    self.buffer.composite_group_at(index, cov, &paint, alpha_is_shape, Some(mask))?;
+                    !alpha_is_shape || paint.alpha * mask > 0.0
+                } else {
+                    self.buffer.composite_at(index, 1.0, &paint);
+                    paint.alpha > 0.0
+                };
+                if has_shape {
+                    self.paint_serial = self.paint_serial.wrapping_add(1);
+                    if exact_paint_region { include_pixel(&mut painted_region, x, y); }
                 }
             }
         }
         if self.paint_serial != paint_serial_before {
-            let painted_region = if exact_paint_region {
-                painted_region
-            } else {
-                region
-            };
-            self.finish_surface_paint(soft_for_events, painted_region)?;
+            self.finish_surface_paint(soft_for_events,
+                if exact_paint_region { painted_region } else { region })?;
         }
         Ok(())
     }
@@ -4639,6 +5307,8 @@ impl<'a> Renderer<'a> {
         stroke: bool,
         owner: PreviewObjectKind,
     ) -> PpeResult<bool> {
+        self.note_uncertified_vector_operation();
+        self.buffer.invalidate_transparency_group();
         // Object bị Output Preview ẩn có chủ đích không phải object bị bỏ. Kiểm
         // host trước lookup để resource hỏng trong lane đang ẩn không tạo fail-loud oan.
         if !self.opts.allows_preview_object(owner) {
@@ -4752,8 +5422,13 @@ impl<'a> Renderer<'a> {
             return Ok(true);
         }
         merge_render_warnings(&mut self.warnings, &metadata_warnings);
-        let shading = match resolve_shading_with_colorspace(self.doc, &shading_obj, colorspace) {
+        let remaining_bytes = self.buffer.memory_limit_bytes().min(self.opts.memory_budget_bytes)
+            .saturating_sub(self.buffer.memory_used_bytes());
+        let shading = match resolve_shading_with_colorspace_bounded(
+            self.doc, &shading_obj, colorspace, remaining_bytes, self.opts.cancellation_token(),
+        ) {
             Ok(shading) => shading,
+            Err(e @ (PpeError::Cancelled | PpeError::MemoryBudgetExceeded { .. })) => return Err(e),
             Err(e) => {
                 return Ok(self.note_dropped_pattern_if_visible(
                     pattern_name,
@@ -5009,6 +5684,9 @@ impl<'a> Renderer<'a> {
                     }
                     initial.clip = tile_clip;
                     initial.clip_region = Some(tile_clip_region);
+                    // Cell dùng clip đã nhân host coverage/SMask, không tái sử
+                    // dụng chứng cứ của clip graphics state trước khi thay mask.
+                    initial.clear_bbox_clip_history();
 
                     if paint_type == 2 {
                         // Uncoloured: màu **không** nằm trong ô; nó là toán hạng của
@@ -5164,6 +5842,8 @@ impl<'a> Renderer<'a> {
         stack: &mut StateStack,
         depth: u32,
     ) -> PpeResult<()> {
+        // Text/TK có ranh giới object riêng; C1 chưa chứng nhận nhánh glyph.
+        self.buffer.invalidate_transparency_group();
         let Some(font) = stack.current().text.font.clone() else {
             self.warnings.note_skipped_op("vẽ chữ khi chưa có Tf");
             self.warnings.dropped_objects += 1;
@@ -5233,6 +5913,8 @@ impl<'a> Renderer<'a> {
         depth: u32,
         mode: TextRenderMode,
     ) -> PpeResult<()> {
+        // Bao cả glyph chỉ tạo text clip và Type3 chạy content stream riêng.
+        self.note_uncertified_vector_operation();
         if self.oc_hidden_now() {
             if self.opts.collect_text_outlines {
                 // Chữ trong lớp optional content đang TẮT. Lớp Python ghi PDF không
@@ -5598,7 +6280,12 @@ impl<'a> Renderer<'a> {
             // không được làm bẩn provenance của trang.
             self.paint_region_trackers.push(PaintTransaction::default());
         }
+        let saved_type3_depth = self.type3_depth;
+        self.type3_depth = self.type3_depth.saturating_add(1);
         let result = self.execute_program(&program, res.as_ref(), stack, depth + 1);
+        // Phục hồi trước mọi `?`/xử lý lỗi: glyph lồng hay bị hủy không được
+        // để context Type3 rò sang Form vector độc lập được dựng tiếp.
+        self.type3_depth = saved_type3_depth;
         let recovered_transaction = if stream_recovered {
             self.paint_region_trackers.pop()
         } else {
@@ -5707,6 +6394,14 @@ impl<'a> Renderer<'a> {
 const IMAGE_FOOTPRINT_TAC_THRESHOLD: f32 = 3.0;
 const MAX_SOFT_MASK_DEPTH: u32 = 4;
 const SOFT_MASK_PEAK_RADIUS: i64 = 3;
+
+fn group_image_colorspace_supported(colorspace: &ColorSpace) -> bool {
+    match colorspace {
+        ColorSpace::DeviceCMYK | ColorSpace::DeviceGray => true,
+        ColorSpace::Indexed { base, .. } => group_image_colorspace_supported(base),
+        _ => false,
+    }
+}
 
 /// Cực đại lân cận của soft mask cho đường ảnh đo mực.
 ///
@@ -6657,3 +7352,7 @@ fn push_rect(builder: &mut PathBuilder, x: f32, y: f32, w: f32, h: f32) {
     builder.line_to(x, y + h);
     builder.close();
 }
+
+#[cfg(test)]
+#[path = "preview_knockout_tests.rs"]
+mod preview_knockout_tests;

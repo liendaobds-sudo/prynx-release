@@ -18,7 +18,7 @@ import threading
 import time
 from typing import Mapping, Optional
 
-from app.core.system_memory import read_memory_status_mb
+from app.core.system_memory import memory_tier_mb, read_memory_status_mb, read_memory_tier_mb
 from app.workers.cut_export.cut_model import CutModel
 from app.workers.cut_export.pdf_source import _hash_open_stream, _stat_revision
 
@@ -164,6 +164,8 @@ def _positive_memory_mb(value: object) -> float | None:
 def _proof_store_budget_bytes(
     total_ram_mb: float | None,
     available_ram_mb: float | None,
+    *,
+    tier_ram_mb: float | None = None,
 ) -> int:
     """Ngân sách model proof theo RAM, không hard-cap máy >=16 GB.
 
@@ -176,10 +178,13 @@ def _proof_store_budget_bytes(
     if total is None:
         return 64 * _MIB
 
+    # PERF (audit 2026-09-28 §PERF28.03 B2k): tier chỉ chọn ngưỡng;
+    # sanitation, basis usable/available và tỷ lệ admission giữ nguyên.
+    tier = memory_tier_mb(total, _positive_memory_mb(tier_ram_mb)) or total
     basis = available if available is not None else total
-    if total < 8 * 1024:
+    if tier < 8 * 1024:
         budget_mb = max(32.0, min(96.0, basis * 0.02))
-    elif total < 16 * 1024:
+    elif tier < 16 * 1024:
         budget_mb = max(96.0, min(256.0, basis * 0.03))
     else:
         # Máy mạnh không có ceiling cố định: 64 GB/40 GB trống được admission
@@ -190,7 +195,9 @@ def _proof_store_budget_bytes(
 
 def _current_proof_store_budget_bytes() -> int:
     total_ram_mb, available_ram_mb = read_memory_status_mb()
-    return _proof_store_budget_bytes(total_ram_mb, available_ram_mb)
+    return _proof_store_budget_bytes(
+        total_ram_mb, available_ram_mb, tier_ram_mb=read_memory_tier_mb(total_ram_mb),
+    )
 
 
 def _proof_binding(stored: _StoredProof) -> tuple[str, str, int, int, Optional[str]]:

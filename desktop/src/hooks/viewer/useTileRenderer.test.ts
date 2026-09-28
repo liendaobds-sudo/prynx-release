@@ -26,6 +26,7 @@ import {
     accurateViewerRasterDpr,
     isInteractiveViewportRender,
     parsePpeUnsupportedStatus,
+    resolveViewerPageColorMode,
     progressiveViewerColorStages,
     shouldAutoDisableAccurateColor,
     shouldCancelAccurateRenderForViewport,
@@ -33,7 +34,7 @@ import {
     useTileRenderer,
     usesNativeAccurateWorker,
 } from './useTileRenderer';
-import { registerRenderDocumentIdentity, renderPipelineIdentity } from './renderCoordinator';
+import { nativeRenderCoordinator, registerRenderDocumentIdentity, renderPipelineIdentity } from './renderCoordinator';
 import type { TileUrlSource } from '../../lib/tileUrlCache';
 import {
     computeAccurateViewerBaseZoom,
@@ -97,6 +98,259 @@ describe('Viewer — định tuyến render màu chính xác', () => {
         expect(parsePpeUnsupportedStatus(new Error('PPE_NATIVE_UNSUPPORTED:{sai-json'))).toBeNull();
     });
 
+    it.each(['current', 'hybrid'] as const)('V1 %s: ghi capability riêng rồi chỉ dựng PDFium bằng yêu cầu display mới', async viewerEngineMode => {
+        const unsupported = new Error('PPE_NATIVE_UNSUPPORTED:{"reason":"knockout_transparency","detail":"Group /K true"}');
+        transportMocks.invoke.mockImplementation((command: string) => command === 'render_ppe_page'
+            ? Promise.reject(unsupported)
+            : command === 'render_pdf_page'
+                ? Promise.resolve(new Uint8Array([137, 80, 78, 71, 13, 10]).buffer)
+                : Promise.resolve(true));
+        const { result, unmount } = renderHook(() => useTileRenderer({
+            file: { path: `D:/capability-${viewerEngineMode}.pdf` }, pdfRef: null, pdfUrl: null,
+            activePage: 1, renderDocumentToken: 'revision-1', accurateColorEnabled: true,
+            accurateColorPages: [1], viewerEngineMode,
+        }));
+        await act(async () => { await expect(result.current.getTileUrl(1, 0, 1, undefined, undefined, undefined, undefined,
+            { colorStage: 'accurate' })).rejects.toThrow('PPE_NATIVE_UNSUPPORTED'); });
+        expect(result.current.getPpeUnsupportedStatus(1)).toEqual({ reason: 'knockout_transparency', detail: 'Group /K true', fallbackFontSha256: null });
+        expect(result.current.getPpeUnsupportedStatus(2)).toBeNull();
+        await expect(result.current.getTileUrl(1, 0, 1.25, 0, 0, 100, 100,
+            { colorStage: 'accurate', forceAccurateColor: true })).rejects.toThrow('PPE_NATIVE_UNSUPPORTED');
+        expect(transportMocks.invoke.mock.calls.filter(([command]) => command === 'render_ppe_page')).toHaveLength(1);
+        expect(transportMocks.invoke.mock.calls.some(([command]) => command === 'render_pdf_page')).toBe(false);
+        expect(transportMocks.authenticatedFetch).not.toHaveBeenCalled();
+        const display = await result.current.getTileUrl(1, 0, 1, undefined, undefined, undefined, undefined,
+            { colorStage: 'display' });
+        expect(display.proof).toMatchObject({ engine: 'pdfium', soundness: 'display-preview', page: 1,
+            documentToken: 'revision-1', profileId: null, intent: null, proofIdentity: 'display' });
+        expect(transportMocks.invoke).toHaveBeenCalledWith('render_pdf_page', expect.objectContaining({
+            format: 'pxrg', requestContext: expect.objectContaining({ pipelineIdentity: renderPipelineIdentity('display') }),
+        }));
+        expect(result.current.getPpeUnsupportedStatus(1)?.reason).toBe('knockout_transparency');
+        unmount();
+    });
+
+    it('V1: trang khác thành công không xóa capability của trang lỗi', async () => {
+        transportMocks.invoke.mockImplementation((command: string, args: { page?: number }) => {
+            if (command === 'render_ppe_page' && args.page === 1) return Promise.reject(new Error(
+                'PPE_NATIVE_UNSUPPORTED:{"reason":"image_codec","detail":"JPX"}',
+            ));
+            if (command === 'render_ppe_page') return Promise.resolve(new Uint8Array([137, 80, 78, 71]).buffer);
+            return Promise.resolve(true);
+        });
+        const { result, unmount } = renderHook(() => useTileRenderer({
+            file: { path: 'D:/capability-pages.pdf' }, pdfRef: null, pdfUrl: null, activePage: 1,
+            accurateColorEnabled: true, accurateColorPages: [1, 2],
+        }));
+        await act(async () => { await expect(result.current.getTileUrl(1, 0, 1, undefined, undefined, undefined, undefined,
+            { colorStage: 'accurate' })).rejects.toThrow('PPE_NATIVE_UNSUPPORTED'); });
+        await act(async () => { await result.current.getTileUrl(2, 0, 1, undefined, undefined, undefined, undefined,
+            { colorStage: 'accurate' }); });
+        expect(result.current.getPpeUnsupportedStatus(1)?.reason).toBe('image_codec');
+        expect(result.current.getPpeUnsupportedStatus(2)).toBeNull();
+        unmount();
+    });
+
+    it.each(['PPE worker OOM', 'Lỗi I/O', 'PPE_NATIVE_UNSUPPORTED:{"reason":"oom","detail":"OOM"}',
+        'PPE_NATIVE_UNSUPPORTED:{sai-json'])(
+        'V1: lỗi vận hành/không nhận diện không thành capability: %s', async message => {
+            transportMocks.invoke.mockImplementation((command: string) => command === 'render_ppe_page'
+                ? Promise.reject(new Error(message)) : Promise.resolve(true));
+            const { result, unmount } = renderHook(() => useTileRenderer({
+                file: { path: `D:/ordinary-error-${message.length}.pdf` }, pdfRef: null, pdfUrl: null,
+                activePage: 1, viewerEngineMode: 'ppe-only',
+            }));
+            for (const zoom of [1, 1.25]) await act(async () => {
+                await expect(result.current.getTileUrl(1, 0, zoom, undefined, undefined, undefined, undefined,
+                    { colorStage: 'accurate' })).rejects.toThrow();
+            });
+            expect(result.current.getPpeUnsupportedStatus(1)).toBeNull();
+            expect(transportMocks.invoke.mock.calls.filter(([command]) => command === 'render_ppe_page')).toHaveLength(2);
+            unmount();
+        },
+    );
+
+    it('V1: revision/profile/proof mới không thừa kế capability, kể cả A → B → A', async () => {
+        transportMocks.invoke.mockImplementation((command: string) => command === 'render_ppe_page'
+            ? Promise.reject(new Error('PPE_NATIVE_UNSUPPORTED:{"reason":"hidden_content","detail":"Nội dung ẩn"}'))
+            : Promise.resolve(true));
+        const initial = { token: 'rev-A', profile: 'fogra39', paper: false };
+        const { result, rerender, unmount } = renderHook(({ token, profile, paper }) => useTileRenderer({
+            file: { path: 'D:/capability-revision.pdf' }, pdfRef: null, pdfUrl: null, activePage: 1,
+            renderDocumentToken: token, accurateColorEnabled: true, accurateColorPages: [1],
+            accurateColorProfileId: profile, simulatePaperColor: paper,
+        }), { initialProps: initial });
+        await act(async () => { await expect(result.current.getTileUrl(1, 0, 1, undefined, undefined, undefined, undefined,
+            { colorStage: 'accurate' })).rejects.toThrow(); });
+        const oldGetter = result.current.getPpeUnsupportedStatus;
+        expect(oldGetter(1)).not.toBeNull();
+        rerender({ ...initial, token: 'rev-B' });
+        expect(result.current.getPpeUnsupportedStatus(1)).toBeNull();
+        expect(oldGetter(1)).toBeNull();
+        rerender(initial);
+        expect(result.current.getPpeUnsupportedStatus(1)).toBeNull();
+        await act(async () => { await expect(result.current.getTileUrl(1, 0, 1.2, undefined, undefined, undefined, undefined,
+            { colorStage: 'accurate' })).rejects.toThrow(); });
+        rerender({ ...initial, profile: 'swop' });
+        expect(result.current.getPpeUnsupportedStatus(1)).toBeNull();
+        rerender(initial);
+        await act(async () => { await expect(result.current.getTileUrl(1, 0, 1.3, undefined, undefined, undefined, undefined,
+            { colorStage: 'accurate' })).rejects.toThrow(); });
+        rerender({ ...initial, paper: true });
+        expect(result.current.getPpeUnsupportedStatus(1)).toBeNull();
+        unmount();
+    });
+
+    it('V1: unsupported về muộn từ epoch cũ không đổi trạng thái file hiện tại', async () => {
+        let rejectOld!: (error: Error) => void;
+        transportMocks.invoke.mockImplementation((command: string) => command === 'render_ppe_page'
+            ? new Promise<ArrayBuffer>((_resolve, reject) => { rejectOld = reject; }) : Promise.resolve(true));
+        const { result, rerender, unmount } = renderHook(({ token }) => useTileRenderer({
+            file: { path: 'D:/capability-late.pdf' }, pdfRef: null, pdfUrl: null, activePage: 1,
+            renderDocumentToken: token, accurateColorEnabled: true, accurateColorPages: [1],
+        }), { initialProps: { token: 'A' } });
+        const pending = result.current.getTileUrl(1, 0, 1, undefined, undefined, undefined, undefined,
+            { colorStage: 'accurate' }).catch(error => error);
+        rerender({ token: 'B' });
+        rerender({ token: 'A' });
+        await act(async () => {
+            rejectOld(new Error('PPE_NATIVE_UNSUPPORTED:{"reason":"knockout_transparency","detail":"Cũ"}'));
+            expect(await pending).toMatchObject({ name: 'CancelledTileRenderError' });
+        });
+        expect(result.current.getPpeUnsupportedStatus(1)).toBeNull();
+        expect(result.current.accurateColorError).toBeNull();
+        unmount();
+    });
+
+    it('V1: request đã hủy dù trả unsupported cũng không ghi capability', async () => {
+        let rejectNative!: (error: Error) => void;
+        transportMocks.invoke.mockImplementation((command: string) => command === 'render_ppe_page'
+            ? new Promise<ArrayBuffer>((_resolve, reject) => { rejectNative = reject; }) : Promise.resolve(true));
+        const { result, unmount } = renderHook(() => useTileRenderer({
+            file: { path: 'D:/capability-cancelled.pdf' }, pdfRef: null, pdfUrl: null, activePage: 1,
+            accurateColorEnabled: true, accurateColorPages: [1],
+        }));
+        const pending = result.current.getTileUrl(1, 0, 1, undefined, undefined, undefined, undefined,
+            { colorStage: 'accurate', groupKey: 'cancelled-capability' }).catch(error => error);
+        act(() => result.current.cancelAccurateGroup('cancelled-capability'));
+        await act(async () => {
+            rejectNative(new Error('PPE_NATIVE_UNSUPPORTED:{"reason":"knockout_transparency","detail":"Đã hủy"}'));
+            expect(await pending).toMatchObject({ name: 'CancelledTileRenderError' });
+        });
+        expect(result.current.getPpeUnsupportedStatus(1)).toBeNull();
+        expect(result.current.accurateColorError).toBeNull();
+        unmount();
+    });
+
+    it('V1: kết quả PPE nền về sau capability của viewport phải bị loại', async () => {
+        const jobs: Array<{ resolve: (value: ArrayBuffer) => void; reject: (error: Error) => void }> = [];
+        transportMocks.invoke.mockImplementation((command: string) => command === 'render_ppe_page'
+            ? new Promise<ArrayBuffer>((resolve, reject) => { jobs.push({ resolve, reject }); }) : Promise.resolve(true));
+        const { result, unmount } = renderHook(() => useTileRenderer({
+            file: { path: 'D:/capability-sibling.pdf' }, pdfRef: null, pdfUrl: null, activePage: 1,
+            accurateColorEnabled: true, accurateColorPages: [1],
+        }));
+        const base = result.current.getTileUrl(1, 0, .5, undefined, undefined, undefined, undefined,
+            { colorStage: 'accurate', groupKey: 'base', priority: 10 }).catch(error => error);
+        const detail = result.current.getTileUrl(1, 0, 2, 0, 0, 100, 100,
+            { colorStage: 'accurate', groupKey: 'detail', priority: 0 }).catch(error => error);
+        await waitFor(() => expect(jobs).toHaveLength(2));
+        await act(async () => {
+            jobs[1].reject(new Error('PPE_NATIVE_UNSUPPORTED:{"reason":"knockout_transparency","detail":"Group"}'));
+            expect((await detail).message).toContain('PPE_NATIVE_UNSUPPORTED');
+        });
+        await act(async () => {
+            jobs[0].resolve(new Uint8Array([137, 80, 78, 71]).buffer);
+            expect(await base).toMatchObject({ name: 'CancelledTileRenderError' });
+        });
+        expect(result.current.getPpeUnsupportedStatus(1)?.reason).toBe('knockout_transparency');
+        expect(result.current.accurateColorError).toContain('PPE_NATIVE_UNSUPPORTED');
+        unmount();
+    });
+
+    it('V1: controller cùng group bị thay không làm cancel ngược group đang báo unsupported', async () => {
+        const jobs: Array<{ resolve: (value: ArrayBuffer) => void; reject: (error: Error) => void }> = [];
+        transportMocks.invoke.mockImplementation((command: string) => command === 'render_ppe_page'
+            ? new Promise<ArrayBuffer>((resolve, reject) => { jobs.push({ resolve, reject }); }) : Promise.resolve(true));
+        const cancellation = vi.spyOn(nativeRenderCoordinator, 'cancelGroup');
+        const { result, unmount } = renderHook(() => useTileRenderer({
+            file: { path: 'D:/capability-same-group.pdf' }, pdfRef: null, pdfUrl: null, activePage: 1,
+            accurateColorEnabled: true, accurateColorPages: [1],
+        }));
+        const base = result.current.getTileUrl(1, 0, .5, undefined, undefined, undefined, undefined,
+            { colorStage: 'accurate', groupKey: 'shared-group', priority: 10 }).catch(error => error);
+        const detail = result.current.getTileUrl(1, 0, 2, 0, 0, 100, 100,
+            { colorStage: 'accurate', groupKey: 'shared-group', priority: 0 }).catch(error => error);
+        try {
+            await waitFor(() => expect(jobs).toHaveLength(2));
+            cancellation.mockClear();
+            await act(async () => {
+                jobs[0].reject(new Error('PPE_NATIVE_UNSUPPORTED:{"reason":"knockout_transparency","detail":"Group"}'));
+                expect((await base).message).toContain('PPE_NATIVE_UNSUPPORTED');
+            });
+            expect(cancellation.mock.calls.some(([, group]) => group === 'shared-group')).toBe(false);
+            await act(async () => {
+                jobs[1].resolve(new Uint8Array([137, 80, 78, 71]).buffer);
+                expect(await detail).toMatchObject({ name: 'CancelledTileRenderError' });
+            });
+            expect(result.current.getPpeUnsupportedStatus(1)?.reason).toBe('knockout_transparency');
+        } finally {
+            jobs[1]?.resolve(new Uint8Array([137, 80, 78, 71]).buffer);
+            await detail;
+            unmount();
+            cancellation.mockRestore();
+        }
+    });
+
+    it('V1: tile-refined không biến capability nội dung thành lượt PPE thử lại', async () => {
+        transportMocks.listen.mockClear();
+        transportMocks.invoke.mockImplementation((command: string) => command === 'render_ppe_page'
+            ? Promise.reject(new Error('PPE_NATIVE_UNSUPPORTED:{"reason":"unsupported_feature","detail":"Feature"}'))
+            : Promise.resolve(true));
+        const { result, unmount } = renderHook(() => useTileRenderer({
+            file: { path: 'D:/capability-refinement.pdf' }, pdfRef: null, pdfUrl: null, activePage: 1,
+            renderDocumentToken: 'content-v1', viewerEngineMode: 'ppe-only',
+        }));
+        await act(async () => { await expect(result.current.getTileUrl(1, 0, 1, undefined, undefined, undefined, undefined,
+            { colorStage: 'accurate' })).rejects.toThrow('PPE_NATIVE_UNSUPPORTED'); });
+        await waitFor(() => expect(transportMocks.listen).toHaveBeenCalled());
+        const listener = (transportMocks.listen.mock.calls as unknown as Array<[string, (event: unknown) => void]>)[0][1];
+        act(() => listener({ payload: { file_path: 'D:/capability-refinement.pdf', page: 1, zoom: 2 } }));
+        expect(result.current.getPpeUnsupportedStatus(1)?.reason).toBe('unsupported_feature');
+        await act(async () => { await expect(result.current.getTileUrl(1, 0, 2, undefined, undefined, undefined, undefined,
+            { colorStage: 'display', forceAccurateColor: true })).rejects.toThrow('PPE_NATIVE_UNSUPPORTED'); });
+        expect(transportMocks.invoke.mock.calls.filter(([command]) => command === 'render_ppe_page')).toHaveLength(1);
+        expect(transportMocks.invoke.mock.calls.some(([command]) => command === 'render_pdf_page')).toBe(false);
+        unmount();
+    });
+
+    it('V1: cùng file ở hai tab không chia sẻ trạng thái capability', async () => {
+        transportMocks.invoke.mockImplementation((command: string) => command === 'render_ppe_page'
+            ? Promise.reject(new Error('PPE_NATIVE_UNSUPPORTED:{"reason":"color_approximation","detail":"Màu"}'))
+            : Promise.resolve(true));
+        const properties = { file: { path: 'D:/same-file-two-tabs.pdf' }, pdfRef: null, pdfUrl: null,
+            activePage: 1, renderDocumentToken: 'same-revision', viewerEngineMode: 'hybrid' as const };
+        const first = renderHook(() => useTileRenderer({ ...properties, tabId: 'first-tab' }));
+        const second = renderHook(() => useTileRenderer({ ...properties, tabId: 'second-tab' }));
+        await act(async () => { await expect(first.result.current.getTileUrl(1, 0, 1, undefined, undefined, undefined, undefined,
+            { colorStage: 'accurate' })).rejects.toThrow(); });
+        expect(first.result.current.getPpeUnsupportedStatus(1)).not.toBeNull();
+        expect(second.result.current.getPpeUnsupportedStatus(1)).toBeNull();
+        first.unmount(); second.unmount();
+    });
+
+    it('V1: policy chỉ cho trang thường chuyển sang display, không hạ yêu cầu proof', () => {
+        const unsupported = { reason: 'knockout_transparency', detail: 'Group /K true' };
+        const input = { requestedAccurate: true, strictProofRequired: false, viewerEngineMode: 'current' as const, unsupported };
+        expect(resolveViewerPageColorMode(input)).toEqual({ accurateColorPage: false, compatibility: unsupported });
+        expect(resolveViewerPageColorMode({ ...input, viewerEngineMode: 'hybrid' }).compatibility).toBe(unsupported);
+        expect(resolveViewerPageColorMode({ ...input, strictProofRequired: true })).toEqual({ accurateColorPage: true, compatibility: null });
+        expect(resolveViewerPageColorMode({ ...input, viewerEngineMode: 'ppe-only' })).toEqual({ accurateColorPage: true, compatibility: null });
+        expect(resolveViewerPageColorMode({ ...input, requestedAccurate: false })).toEqual({ accurateColorPage: false, compatibility: null });
+        expect(resolveViewerPageColorMode({ ...input, unsupported: { reason: 'oom', detail: 'OOM' } })).toEqual({ accurateColorPage: true, compatibility: null });
+        expect(resolveViewerPageColorMode({ ...input, unsupported: null })).toEqual({ accurateColorPage: true, compatibility: null });
+    });
+
     it('không tự đổi toàn trang sang PDFium khi PPE báo hình học xấp xỉ', () => {
         const geometry = new Error(
             'PPE_NATIVE_UNSUPPORTED:{"reason":"geometry_approximation","detail":"font không nhúng"}',
@@ -127,9 +381,9 @@ describe('Viewer — định tuyến render màu chính xác', () => {
             'fogra39', 'relative', 'all', false, false, [245, 240, 235],
         )).toBe(false);
         expect(renderPipelineIdentity('accurate', 'fogra39', 'relative'))
-            .toBe('ppe-fogra39-relative-view-knockout-png-v5-native-worker');
+            .toBe('ppe-fogra39-relative-view-knockout-png-v6-native-worker');
         expect(renderPipelineIdentity('accurate', 'swop', 'perceptual'))
-            .toBe('ppe-swop-perceptual-view-knockout-png-v5-backend');
+            .toBe('ppe-swop-perceptual-view-knockout-png-v6-backend');
     });
 
     it('contract Output Preview chính xác đi backend và mang đủ tham số đổi pixel', async () => {
@@ -437,7 +691,7 @@ describe('Viewer — định tuyến render màu chính xác', () => {
                 generation: 1,
                 purpose: 'accurate',
                 priority: 0,
-                pipelineIdentity: 'ppe-fogra39-relative-view-knockout-png-v5-native-worker',
+                pipelineIdentity: 'ppe-fogra39-relative-view-knockout-png-v6-native-worker',
             },
         });
         expect(nativeCall?.[1].requestContext.ownerId).not.toContain('page:1:viewport');
@@ -686,13 +940,13 @@ describe('Viewer — định tuyến render màu chính xác', () => {
             { colorStage: 'accurate' },
         )).rejects.toThrow('PPE_NATIVE_UNSUPPORTED');
         expect(transportMocks.invoke.mock.calls.filter(([command]) => command === 'render_ppe_page'))
-            .toHaveLength(2);
+            .toHaveLength(1);
         expect(transportMocks.invoke.mock.calls.filter(([command]) => command === 'render_pdf_page'))
             .toHaveLength(0);
         unmount();
     });
 
-    it('V27: current giữ fail-closed cho accurate thay vì tự nhớ PDFium compatibility', async () => {
+    it('V27/V1: current giữ accurate fail-closed và nhớ capability, không tự trả PDFium', async () => {
         transportMocks.invoke.mockImplementation((command: string) => {
             if (command === 'render_ppe_page') {
                 return Promise.reject(new Error(
@@ -734,9 +988,9 @@ describe('Viewer — định tuyến render màu chính xác', () => {
             1, 0, 1.25, undefined, undefined, undefined, undefined,
             { colorStage: 'accurate' },
         )).rejects.toThrow('PPE_NATIVE_UNSUPPORTED');
-        // Lần 2 vẫn yêu cầu PPE, không hạ chuẩn màu theo lỗi lần trước.
+        // Lần 2 vẫn thất bại với hợp đồng PPE, nhưng không dựng lại capability đã biết.
         expect(transportMocks.invoke.mock.calls.filter(([command]) => command === 'render_ppe_page'))
-            .toHaveLength(2);
+            .toHaveLength(1);
         expect(transportMocks.invoke.mock.calls.filter(([command]) => command === 'render_pdf_page'))
             .toHaveLength(0);
         unmount();
@@ -1089,7 +1343,7 @@ describe('Viewer — định tuyến render màu chính xác', () => {
         header.setUint32(12, 8, true); // stride = 8
         new Uint8Array(bytes, 16).fill(255);
         transportMocks.invoke.mockImplementation(async (command: string) => command === 'render_pdf_page' ? bytes : true);
-        vi.stubGlobal('ImageData', class { constructor(..._args: unknown[]) {} });
+        vi.stubGlobal('ImageData', class {});
         const decoder = vi.fn(async () => { throw new Error('decode allocation failed'); });
         vi.stubGlobal('createImageBitmap', decoder);
         const { result, unmount } = renderHook(() => useTileRenderer({

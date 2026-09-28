@@ -1678,11 +1678,16 @@ pub fn ppe_capabilities(py: Python<'_>) -> PyResult<Py<PyDict>> {
     caps.set_item("annotation_dynamic_appearance", false)?;
     caps.set_item("annotation_xfa", false)?;
 
-    // Trong suốt: blend mode và soft mask đã dựng; group đã dựng cả ba đường
-    // (đục / không cách ly / cách ly). Riêng knockout group thì chưa — khai riêng
-    // thay vì để `transparency_groups = true` che mất phần thiếu.
+    // Trong suốt: group có ba đường đục / không cách ly / cách ly. Knockout
+    // chỉ được chứng nhận riêng miền vector xem trước bên dưới; capability
+    // tổng vẫn false để caller không suy rộng sang đo mực hoặc tổ hợp phức tạp.
     caps.set_item("transparency_groups", true)?;
     caps.set_item("transparency_knockout_groups", false)?;
+    // COLOR (audit 2026-09-28 §KNOCK.PREVIEW): không nâng capability tổng.
+    // Đây là chứng nhận riêng đường xem; đo TAC/xuất CMYK vẫn guarded.
+    caps.set_item("transparency_knockout_vector_preview", true)?;
+    caps.set_item("transparency_knockout_vector_preview_scope",
+        "nonisolated-device-cmyk-normal-solid-paths-no-smask-ais-overprint")?;
     caps.set_item("soft_mask", true)?;
     caps.set_item("soft_mask_types", vec!["Luminosity", "Alpha"])?;
     caps.set_item("blend_modes", true)?;

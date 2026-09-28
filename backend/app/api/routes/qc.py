@@ -1,5 +1,6 @@
 import logging
 from fastapi import APIRouter, HTTPException, UploadFile, File, Depends
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from typing import List
 from app.core.llm_checker import LLMChecker
@@ -41,7 +42,10 @@ async def check_text(request: TextQcRequest, license_info: dict = Depends(requir
             if not request.api_key:
                 raise HTTPException(status_code=400, detail="Thiếu API Key cho dịch vụ lưu trữ đám mây.")
             
-            errors = LLMChecker.check_text_cloud(
+            # PERF (audit 2026-09-28 §PERF28.01): HTTP đồng bộ có thể chờ lâu;
+            # dùng pool I/O sẵn có để health/progress không phải chờ cùng AI.
+            errors = await run_in_threadpool(
+                LLMChecker.check_text_cloud,
                 text=text,
                 api_key=request.api_key,
                 provider=request.llm_mode

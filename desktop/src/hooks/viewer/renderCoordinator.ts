@@ -118,7 +118,9 @@ export interface RenderCoordinatorOptions {
 }
 
 const DISPLAY_PIPELINE_ID = 'pdfium-display-png-v1';
-const ACCURATE_PIPELINE_ID = 'ppe-fogra39-relative-view-knockout-png-v5-native-worker';
+// COLOR (audit 2026-09-28 §K.CACHE): đổi nghĩa pixel knockout/mesh phải tách
+// cache/provenance cũ; giữ cùng phiên bản với worker và frame mồi.
+const ACCURATE_PIPELINE_ID = 'ppe-fogra39-relative-view-knockout-png-v6-native-worker';
 const documentIdentityRegistry = new Map<string, RenderDocumentIdentity>();
 
 function nonNegativeIntegerString(value: unknown): string {
@@ -274,7 +276,7 @@ export function renderPipelineIdentity(
     }
     // PREFLIGHT (audit 2026-08-10 §OP.8): identity phải mang đủ Simulation;
     // bitmap SWOP/Perceptual không được đồng khóa với FOGRA39/Relative.
-    return `ppe-${normalizedProfile}-${normalizedIntent}-view-knockout-png-v5-backend`;
+    return `ppe-${normalizedProfile}-${normalizedIntent}-view-knockout-png-v6-backend`;
 }
 
 export function normalizeRenderRotation(rotation: number): 0 | 90 | 180 | 270 {

@@ -8,6 +8,10 @@ use std::{collections::HashMap, io::{Read, Write}, sync::Arc};
 use tiny_skia::{Path, PathBuilder, PathSegment};
 type Result<T> = std::result::Result<T, String>;
 
+// COLOR (audit 2026-09-28 §KNOCK.R1): 003 chứa mesh đã áp Function ở đỉnh và
+// ảnh chưa có provenance Mask/SMask; cấm đọc lẫn với raw mesh/patch gọn hiện tại.
+const WIRE_MAGIC: &[u8; 8] = b"PPEIR004";
+
 #[derive(Serialize, Deserialize)]
 struct Clip { parent: Option<usize>, paths: Vec<Vec<Verb>>, rule: FillRule, stroke:Option<(Vec<Verb>,Matrix,RetainedStroke)> }
 #[derive(Serialize, Deserialize)]
@@ -119,14 +123,14 @@ impl RetainedPage {
         let packet=Packet{revision,bounds:self.bounds,rotation:self.rotation,user_unit:self.user_unit,warnings:self.warnings.clone(),space:self.space.clone(),
             commands,clips:e.clips,masks:e.masks,images:e.images,shadings:e.shadings};
         let bytes=serde_json::to_vec(&packet).map_err(|e|e.to_string())?;
-        writer.write_all(b"PPEIR003").and_then(|_|writer.write_all(&(bytes.len() as u64).to_le_bytes()))
+        writer.write_all(WIRE_MAGIC).and_then(|_|writer.write_all(&(bytes.len() as u64).to_le_bytes()))
             .and_then(|_|writer.write_all(&bytes)).map_err(|e|e.to_string())?;
         for image in &packet.images {image.write_retained_payload(&mut writer).map_err(|e|e.to_string())?;}Ok(())
     }
     /// Budget là ngân sách host theo RAM, không phải trần chất lượng renderer.
     pub fn read_wire(mut reader:impl Read, revision:u64,budget:u64)->Result<Self> {
         let mut magic=[0;8];let mut len=[0;8];reader.read_exact(&mut magic).and_then(|_|reader.read_exact(&mut len)).map_err(|e|e.to_string())?;
-        if &magic!=b"PPEIR003"{return Err("Phiên bản scene không tương thích".into());}
+        if &magic!=WIRE_MAGIC{return Err("Phiên bản scene không tương thích".into());}
         let len=u64::from_le_bytes(len);if len>budget{return Err("Scene vượt ngân sách truyền của host".into());}
         let mut packet:Packet=serde_json::from_reader((&mut reader).take(len)).map_err(|e|e.to_string())?;
         if packet.revision!=revision{return Err("Scene thuộc revision cũ".into());}
@@ -178,5 +182,106 @@ mod tests {
         let mut e=Encoder::default();e.draws(&scene().commands);assert_eq!(e.clips.len(),1);
         assert!(path(vec![Verb::Line(1.,2.)]).is_err());
         assert!(path(vec![Verb::Move(f32::NAN,0.)]).is_err());
+    }
+
+    #[test]
+    fn legacy_003_is_rejected_before_reading_old_mesh_semantics() {
+        let mut wire = Vec::new();
+        scene().write_wire(41, &mut wire).unwrap();
+        wire[..8].copy_from_slice(b"PPEIR003");
+        let error = RetainedPage::read_wire(&wire[..], 41, 1_000_000)
+            .err().expect("scene003 phải bị từ chối, không đoán nghĩa raw/mask");
+        assert_eq!(error, "Phiên bản scene không tương thích");
+    }
+
+    #[test]
+    fn roundtrip_004_preserves_compact_raw_patch_and_image_mask_provenance() {
+        use crate::color::{ColorSpace, space::resolve_function};
+        use crate::shading::{ShadingKind, mesh::MeshPatch};
+        use crate::image::sampler::decode_image;
+        use lopdf::{dictionary, Document, Object, Stream};
+
+        let doc = Document::new();
+        let shading = Arc::new(Shading {
+            kind: ShadingKind::Patches { patches: vec![MeshPatch {
+                grid: std::array::from_fn(|i| [(i % 4) as f32 / 3.0, (i / 4) as f32 / 3.0]),
+                c: [vec![0.0], vec![1.0], vec![1.0], vec![0.0]],
+            }] },
+            colorspace: ColorSpace::DeviceGray,
+            function: Some(resolve_function(&doc, &Object::Dictionary(dictionary! {
+                "FunctionType" => 2, "Domain" => vec![0.into(),1.into()],
+                "C0" => vec![0.into()], "C1" => vec![1.into()], "N" => 2,
+            })).unwrap()), bbox: None, background: None,
+        });
+        let mut page = scene();
+        let mask = Arc::new(RetainedMask {
+            commands: vec![RetainedDraw {
+                kind: RetainedKind::Shading { shading: shading.clone(), matrix: Matrix::IDENTITY },
+                paint: page.commands[0].paint.clone(), state: RetainedState::default(),
+                blend_space: BlendSpace::DeviceCmyk,
+            }],
+            luminosity: true, backdrop: page.commands[0].paint.clone(),
+            blend_space: BlendSpace::DeviceCmyk,
+            transfer: Some((0..256).map(|i| i as f32 / 255.0).collect()),
+        });
+        for command in &mut page.commands {
+            command.kind = RetainedKind::Shading { shading: shading.clone(), matrix: Matrix::IDENTITY };
+            command.state.mask = Some(mask.clone());
+            command.state.alpha_is_shape = true;
+        }
+        for soft in [false, true] {
+            let source_mask = if soft {
+                Stream::new(dictionary! { "Subtype"=>"Image", "Width"=>2,"Height"=>1,
+                    "ColorSpace"=>"DeviceGray", "BitsPerComponent"=>8 }, vec![0,255])
+            } else {
+                Stream::new(dictionary! { "Subtype"=>"Image", "Width"=>2,"Height"=>1,
+                    "ImageMask"=>true, "BitsPerComponent"=>1 }, vec![0b0100_0000])
+            };
+            let mut image_dict = dictionary! { "Subtype"=>"Image", "Width"=>2,"Height"=>1,
+                "ColorSpace"=>"DeviceGray", "BitsPerComponent"=>8 };
+            image_dict.set(if soft { "SMask" } else { "Mask" }, Object::Stream(source_mask));
+            let image_object = Object::Stream(Stream::new(image_dict, vec![0,127]));
+            let image = Arc::new(decode_image(&doc, &image_object, None, &mut RenderWarnings::default()).unwrap());
+            page.commands.push(RetainedDraw {
+                kind: RetainedKind::Image { image, matrix: Matrix::IDENTITY, interpolate: false },
+                paint: page.commands[0].paint.clone(), state: page.commands[0].state.clone(),
+                blend_space: BlendSpace::DeviceCmyk,
+            });
+        }
+        let mut wire = Vec::new();
+        page.write_wire(41, &mut wire).unwrap();
+        assert_eq!(&wire[..8], b"PPEIR004");
+        let decoded = RetainedPage::read_wire(&wire[..], 41, 1_000_000).unwrap();
+        let RetainedKind::Shading { shading: first, .. } = &decoded.commands[0].kind else { panic!("thiếu patch"); };
+        let RetainedKind::Shading { shading: second, .. } = &decoded.commands[1].kind else { panic!("thiếu patch"); };
+        assert!(Arc::ptr_eq(first, second));
+        let ShadingKind::Patches { patches } = &first.kind else { panic!("patch bị bung sai kiểu"); };
+        assert_eq!(patches.len(), 1);
+        patches[0].validate(1).unwrap();
+        let mut raw = Vec::new();
+        patches[0].sample_raw_into(0.5, 0.25, &mut raw).unwrap();
+        assert_eq!(raw, vec![0.5]);
+        assert_eq!(first.function.as_ref().unwrap().eval(&raw), vec![0.25]);
+        let first_mask = decoded.commands[0].state.mask.as_ref().unwrap();
+        assert!(Arc::ptr_eq(first_mask, decoded.commands[1].state.mask.as_ref().unwrap()));
+        assert!(first_mask.luminosity && decoded.commands[0].state.alpha_is_shape);
+        let RetainedKind::Shading { shading: mask_shading, .. } = &first_mask.commands[0].kind else { panic!("thiếu mesh của mask"); };
+        assert!(Arc::ptr_eq(first, mask_shading));
+        for (index, soft) in [(2, false), (3, true)] {
+            let RetainedKind::Image { image, .. } = &decoded.commands[index].kind else { panic!("thiếu ảnh"); };
+            assert!(image.validate_retained_payload());
+            assert!(image.overrides_graphics_soft_mask());
+            assert_eq!(image.components_at(1,0), vec![127.0 / 255.0]);
+            if soft {
+                assert_eq!(image.intrinsic_shape_at(0,0), 1.0);
+                assert_eq!(image.intrinsic_shape_at(1,0), 1.0);
+                assert_eq!(image.soft_mask_at(0,0), Some(0.0));
+                assert_eq!(image.soft_mask_at(1,0), Some(1.0));
+            } else {
+                assert_eq!(image.intrinsic_shape_at(0,0), 1.0);
+                assert_eq!(image.intrinsic_shape_at(1,0), 0.0);
+                assert_eq!(image.soft_mask_at(0,0), None);
+            }
+        }
     }
 }

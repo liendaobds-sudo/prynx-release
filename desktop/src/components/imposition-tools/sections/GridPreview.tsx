@@ -57,6 +57,7 @@ export interface GridPreviewProps {
   gridStrategy: NupSettings["gridStrategy"];
   /** Xoay 180° xen kẽ theo hàng/cột; chỉ áp dụng cho bình cắt xén cùng khổ. */
   alternateRotation?: NupSettings["alternateRotation"];
+  alternateRotationAlignment?: NupSettings["alternateRotationAlignment"];
   splitGap?: number;
   columns: number;
   rows: number;
@@ -1406,6 +1407,7 @@ export default function GridPreview(props: GridPreviewProps) {
     mixedExcessPercent = 0,
     gridStrategy,
     alternateRotation = "none",
+    alternateRotationAlignment = "foot_to_foot",
     splitGap = 0,
     columns,
     rows,
@@ -1500,6 +1502,9 @@ export default function GridPreview(props: GridPreviewProps) {
       && layoutType !== "mixed_guillotine"
     ) || rectangleStickerInking
   ) ? alternateRotation : "none";
+  const effectiveAlternateRotationAlignment: NonNullable<NupSettings["alternateRotationAlignment"]> = (
+    effectiveAlternateRotation !== "none"
+  ) ? (alternateRotationAlignment || "foot_to_foot") : "foot_to_foot";
 
   // §B10: auto-route true-shape theo phân loại hình — bản sao FRONTEND của route_true_shape
   // backend. TÍNH MỘT LẦN rồi dùng khắp nơi (cache key, chọn nhánh fetch, debounce, render)
@@ -1941,6 +1946,7 @@ export default function GridPreview(props: GridPreviewProps) {
       sg: splitGap,
       gs: gridStrategy,
       ar: effectiveAlternateRotation,
+      ara: effectiveAlternateRotationAlignment,
       cols: columns,
       rows: rows,
       st: _shapeTypeDep,
@@ -2018,6 +2024,7 @@ export default function GridPreview(props: GridPreviewProps) {
     gridStrategy,
     usesTrueShape,
     effectiveAlternateRotation,
+    effectiveAlternateRotationAlignment,
     columns,
     rows,
     _shapeTypeDep,
@@ -2470,6 +2477,7 @@ export default function GridPreview(props: GridPreviewProps) {
           // nhưng chỉ auto-route optimal_auto được quyền nhường layout lưới.
           allow_legacy_fallback: requestUsesTrueShape,
           alternate_rotation: effectiveAlternateRotation,
+          alternate_rotation_alignment: effectiveAlternateRotationAlignment,
           cols: columns || 0,
           rows: rows || 0,
           shape_type: pageSheetMode ? "RECTANGLE" : _reqShapeType,

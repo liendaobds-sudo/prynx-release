@@ -235,6 +235,10 @@ def _get_gray_icc_bytes() -> bytes:
 
 
 _SRGB_TO_GRAY_TRANSFORM = None
+# PERF (audit 2026-09-28 §PERF28.04): transform dùng chung trước đây được tuần tự
+# hóa nhờ khóa PDFium. Giữ hợp đồng đó bằng khóa CMM riêng, không giữ PDFium khi
+# khởi tạo/chạy LittleCMS trên bộ đệm RGB đã tách độc lập.
+_SRGB_TO_GRAY_LOCK = threading.Lock()
 
 
 def _get_srgb_to_gray_transform():
@@ -627,7 +631,6 @@ def render_pdf_to_images(
             cmyk_profile=cmyk_profile,
         )
 
-    pil_mode = "L" if color_mode == "gray" else "RGB"
     ext = _EXT[fmt]
     # EXPORT (audit 2026-07-30 §IMG-01 lô 3): gắn ICC profile đúng vào output
     icc_bytes = _get_gray_icc_bytes() if color_mode == "gray" else _get_srgb_icc_bytes()
@@ -704,16 +707,13 @@ def render_pdf_to_images(
                             # widget tương tác khác với đường CMYK PPE.
                             draw_annots=False,
                         )
-                        # EXPORT (audit 2026-09-22 §EXPCOLOR21.03):
-                        # Dùng LittleCMS trắc màu (Colorimetric) từ sRGB sang Gray Gamma 2.2
-                        # thay vì ITU-R 601 luma (.convert('L')) thô sơ để khớp trắc màu Photoshop.
+                        # PERF (audit 2026-09-28 §PERF28.04): .convert() luôn trả
+                        # bản sao độc lập; không đưa view của bitmap ra khỏi khóa.
                         raw_pil = bitmap.to_pil()
-                        if color_mode == "gray":
-                            from PIL import ImageCms
-                            rgb_source = raw_pil.convert("RGB")
-                            img = ImageCms.applyTransform(rgb_source, _get_srgb_to_gray_transform())
-                        else:
-                            img = raw_pil.convert(pil_mode)
+                        try:
+                            img = raw_pil.convert("RGB")
+                        finally:
+                            raw_pil.close()
                     finally:
                         if page is not None and original_crop is not None:
                             page.set_cropbox(*original_crop)
@@ -723,6 +723,17 @@ def render_pdf_to_images(
                             page.close()
 
                 try:
+                    if color_mode == "gray":
+                        from PIL import ImageCms
+
+                        # Giữ Gray Gamma 2.2 + relative colorimetric, không thay
+                        # bằng luma .convert('L'); lúc này PDFium đã đóng bitmap.
+                        rgb_source = img
+                        try:
+                            with _SRGB_TO_GRAY_LOCK:
+                                img = ImageCms.applyTransform(rgb_source, _get_srgb_to_gray_transform())
+                        finally:
+                            rgb_source.close()
                     if multipage_writer is not None:
                         img.save(
                             multipage_writer,

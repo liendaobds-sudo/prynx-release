@@ -29,7 +29,7 @@ const WARM_ZOOM_UP_FACTOR = 1.5;
 const WARM_ZOOM_DOWN_FACTOR = 0.67;
 const MEASUREMENT_SCOPE = 'main-page-thumbnail-closed';
 const STANDEE_SHA256 = 'd3afdaa6c3940f0431fe26ea3cbeedb8e59fe85c2a802db49a95be856868f61c';
-const PPE_PIPELINE_ID = 'ppe-fogra39-relative-view-knockout-png-v5-native-worker';
+const PPE_PIPELINE_ID = 'ppe-fogra39-relative-view-knockout-png-v6-native-worker';
 const TRACED_IPC_COMMANDS = new Set([
   'render_ppe_page',
   'render_pdf_page',

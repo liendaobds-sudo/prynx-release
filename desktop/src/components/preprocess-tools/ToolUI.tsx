@@ -192,9 +192,11 @@ interface ToolNumberInputProps {
     min?: number;
     max?: number;
     className?: string;
+    ariaLabel?: string;
+    hideLabel?: boolean;
 }
 
-export const ToolNumberInput = ({ label, value, onChange, suffix, step = 1, min, max, className = '' }: ToolNumberInputProps) => {
+export const ToolNumberInput = ({ label, value, onChange, suffix, step = 1, min, max, className = '', ariaLabel, hideLabel }: ToolNumberInputProps) => {
     const clamp = (v: number) => {
         let r = v;
         if (typeof min === 'number' && r < min) r = min;
@@ -231,10 +233,11 @@ export const ToolNumberInput = ({ label, value, onChange, suffix, step = 1, min,
     };
     return (
     <div className={className}>
-        <span className="text-[12.5px] font-semibold text-slate-600 dark:text-zinc-300 block mb-1">{label}</span>
+        {!hideLabel && <span className="text-[12.5px] font-semibold text-slate-600 dark:text-zinc-300 block mb-1">{label}</span>}
         <div className="flex items-center gap-1.5">
             <input
                 type="number" step={step} min={min} max={max} value={text}
+                aria-label={ariaLabel || label}
                 onChange={e => commit(e.target.value)}
                 onBlur={handleBlur}
                 className="flex-1 min-w-0 h-9 px-2.5 text-[14px] font-semibold text-center bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500/20 transition-all"

@@ -371,7 +371,7 @@ export function primeViewerFirstFrame(file: File): Promise<ViewerFirstFrame | nu
         // như tile thường; compositor không tự gán proof dựa vào tên layer.
         proof: {engine:'ppe-native',soundness:'color-verified',documentToken,page:1,
           profileId:'fogra39',intent:'relative',proofIdentity:DEFAULT_PROOF_IDENTITY,
-          pipelineIdentity:'ppe-fogra39-relative-view-knockout-png-v5-native-worker'},
+          pipelineIdentity:'ppe-fogra39-relative-view-knockout-png-v6-native-worker'},
         url,
         byteLength: bytes.byteLength,
         cacheable: true,

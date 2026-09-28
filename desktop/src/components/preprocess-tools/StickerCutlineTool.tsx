@@ -6,6 +6,7 @@ import { stickerSourceOwnerFromHistory } from '../stickerSheetTabSelector';
 import { useWorkingPdf, type WorkingPdfRevisionSnapshot } from '../../hooks/useWorkingPdf';
 import { saveBlob } from '../../lib/saveBlob';
 import { toast } from '../ui/Toast';
+import { sendCutlineDebugLog } from '../../lib/stickerSheetApi';
 import StickerSheetPanel from './StickerSheetPanel';
 import StickerTool from './StickerTool';
 import {
@@ -239,6 +240,10 @@ export default function StickerCutlineTool({
                                 aria-describedby={tooltipId}
                                 onClick={() => {
                                     if (workflowBusy || option.id === mode) return;
+                                    void sendCutlineDebugLog('UI_ACTION', `Chọn chế độ nguồn tem: ${option.label}`, {
+                                        mode: option.id,
+                                        tabId,
+                                    });
                                     exportedFilenameRef.current = null;
                                     setCompletedExport(null);
                                     actions.setMode(tabId, option.id);

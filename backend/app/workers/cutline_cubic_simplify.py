@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import time
+from app.utils.cutline_debug_log import log_cutline
 from app.workers.cutline_simplify_memo import memoized_simplify
 from app.workers.cutline_preview_cancel import check_preview_cancelled
 
@@ -474,6 +476,7 @@ def _simplify_cubic_path_groups_impl(
              "maximum_error_bound_mm": 0.0, "changed": False}
     if tolerance_mm == 0 or not before:
         return path_groups, stats
+    t0_impl = time.perf_counter()
     try:
         normalized = _normalize(path_groups, units)
         if normalized is None:
@@ -495,6 +498,9 @@ def _simplify_cubic_path_groups_impl(
             rings = []
             for ring in group:
                 check_preview_cancelled()
+                if len(ring) <= 4:
+                    rings.append(ring)
+                    continue
                 if fair_refit:
                     from app.workers.cutline_fair_simplify import fair_refit_ring, protected_corner_indices
                     from app.workers.cutline_fair_verify import verify_fair_ring
@@ -515,6 +521,7 @@ def _simplify_cubic_path_groups_impl(
                             budget / units,
                             max_irls_rounds=fair_max_irls_rounds,
                             max_nfev=3 if fair_max_irls_rounds < 5 else 35,
+                            allow_slow_fallback=(fair_max_irls_rounds >= 5),
                         )
                     if len(fitted) < len(ring):
                         fitted = np.asarray(fitted)*units
@@ -584,6 +591,9 @@ def _simplify_cubic_path_groups_impl(
             if "interiors" in original or len(rings) > 1:
                 group["interiors"] = [list(ring) for ring in rings[1:]]
             result.append(group)
+        elapsed_impl = (time.perf_counter() - t0_impl) * 1000.0
+        if elapsed_impl > 300.0:
+            log_cutline("SIMPLIFY", "IMPL_CANDIDATE", f"fair={fair_refit} global={global_refit} elapsed={elapsed_impl:.1f}ms before={before} after={after}")
         return result, {"before_segments": before, "after_segments": after,
                         "maximum_error_bound_mm": rounded_fair_bound if fair_refit else (maximum_bound + snap + rounding) / units,
                         "changed": True}
@@ -601,6 +611,11 @@ def simplify_cubic_path_groups(
 ):
     """Neo tự do + độ cong; không đạt thì dùng nhánh bảo toàn đã chứng nhận."""
     check_preview_cancelled()
+    t0_simp = time.perf_counter()
+    n_groups = len(path_groups) if path_groups else 0
+    total_in_segs = sum(len(g.get("exterior", [])) for g in path_groups) if path_groups else 0
+    log_cutline("SIMPLIFY", "START", f"tolerance_mm={tolerance_mm}, groups={n_groups}, in_segs={total_in_segs}, preview_fast={preview_fast}")
+
     try:
         candidate_attempts = max(1, min(7, int(max_candidate_attempts)))
     except (TypeError, ValueError):
@@ -613,52 +628,63 @@ def simplify_cubic_path_groups(
     options = dict(tolerance_mm=tolerance_mm, mm_to_units=mm_to_units,
                    offset_x_points=offset_x_points, offset_y_points=offset_y_points,
                    page_height=page_height, max_candidate_attempts=candidate_attempts)
-    if preview_fast:
-        # PERF (audit 2026-09-11 §SIMPLIFY.PREVIEW-FAST): lúc kéo slider,
-        # mức thấp ưu tiên reducer bảo toàn có chi phí ổn định. Với mức cao,
-        # fairing thường là ứng viên duy nhất giảm được node, nên chạy nó
-        # trước để không tốn thêm một lượt reducer vô ích.
-        if float(tolerance_mm) >= 0.075:
-            result, stats = _simplify_cubic_path_groups_impl(
-                path_groups, **options, fair_refit=True, fair_max_irls_rounds=3,
-            )
-            if stats["changed"] or float(tolerance_mm) == 0:
-                return result, stats
-            return _simplify_cubic_path_groups_impl(
+
+    def _execute():
+        if preview_fast:
+            # PERF (audit 2026-09-11 §SIMPLIFY.PREVIEW-FAST): lúc kéo slider,
+            # mức thấp ưu tiên reducer bảo toàn có chi phí ổn định. Với mức cao,
+            # fairing thường là ứng viên duy nhất giảm được node, nên chạy nó
+            # trước để không tốn thêm một lượt reducer vô ích.
+            if float(tolerance_mm) >= 0.075:
+                res, st = _simplify_cubic_path_groups_impl(
+                    path_groups, **options, fair_refit=True, fair_max_irls_rounds=3,
+                )
+                if st["changed"] or float(tolerance_mm) == 0:
+                    return res, st
+                return _simplify_cubic_path_groups_impl(
+                    path_groups, **options, global_refit=True,
+                )
+            res, st = _simplify_cubic_path_groups_impl(
                 path_groups, **options, global_refit=True,
             )
-        result, stats = _simplify_cubic_path_groups_impl(
-            path_groups, **options, global_refit=True,
+            if st["changed"] or float(tolerance_mm) == 0:
+                return res, st
+            res, st = _simplify_cubic_path_groups_impl(
+                path_groups, **options, fair_refit=True, fair_max_irls_rounds=3,
+            )
+            return res, st
+        if prefer_conservative:
+            # QUALITY (2026-09-10 §SIMPLIFY.ROUND): Catmull writer có nhiều đoạn
+            # ngắn nhưng đã G1; thử rút gọn giữ tangent trước. Không tốn ba nghiệm
+            # neo tự do bị loại topology khi nghiệm bảo toàn đã giảm tốt trong band.
+            res, st = _simplify_cubic_path_groups_impl(path_groups, **options)
+            if st["changed"] or float(tolerance_mm) == 0:
+                return res, st
+        # Một lượt IRLS là đủ để đề xuất ứng viên cho live preview/PDF; verify cuối
+        # vẫn fail-closed. Các caller trực tiếp của impl giữ mặc định 5 lượt để không
+        # đổi hợp đồng nghiên cứu/test.
+        res, st = _simplify_cubic_path_groups_impl(
+            path_groups,
+            **options,
+            fair_refit=True,
+            fair_max_irls_rounds=3,
         )
-        if stats["changed"] or float(tolerance_mm) == 0:
-            return result, stats
-        result, stats = _simplify_cubic_path_groups_impl(
-            path_groups, **options, fair_refit=True, fair_max_irls_rounds=3,
-        )
-        return result, stats
-    if prefer_conservative:
-        # QUALITY (2026-09-10 §SIMPLIFY.ROUND): Catmull writer có nhiều đoạn
-        # ngắn nhưng đã G1; thử rút gọn giữ tangent trước. Không tốn ba nghiệm
-        # neo tự do bị loại topology khi nghiệm bảo toàn đã giảm tốt trong band.
-        result, stats = _simplify_cubic_path_groups_impl(path_groups, **options)
-        if stats["changed"] or float(tolerance_mm) == 0:
-            return result, stats
-    # Một lượt IRLS là đủ để đề xuất ứng viên cho live preview/PDF; verify cuối
-    # vẫn fail-closed. Các caller trực tiếp của impl giữ mặc định 5 lượt để không
-    # đổi hợp đồng nghiên cứu/test.
-    result, stats = _simplify_cubic_path_groups_impl(
-        path_groups,
-        **options,
-        fair_refit=True,
-        fair_max_irls_rounds=3,
-    )
-    if stats["changed"] or float(tolerance_mm) == 0:
-        return result, stats
-    # PERF (audit 2026-09-10 §SIMPERF.5): nhánh ưu tiên đã thử chính
-    # nguồn/options này trước fair; không giải lại cùng một phương án.
-    # Fallback cục bộ bên dưới vẫn cần vì guard khác với nhánh global.
-    if not prefer_conservative:
-        result, stats = _simplify_cubic_path_groups_impl(path_groups, **options)
-        if stats["changed"] or float(tolerance_mm) == 0:
-            return result, stats
-    return _simplify_cubic_path_groups_impl(path_groups, **options, global_refit=False)
+        if st["changed"] or float(tolerance_mm) == 0:
+            return res, st
+        # PERF (audit 2026-09-10 §SIMPERF.5): nhánh ưu tiên đã thử chính
+        # nguồn/options này trước fair; không giải lại cùng một phương án.
+        # Fallback cục bộ bên dưới vẫn cần vì guard khác với nhánh global.
+        if not prefer_conservative:
+            res, st = _simplify_cubic_path_groups_impl(path_groups, **options)
+            if st["changed"] or float(tolerance_mm) == 0:
+                return res, st
+        return _simplify_cubic_path_groups_impl(path_groups, **options, global_refit=False)
+
+    result, stats = _execute()
+    elapsed_ms = (time.perf_counter() - t0_simp) * 1000.0
+    out_segs = stats.get("after_segments", 0) if isinstance(stats, dict) else 0
+    changed = stats.get("changed", False) if isinstance(stats, dict) else False
+    log_cutline("SIMPLIFY", "DONE", f"elapsed={elapsed_ms:.1f}ms, in_segs={total_in_segs}, out_segs={out_segs}, changed={changed}")
+    if elapsed_ms > 1000.0:
+        log_cutline("BOTTLENECK", "SIMPLIFY_SLOW", f"[ĐIỂM NGHẼN] simplify_cubic_path_groups mất {elapsed_ms:.1f}ms (> 1s)! tolerance_mm={tolerance_mm}, in_segs={total_in_segs} -> out_segs={out_segs}")
+    return result, stats

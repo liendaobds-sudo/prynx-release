@@ -250,6 +250,7 @@ def _fair_refit_ring_impl(
     *,
     max_irls_rounds: int = 5,
     max_nfev: int = 35,
+    allow_slow_fallback: bool = True,
 ):
     """Trả ring và cận mm; không có nghiệm an toàn thì giữ đúng object nguồn."""
     from app.workers.cutline_fair_seed import iter_fair_seeds
@@ -304,7 +305,7 @@ def _fair_refit_ring_impl(
                     shifted[knot, 0] = values[index, 0]
                     shifted[knot-1, 3] = values[index, 0]
                 return tuple(tuple(tuple(map(float, p)) for p in c) for c in shifted), verified.maximum_error_bound_mm
-        if not max_nfev < 35:
+        if not allow_slow_fallback or not max_nfev < 35:
             return source, 0.0
         # PERF (audit 2026-09-11 §CUTRUNTIME.CORE): fallback đầy đủ giữ cùng
         # nguồn/mẫu/ba seed bất biến, không dựng lại chúng. Mỗi lượt vẫn tạo
@@ -321,6 +322,7 @@ def fair_refit_ring(
     *,
     max_irls_rounds: int = 5,
     max_nfev: int = 35,
+    allow_slow_fallback: bool = True,
 ):
     """Làm mượt tùy chọn: phụ thuộc/solver lỗi thì giữ nguồn, không hỏng PDF."""
     try:
@@ -329,6 +331,7 @@ def fair_refit_ring(
             tolerance_mm,
             max_irls_rounds=max_irls_rounds,
             max_nfev=max_nfev,
+            allow_slow_fallback=allow_slow_fallback,
         )
     except (ImportError, ArithmeticError, TypeError, ValueError, IndexError,
             np.linalg.LinAlgError):

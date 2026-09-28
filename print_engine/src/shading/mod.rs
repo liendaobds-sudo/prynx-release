@@ -13,22 +13,23 @@
 //!
 //! # Phạm vi
 //!
-//! Kiểu 1 (theo hàm), 2 (dọc trục), 3 (theo bán kính) — ba kiểu này chiếm gần
-//! toàn bộ file thực tế. Kiểu 4–7 (lưới tam giác Gouraud, Coons, tensor) chưa
-//! dựng: chúng bị báo là chưa hỗ trợ để caller dừng an toàn, chứ không được
-//! vẽ xấp xỉ rồi báo là tin được.
+//! Kiểu 1 (theo hàm), 2 (dọc trục), 3 (theo bán kính) dùng đường lấy mẫu riêng.
+//! Kiểu 4/5 lưu tam giác Gouraud; kiểu 6/7 giữ Coons/tensor patch gọn, chỉ chia
+//! lưới từng patch khi vẽ. Cả hai loại mesh giữ raw để áp hàm màu sau nội suy.
 
 pub mod eval;
 pub mod mesh;
 
 use lopdf::{Dictionary, Document, Object};
 
-use crate::shading::mesh::MeshTriangle;
+use crate::shading::mesh::{MeshPatch, MeshTriangle};
 
+use crate::cancel::CancelToken;
 use crate::color::space::{resolve_colorspace, resolve_function};
 use crate::color::{ColorSpace, PdfFunction};
 use crate::error::{PpeError, PpeResult, RenderWarnings};
 use crate::geom::{Matrix, Rect};
+use crate::ink::DEFAULT_RENDER_MEMORY_BUDGET_BYTES;
 use crate::pdf;
 
 /// Kiểu shading đã phân giải.
@@ -53,12 +54,14 @@ pub enum ShadingKind {
         domain: [f32; 2],
         extend: [bool; 2],
     },
-    /// Kiểu 4–7 — lưới tam giác, đã quy về một dạng duy nhất.
+    /// Kiểu 4/5 — lưới tam giác với thành phần raw ở ba đỉnh.
     ///
     /// Khác ba kiểu trên, màu ở đây **không** là hàm của vị trí: nó nằm ở các đỉnh.
     /// Nên đường vẽ của lưới không dùng bảng LUT theo `t` mà nội suy theo toạ độ
     /// trọng tâm của từng tam giác — xem [`mesh`].
     Mesh { triangles: Vec<MeshTriangle> },
+    /// Kiểu 6/7 — patch gọn; nội suy raw song tuyến tại UV rồi mới áp hàm màu.
+    Patches { patches: Vec<MeshPatch> },
 }
 
 /// Shading đã phân giải, sẵn sàng lấy màu theo điểm.
@@ -110,8 +113,30 @@ pub fn resolve_shading(
     resources: Option<&Dictionary>,
     warn: &mut RenderWarnings,
 ) -> PpeResult<Shading> {
+    resolve_shading_bounded(
+        doc,
+        obj,
+        resources,
+        warn,
+        DEFAULT_RENDER_MEMORY_BUDGET_BYTES,
+        None,
+    )
+}
+
+/// Bản có ngân sách còn lại của request và tín hiệu hủy cho caller render.
+pub fn resolve_shading_bounded(
+    doc: &Document,
+    obj: &Object,
+    resources: Option<&Dictionary>,
+    warn: &mut RenderWarnings,
+    memory_budget_bytes: usize,
+    cancel: Option<&CancelToken>,
+) -> PpeResult<Shading> {
+    if let Some(cancel) = cancel {
+        cancel.check()?;
+    }
     let colorspace = resolve_shading_colorspace(doc, obj, resources, warn)?;
-    resolve_shading_with_colorspace(doc, obj, colorspace)
+    resolve_shading_with_colorspace_bounded(doc, obj, colorspace, memory_budget_bytes, cancel)
 }
 
 /// Hoàn tất shading sau khi caller đã kiểm tra source-color visibility.
@@ -120,6 +145,27 @@ pub fn resolve_shading_with_colorspace(
     obj: &Object,
     colorspace: ColorSpace,
 ) -> PpeResult<Shading> {
+    resolve_shading_with_colorspace_bounded(
+        doc,
+        obj,
+        colorspace,
+        DEFAULT_RENDER_MEMORY_BUDGET_BYTES,
+        None,
+    )
+}
+
+/// Ngân sách bao gồm stream đã giải nén và Vec mesh còn sống trong parser.
+/// Chốt trước giải nén thuộc decoder chung; hàm này không thay thế chốt đó.
+pub fn resolve_shading_with_colorspace_bounded(
+    doc: &Document,
+    obj: &Object,
+    colorspace: ColorSpace,
+    memory_budget_bytes: usize,
+    cancel: Option<&CancelToken>,
+) -> PpeResult<Shading> {
+    if let Some(cancel) = cancel {
+        cancel.check()?;
+    }
     let resolved = pdf::deref(doc, obj);
     let dict = shading_dictionary(doc, obj)?;
 
@@ -202,6 +248,21 @@ pub fn resolve_shading_with_colorspace(
                 )));
             };
             let decoded = pdf::decode_stream(doc, stream);
+            if let Some(cancel) = cancel {
+                cancel.check()?;
+            }
+            // MEMORY (audit 2026-09-28 §KNOCK.01-C2c): parser tính data.len(),
+            // nên trừ riêng phần capacity dư của Vec giải nén để không bỏ sót RAM.
+            // Decoder hiện đã cấp phát ở trên; giới hạn trước inflate là lô riêng.
+            const MIB: usize = 1024 * 1024;
+            if decoded.bytes.capacity() > memory_budget_bytes {
+                return Err(PpeError::MemoryBudgetExceeded {
+                    requested_mib: decoded.bytes.capacity().saturating_add(MIB - 1) / MIB,
+                    limit_mib: memory_budget_bytes.saturating_add(MIB - 1) / MIB,
+                });
+            }
+            let parser_budget =
+                memory_budget_bytes - (decoded.bytes.capacity() - decoded.bytes.len());
             if decoded.quality == pdf::DecodeQuality::Recovered {
                 // CORRECTNESS (audit 2026-09-01 §PPE-E2): bytes nén/raw không
                 // được diễn giải như bitstream mesh; làm vậy có thể bịa đỉnh màu
@@ -210,15 +271,33 @@ pub fn resolve_shading_with_colorspace(
                     "shading lưới kiểu {shading_type} không giải nén chính xác được"
                 )));
             }
-            let triangles = mesh::parse_mesh(
-                doc,
-                dict,
-                shading_type,
-                &decoded.bytes,
-                function.as_ref(),
-                colorspace.n_components(),
-            )?;
-            ShadingKind::Mesh { triangles }
+            // PERF (audit 2026-09-28 §KNOCK.01-C2c): giữ patch gọn để mesh thật
+            // không bị bỏ chỉ vì số tam giác sau chia lưới vượt guard kiểu 4/5.
+            if shading_type <= 5 {
+                let triangles = mesh::parse_mesh_bounded(
+                    doc,
+                    dict,
+                    shading_type,
+                    &decoded.bytes,
+                    function.as_ref(),
+                    colorspace.n_components(),
+                    parser_budget,
+                    cancel,
+                )?;
+                ShadingKind::Mesh { triangles }
+            } else {
+                let patches = mesh::parse_patch_mesh_bounded(
+                    doc,
+                    dict,
+                    shading_type,
+                    &decoded.bytes,
+                    function.as_ref(),
+                    colorspace.n_components(),
+                    parser_budget,
+                    cancel,
+                )?;
+                ShadingKind::Patches { patches }
+            }
         }
         other => {
             return Err(PpeError::MalformedPdf(format!(
@@ -345,6 +424,59 @@ mod tests {
                 "kiểu {t} phải báo lỗi"
             );
         }
+    }
+
+    #[test]
+    fn patch_shading_resolves_compactly_and_survives_serde_round_trip() {
+        let doc = Document::new();
+        for shading_type in [6, 7] {
+            let dict = dictionary! {
+                "ShadingType" => shading_type,
+                "ColorSpace" => "DeviceGray",
+                "BitsPerCoordinate" => 8,
+                "BitsPerComponent" => 8,
+                "BitsPerFlag" => 8,
+                "Decode" => vec![0.into(), 100.into(), 0.into(), 100.into(), 0.into(), 1.into()],
+            };
+            let points = if shading_type == 6 { 12 } else { 16 };
+            let data = vec![0; 1 + points * 2 + 4];
+            let object = Object::Stream(lopdf::Stream::new(dict, data));
+            let shading = resolve_shading(&doc, &object, None, &mut warn()).unwrap();
+            let encoded = serde_json::to_vec(&shading).unwrap();
+            let restored: Shading = serde_json::from_slice(&encoded).unwrap();
+            let ShadingKind::Patches { patches } = restored.kind else {
+                panic!("kiểu 6/7 phải giữ patch gọn trong retained scene");
+            };
+            assert_eq!(patches.len(), 1);
+            patches[0].validate(1).unwrap();
+            assert_eq!(patches[0].tessellate().triangles().count(), 200);
+            assert!(restored.function.is_none());
+            assert!(matches!(
+                resolve_shading_bounded(&doc, &object, None, &mut warn(), 16, None),
+                Err(PpeError::MemoryBudgetExceeded { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn bounded_resolver_checks_cancellation_before_metadata_or_decoding() {
+        let doc = Document::new();
+        let token = CancelToken::new();
+        token.cancel();
+        assert!(matches!(
+            resolve_shading_bounded(&doc, &Object::Null, None, &mut warn(), 0, Some(&token)),
+            Err(PpeError::Cancelled)
+        ));
+        assert!(matches!(
+            resolve_shading_with_colorspace_bounded(
+                &doc,
+                &Object::Null,
+                ColorSpace::DeviceGray,
+                0,
+                Some(&token)
+            ),
+            Err(PpeError::Cancelled)
+        ));
     }
 
     #[test]

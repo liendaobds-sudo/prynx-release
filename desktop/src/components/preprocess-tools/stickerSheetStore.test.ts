@@ -1164,4 +1164,52 @@ describe('stickerSheetStore — state machine nguồn tem theo tab', () => {
 
         expect(useStickerSheetStore.getState().tabs['tab-disposed']).toBeUndefined();
     });
+    it('tái sử dụng frame cache tức thì khi quay lại thông số cũ không gọi lại backend', async () => {
+        prepareSuccessfulFlow();
+        const tabId = 'tab-cache-test';
+        useStickerSheetStore.getState().selectSource(tabId, new File(['image'], 'sheet.png'));
+        await useStickerSheetStore.getState().detectStickers(tabId);
+        await vi.waitFor(() => expect(previewStickerCutline).toHaveBeenCalledTimes(1));
+
+        // Tuning lần 1: tension 80
+        useStickerSheetStore.getState().setCutlineTuning(tabId, { tension: 80 });
+        await vi.waitFor(() => expect(previewStickerCutline).toHaveBeenCalledTimes(2));
+
+        // Tuning lần 2: tension 33
+        useStickerSheetStore.getState().setCutlineTuning(tabId, { tension: 33 });
+        await vi.waitFor(() => expect(previewStickerCutline).toHaveBeenCalledTimes(3));
+
+        // Tuning lần 3: quay lại tension 80 -> PHẢI LẤY TỪ CACHE NGAY (0ms, không gọi backend lần 4)
+        useStickerSheetStore.getState().setCutlineTuning(tabId, { tension: 80 });
+        const currentTab = useStickerSheetStore.getState().getTab(tabId);
+        expect(currentTab.curveTension).toBe(80);
+        expect(currentTab.isCutlinePreviewing).toBe(false);
+        // Đảm bảo sau một khoảng thời gian vẫn không hề gọi backend thêm
+        await new Promise(r => setTimeout(r, 120));
+        expect(previewStickerCutline).toHaveBeenCalledTimes(3);
+    });
+
+    it('debounce dồn các micro-step kéo slider trong 60ms thành 1 request', async () => {
+        prepareSuccessfulFlow();
+        const tabId = 'tab-debounce-test';
+        useStickerSheetStore.getState().selectSource(tabId, new File(['image'], 'sheet.png'));
+        await useStickerSheetStore.getState().detectStickers(tabId);
+        await vi.waitFor(() => expect(previewStickerCutline).toHaveBeenCalledTimes(1));
+
+        vi.mocked(previewStickerCutline).mockClear();
+
+        // Mô phỏng kéo chuột lướt nhanh qua nhiều nấc trong 30ms (mỗi nấc cách nhau 10ms)
+        useStickerSheetStore.getState().setCutlineTuning(tabId, { fidelity: 10 });
+        await new Promise(r => setTimeout(r, 10));
+        useStickerSheetStore.getState().setCutlineTuning(tabId, { fidelity: 25 });
+        await new Promise(r => setTimeout(r, 10));
+        useStickerSheetStore.getState().setCutlineTuning(tabId, { fidelity: 65 });
+
+        // Chờ debounce 60ms hoàn tất
+        await vi.waitFor(() => expect(previewStickerCutline).toHaveBeenCalledTimes(1));
+        // Đảm bảo chỉ gửi đúng giá trị cuối cùng (65)
+        expect(vi.mocked(previewStickerCutline).mock.calls[0][1]).toMatchObject({
+            cutlineFidelity: 65,
+        });
+    });
 });

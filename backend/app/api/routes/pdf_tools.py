@@ -83,7 +83,7 @@ _STICKER_JOB_SEMAPHORE = threading.BoundedSemaphore(_MAX_CONCURRENT_STICKER)
 
 def _plan_background_work_size(width: int, height: int) -> tuple[tuple[int, int], list[str]]:
     """Lập kế hoạch kích thước theo RAM; máy >=16 GB không bị hạ âm thầm."""
-    from app.core.system_memory import read_memory_status_mb
+    from app.core.system_memory import read_memory_status_mb, read_memory_tier_mb
 
     if width <= 0 or height <= 0:
         raise HTTPException(status_code=400, detail="Kích thước ảnh không hợp lệ")
@@ -95,7 +95,9 @@ def _plan_background_work_size(width: int, height: int) -> tuple[tuple[int, int]
     reserve_mb = 512.0 if total_mb < 8192 else 1024.0
     usable_mb = max(0.0, available_mb - reserve_mb) * (0.55 if total_mb < 8192 else 0.65)
 
-    if total_mb >= 16384:
+    # PERF (audit 2026-09-28 §PERF28.03): máy full-tier thiếu RAM nhận lỗi
+    # rõ ràng, không âm thầm giảm ảnh. Reserve/fraction phía trên giữ usable.
+    if read_memory_tier_mb(total_mb) >= 16384:
         if estimated_mb > usable_mb:
             raise HTTPException(
                 status_code=422,
@@ -1485,6 +1487,7 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
     from app.workers.sticker_page_canvas import (
         normalize_sticker_tight_crop_origin,
         restore_sticker_page_canvas,
+        split_or_normalize_sticker_tight_crop,
     )
     form = await request.form()
     file_id = form.get("file_id")
@@ -1992,7 +1995,7 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
                     expansion_pts=page_expansion_pts,
                 )
             elif do_crop_to_sticker and selected_objects_by_page is None and not do_rectangle_mode:
-                normalize_sticker_tight_crop_origin(output_path)
+                split_or_normalize_sticker_tight_crop(output_path, meta)
             # Giữ tạo output trong một lượt admission, không xếp hàng lại cho watermark.
             _safe_watermark(output_path, license_info)
             return meta, engine_seconds

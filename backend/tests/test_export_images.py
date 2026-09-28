@@ -804,3 +804,263 @@ def test_resolve_ppe_cmyk_profile_wires_output_intent(tmp_path):
     cmyk_path = resolve_cmyk_profile_path(resolved)
     assert cmyk_path == resolved
 
+
+def test_gray_cmm_runs_after_pdfium_resources_are_closed(tmp_path, monkeypatch):
+    """PERF (audit 2026-09-28 §PERF28.04): CMM không giữ khóa/bitmap PDFium."""
+    import pypdfium2 as pdfium
+    from PIL import ImageCms
+    from app.core.pdfium_lock import PDFIUM_PY_LOCK
+
+    src = _make_pdf(tmp_path, 2)
+    resources = {"pages": [], "bitmaps": []}
+    operations = []
+
+    def locked_spy(cls, name):
+        original = getattr(cls, name)
+
+        def checked(obj, *args, **kwargs):
+            assert PDFIUM_PY_LOCK._is_owned(), name
+            operations.append(name)
+            result = original(obj, *args, **kwargs)
+            if name == "render":
+                resources["pages"].append(obj)
+                resources["bitmaps"].append(result)
+            return result
+
+        monkeypatch.setattr(cls, name, checked)
+
+    for name in ("get_cropbox", "get_mediabox", "set_cropbox", "render", "close"):
+        locked_spy(pdfium.PdfPage, name)
+    for name in ("to_pil", "close"):
+        locked_spy(pdfium.PdfBitmap, name)
+    locked_spy(pdfium.PdfDocument, "close")
+
+    original_build = ImageCms.buildTransform
+    original_apply = ImageCms.applyTransform
+    builds = []
+    converted = []
+
+    def checked_build(*args, **kwargs):
+        assert not PDFIUM_PY_LOCK._is_owned()
+        builds.append(True)
+        return original_build(*args, **kwargs)
+
+    def checked_apply(image, *args, **kwargs):
+        assert not PDFIUM_PY_LOCK._is_owned()
+        assert all(resource.raw is None for group in resources.values() for resource in group)
+        assert image.mode == "RGB"
+        converted.append(image)
+        return original_apply(image, *args, **kwargs)
+
+    monkeypatch.setattr(export_route, "_SRGB_TO_GRAY_TRANSFORM", None)
+    monkeypatch.setattr(ImageCms, "buildTransform", checked_build)
+    monkeypatch.setattr(ImageCms, "applyTransform", checked_apply)
+    files = render_pdf_to_images(src, str(tmp_path / "out"), dpi=72, color_mode="gray")
+    assert len(files) == 2 and len(builds) == 1 and len(converted) == 2
+    assert operations.count("set_cropbox") == 4
+    for image in converted:
+        with pytest.raises(ValueError, match="closed"):
+            image.getpixel((0, 0))
+
+
+def test_gray_cmm_does_not_block_another_pdfium_request(tmp_path, monkeypatch):
+    """PERF (audit 2026-09-28 §PERF28.04): PDFium tiến triển khi CMM đang chờ."""
+    from concurrent.futures import ThreadPoolExecutor
+    import pypdfium2 as pdfium
+    from PIL import ImageCms
+    from app.core.pdfium_lock import pdfium_guard
+
+    src = _make_pdf(tmp_path, 1)
+    entered = threading.Event()
+    release = threading.Event()
+    original_apply = ImageCms.applyTransform
+
+    def blocked_apply(*args, **kwargs):
+        entered.set()
+        assert release.wait(5), "Test chưa nhả CMM"
+        return original_apply(*args, **kwargs)
+
+    def read_page_size():
+        with pdfium_guard("test_gray_competing_preview"):
+            pdf = pdfium.PdfDocument(src)
+            page = pdf[0]
+            try:
+                return page.get_size()
+            finally:
+                page.close()
+                pdf.close()
+
+    monkeypatch.setattr(ImageCms, "applyTransform", blocked_apply)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        exported = pool.submit(
+            render_pdf_to_images, src, str(tmp_path / "out"), dpi=72, color_mode="gray"
+        )
+        try:
+            assert entered.wait(5)
+            assert pool.submit(read_page_size).result(timeout=2) == (200, 300)
+        finally:
+            release.set()
+        assert len(exported.result(timeout=5)) == 1
+
+
+def test_gray_concurrent_exports_initialize_once_and_preserve_pixels(tmp_path, monkeypatch):
+    """PERF (audit 2026-09-28 §PERF28.04): khóa CMM riêng giữ hợp đồng dùng chung."""
+    from concurrent.futures import ThreadPoolExecutor
+    import time
+    from PIL import Image, ImageCms
+    from app.core.pdfium_lock import PDFIUM_PY_LOCK
+
+    src = _make_pdf(tmp_path, 2)
+    original_build = ImageCms.buildTransform
+    original_apply = ImageCms.applyTransform
+    builds = []
+    active = 0
+    peak = 0
+    observed_lock = threading.Lock()
+
+    def checked_build(*args, **kwargs):
+        assert not PDFIUM_PY_LOCK._is_owned()
+        builds.append(True)
+        return original_build(*args, **kwargs)
+
+    def checked_apply(*args, **kwargs):
+        nonlocal active, peak
+        assert not PDFIUM_PY_LOCK._is_owned()
+        with observed_lock:
+            active += 1
+            peak = max(peak, active)
+        try:
+            # Tạo cơ hội tranh chấp; không dùng elapsed làm điều kiện pass/fail.
+            time.sleep(0.002)
+            return original_apply(*args, **kwargs)
+        finally:
+            with observed_lock:
+                active -= 1
+
+    monkeypatch.setattr(export_route, "_SRGB_TO_GRAY_TRANSFORM", None)
+    monkeypatch.setattr(ImageCms, "buildTransform", checked_build)
+    monkeypatch.setattr(ImageCms, "applyTransform", checked_apply)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(
+            render_pdf_to_images, src, str(tmp_path / f"out-{index}"),
+            dpi=72, color_mode="gray",
+        ) for index in range(4)]
+        files = [path for future in futures for path in future.result(timeout=10)]
+    pixels = []
+    for path in files:
+        with Image.open(path) as image:
+            pixels.append((image.mode, image.size, image.tobytes(), image.info["icc_profile"]))
+    assert len(builds) == 1 and peak == 1 and active == 0
+    assert len(pixels) == 8 and all(pixel == pixels[0] for pixel in pixels)
+
+
+@pytest.mark.parametrize("fmt,multipage", [("png", False), ("tiff", True)])
+@pytest.mark.parametrize("include_bleed", [False, True])
+def test_gray_export_preserves_pixels_boxes_alpha_and_user_unit(
+    tmp_path, fmt, multipage, include_bleed,
+):
+    """PERF (audit 2026-09-28 §PERF28.04): giữ pixel/ICC, thứ tự, box và alpha."""
+    import pikepdf
+    from pathlib import Path
+    from PIL import Image, ImageCms
+    from reportlab.pdfgen.canvas import Canvas
+
+    src = str(tmp_path / "color-boxes.pdf")
+    canvas = Canvas(src, pagesize=(200, 160))
+    for red in (0.2, 1.0):
+        canvas.setFillAlpha(0.5)
+        canvas.setFillColorRGB(red, 0.2, 0.8)
+        canvas.rect(0, 0, 200, 160, fill=1, stroke=0)
+        canvas.setFillAlpha(1)
+        canvas.setFillColorRGB(0, 0.7, 0.1)
+        canvas.rect(60, 50, 30, 20, fill=1, stroke=0)
+        canvas.showPage()
+    canvas.save()
+    with pikepdf.open(src, allow_overwriting_input=True) as pdf:
+        for page in pdf.pages:
+            page.CropBox = [20, 10, 180, 140]
+            page.TrimBox = [40, 30, 160, 110]
+            page["/UserUnit"] = 1.5
+        pdf.save(src)
+    original_pdf = Path(src).read_bytes()
+    expected_size = (300, 240) if include_bleed else (180, 120)
+    rgb_files = render_pdf_to_images(
+        src, str(tmp_path / "rgb"), dpi=72, pages=[2, 1], include_bleed=include_bleed,
+    )
+    gray_files = render_pdf_to_images(
+        src, str(tmp_path / "gray"), fmt=fmt, dpi=72, pages=[2, 1],
+        color_mode="gray", include_bleed=include_bleed, multipage_tiff=multipage,
+    )
+    transform = ImageCms.buildTransform(
+        ImageCms.ImageCmsProfile(io.BytesIO(export_route._get_srgb_icc_bytes())),
+        ImageCms.ImageCmsProfile(io.BytesIO(export_route._get_gray_icc_bytes())),
+        "RGB", "L", renderingIntent=1,
+    )
+    for index, rgb_path in enumerate(rgb_files):
+        with Image.open(rgb_path) as rgb, Image.open(gray_files[0 if multipage else index]) as gray:
+            if multipage:
+                assert gray.n_frames == 2
+                gray.seek(index)
+            with ImageCms.applyTransform(rgb, transform) as expected:
+                assert gray.mode == "L" and gray.size == expected_size
+                assert gray.tobytes() == expected.tobytes()
+                assert gray.info["icc_profile"] == export_route._get_gray_icc_bytes()
+                assert "transparency" not in gray.info
+    assert Path(src).read_bytes() == original_pdf
+
+
+@pytest.mark.parametrize("fmt,multipage", [("png", False), ("tiff", True)])
+def test_gray_transform_error_closes_images_and_rolls_back(tmp_path, monkeypatch, fmt, multipage):
+    """PERF (audit 2026-09-28 §PERF28.04): CMM lỗi không rò bitmap/file/khóa."""
+    from PIL import ImageCms
+
+    src = _make_pdf(tmp_path, 3)
+    out = tmp_path / "out"
+    original_apply = ImageCms.applyTransform
+    inputs = []
+
+    def fail_second(image, *args, **kwargs):
+        inputs.append(image)
+        if len(inputs) == 2:
+            raise ImageCms.PyCMSError("lỗi CMM giả lập")
+        return original_apply(image, *args, **kwargs)
+
+    monkeypatch.setattr(ImageCms, "applyTransform", fail_second)
+    with pytest.raises(ImageCms.PyCMSError, match="giả lập"):
+        render_pdf_to_images(
+            src, str(out), fmt=fmt, dpi=72, color_mode="gray", multipage_tiff=multipage,
+        )
+    assert list(out.iterdir()) == []
+    for image in inputs:
+        with pytest.raises(ValueError, match="closed"):
+            image.getpixel((0, 0))
+    monkeypatch.setattr(ImageCms, "applyTransform", original_apply)
+    files = render_pdf_to_images(src, str(out), dpi=72, color_mode="gray", pages=[1])
+    assert os.path.basename(files[0]) == "src_p01.png"
+
+
+@pytest.mark.parametrize("fmt,multipage", [("png", False), ("tiff", True)])
+def test_gray_cancel_during_transform_rolls_back(tmp_path, monkeypatch, fmt, multipage):
+    """PERF (audit 2026-09-28 §PERF28.04): hủy giữa CMM giữ rollback cả lượt."""
+    from PIL import ImageCms
+
+    src = _make_pdf(tmp_path, 3)
+    out = tmp_path / "out"
+    cancel = threading.Event()
+    original_apply = ImageCms.applyTransform
+    calls = []
+
+    def cancel_after_transform(*args, **kwargs):
+        result = original_apply(*args, **kwargs)
+        calls.append(True)
+        cancel.set()
+        return result
+
+    monkeypatch.setattr(ImageCms, "applyTransform", cancel_after_transform)
+    with pytest.raises(export_route.ExportCancelled):
+        render_pdf_to_images(
+            src, str(out), fmt=fmt, dpi=72, color_mode="gray", multipage_tiff=multipage,
+            cancel_event=cancel,
+        )
+    assert len(calls) == 1 and list(out.iterdir()) == []
+

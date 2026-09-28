@@ -19,7 +19,7 @@ import time
 
 ROOT = Path(__file__).resolve().parent.parent
 PREFIX = struct.Struct("<4sHHQIQ")
-PIPELINE = "ppe-fogra39-relative-view-knockout-png-v5-native-worker"
+PIPELINE = "ppe-fogra39-relative-view-knockout-png-v6-native-worker"
 
 
 def sha256(path: Path) -> str:

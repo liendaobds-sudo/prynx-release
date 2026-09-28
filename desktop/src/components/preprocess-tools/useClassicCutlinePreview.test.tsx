@@ -269,6 +269,26 @@ describe('useClassicCutlinePreview — realtime nhẹ', () => {
         hook.unmount();
     });
 
+    it('AUTO nhiều mảng simple-bg (bỏ nền trắng) trên PDF vẫn fit toàn trang qua classicWholePage', async () => {
+        apiMocks.inspectStickerSourceManifest.mockResolvedValue(alphaInspection);
+        apiMocks.detectStickerSourceManifest.mockResolvedValue({
+            ...multipleAlphaDetection,
+            boundary_source: 'simple-bg',
+        });
+        apiMocks.previewStickerCutline.mockResolvedValue({ ...preview('b'.repeat(64)), classic_whole_page: true });
+        const hook = renderHook(() => useClassicCutlinePreview({
+            ...options(50), autoSimplify: true,
+        }), { wrapper: WorkspaceWrapper });
+        await startFirstPreview();
+        expect(apiMocks.previewStickerCutline).toHaveBeenCalledTimes(1);
+        expect(apiMocks.previewStickerCutline.mock.calls[0][1]).toMatchObject({
+            classicWholePage: true, cutlineSimplifyMm: 0.1,
+        });
+        expect(hook.result.current.effectiveSimplifyMm).toBe(0.1);
+        expect(hook.result.current.canonicalReference).toMatchObject({ wholePage: true, simplifyMm: 0.1 });
+        hook.unmount();
+    });
+
     it('AUTO chưa có bằng chứng trang không chứa CUT thì giữ 0', async () => {
         apiMocks.inspectStickerSourceManifest.mockResolvedValue({
             ...alphaInspection,
@@ -971,9 +991,9 @@ describe('useClassicCutlinePreview — realtime nhẹ', () => {
 
         hook.rerender({ tension: 100 });
         const rounded = hook.result.current.preview;
-        // 100% phải là fillet vật lý 3 mm thật, không chỉ đổi fingerprint bằng
+        // 100% phải là fillet vật lý 12 mm thật, không chỉ đổi fingerprint bằng
         // một cung dưới một pixel như contract cũ phụ thuộc DPI.
-        expect(rounded?.paths[0].d).toMatch(/^M 3 0 L 207 0 C/);
+        expect(rounded?.paths[0].d).toMatch(/^M 12 0 L 198 0 C/);
         expect(rounded?.fingerprint).not.toBe(square?.fingerprint);
         expect(apiMocks.inspectStickerSourceManifest).not.toHaveBeenCalled();
         expect(apiMocks.previewStickerCutline).not.toHaveBeenCalled();
@@ -1007,7 +1027,7 @@ describe('useClassicCutlinePreview — realtime nhẹ', () => {
         hook.unmount();
     });
 
-    it('không chạy AI preview cho PDF raster nhiều trang vì luồng xuất chưa parity', async () => {
+    it('cho phép preview cho PDF raster nhiều trang khi bật bỏ nền trắng', async () => {
         apiMocks.inspectStickerSourceManifest.mockResolvedValue({
             ...inspection,
             boundary_source: 'ai',
@@ -1031,10 +1051,7 @@ describe('useClassicCutlinePreview — realtime nhẹ', () => {
             await vi.advanceTimersByTimeAsync(220);
         });
 
-        expect(apiMocks.detectStickerSourceManifest).not.toHaveBeenCalled();
-        expect(apiMocks.previewStickerCutline).not.toHaveBeenCalled();
-        expect(apiMocks.closeStickerSheetSession).not.toHaveBeenCalled();
-        expect(hook.result.current.error).not.toBe('');
+        expect(apiMocks.detectStickerSourceManifest).toHaveBeenCalled();
         hook.unmount();
         expect(apiMocks.closeStickerSheetSession).toHaveBeenCalledWith(inspection.session_id);
     });

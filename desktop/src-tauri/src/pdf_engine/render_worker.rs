@@ -37,8 +37,10 @@ pub const RENDER_WORKER_MAX_HEADER_BYTES: usize = 64 * 1024;
 pub const RENDER_WORKER_MAX_PAYLOAD_BYTES: u64 = 512 * 1024 * 1024;
 pub const RENDER_WORKER_FRAME_PREFIX_BYTES: usize = 4 + 2 + 2 + 8 + 4 + 8;
 pub const RENDER_WORKER_DISPLAY_PIPELINE_ID: &str = "pdfium-display-png-v1";
+// COLOR (audit 2026-09-28 §KNOCK.R3): pixel đã đổi shape/mesh; không dùng lại
+// identity v5 dù protocol truyền frame và cấu hình ICC vẫn giữ nguyên.
 pub const RENDER_WORKER_ACCURATE_PIPELINE_ID: &str =
-    "ppe-fogra39-relative-view-knockout-png-v5-native-worker";
+    "ppe-fogra39-relative-view-knockout-png-v6-native-worker";
 pub const PPE_NATIVE_FALLBACK_BEFORE_START_PREFIX: &str = "PPE_NATIVE_FALLBACK_BEFORE_START:";
 pub const PPE_NATIVE_UNSUPPORTED_PREFIX: &str = "PPE_NATIVE_UNSUPPORTED:";
 const RENDER_WORKER_MAX_ID_BYTES: usize = 256;
@@ -5158,6 +5160,8 @@ mod tests {
 
     #[test]
     fn soundness_duoc_phan_loai_thanh_compatibility_reason_co_cau_truc() {
+        assert_eq!(classify_unsupported_warnings(&RenderWarnings::default()), None);
+
         let mut image = RenderWarnings::default();
         image.dropped_objects = 1;
         image.note_skipped_op("Do ảnh (codec JPXDecode chưa được hỗ trợ)");
@@ -5171,6 +5175,13 @@ mod tests {
             ..Default::default()
         };
         knockout.note_skipped_op("Group /K true (knockout)");
+        assert_eq!(
+            classify_unsupported_warnings(&knockout).map(|value| value.0),
+            Some(RenderUnsupportedReason::KnockoutTransparency)
+        );
+        // COLOR (audit 2026-09-28 §KNOCK.R3): marker ngoài miền đã kiểm chứng
+        // vẫn chặn PNG, kể cả khi producer quên bật cờ transparency tổng quát.
+        knockout.unsupported_transparency = false;
         assert_eq!(
             classify_unsupported_warnings(&knockout).map(|value| value.0),
             Some(RenderUnsupportedReason::KnockoutTransparency)
@@ -5189,6 +5200,20 @@ mod tests {
             classify_unsupported_warnings(&geometry).map(|value| value.0),
             None
         );
+    }
+
+    #[test]
+    fn pixel_identity_tach_cache_truoc_khi_doi_knockout_shape_va_mesh() {
+        assert_eq!(RENDER_WORKER_ACCURATE_PIPELINE_ID,
+            "ppe-fogra39-relative-view-knockout-png-v6-native-worker");
+        assert_eq!(crate::TILE_RENDER_CACHE_VERSION,
+            "v12_view_semantics_transparent_bg_png");
+        let RenderWorkerRequest::Hello(mut request) = hello_request() else { unreachable!() };
+        request.expected_tile_cache_version = "v10_view_semantics_opaque_white_png".into();
+        let response = hello_response(request);
+        assert!(!response.ok);
+        assert_eq!(response.tile_cache_version, crate::TILE_RENDER_CACHE_VERSION);
+        assert!(response.error.as_deref().is_some_and(|error| error.contains("tile cache")));
     }
 
     #[test]
@@ -6479,6 +6504,12 @@ mod tests {
             std::fs::canonicalize(&path).unwrap()
         );
 
+        // COLOR (audit 2026-09-28 §KNOCK.R3): frontend/worker cũ không được
+        // gán nhãn pixel v5 cho kết quả đã đổi shape/mesh của engine mới.
+        request.pipeline_identity = "ppe-fogra39-relative-view-knockout-png-v5-native-worker".into();
+        assert!(validate_render_request(&request).unwrap_err().contains("accurate color-verified"));
+        request.pipeline_identity = RENDER_WORKER_ACCURATE_PIPELINE_ID.into();
+
         request.session_owner_id = None;
         assert!(validate_render_request(&request)
             .unwrap_err()
@@ -6540,6 +6571,89 @@ mod tests {
         let canonical = std::fs::canonicalize(path).unwrap();
         close_accurate_sessions_for_path(&canonical.to_string_lossy());
         std::fs::remove_file(canonical).unwrap();
+    }
+
+    #[test]
+    #[ignore = "cần PRYNX_PPE_KNOCKOUT_TEST_PDF trỏ corpus ATB gốc đúng SHA-256"]
+    fn worker_knockout_atb_trang_1_doc_lai_png_trang_21_van_dong() {
+        // COLOR (audit 2026-09-28 §KNOCK.R4): xác minh chính consumer worker,
+        // không suy kết quả classifier/PNG từ test core hoặc bản PyO3 đã cài.
+        // Corpus nằm ngoài repo; khóa hash để không áp kỳ vọng lên PDF khác.
+        const SOURCE_SHA256: &str =
+            "a9f7d569521ef01955e87b72251c1c12164513640e4265cad65a977c83263565";
+        let path = std::env::var("PRYNX_PPE_KNOCKOUT_TEST_PDF")
+            .expect("đặt PRYNX_PPE_KNOCKOUT_TEST_PDF là PDF ATB gốc");
+        assert_eq!(sha256_file(Path::new(&path)).unwrap(), SOURCE_SHA256);
+        let token = crate::pdf_file_identity_token(crate::pdf_file_identity(&path).unwrap());
+        let canonical = validate_document_path(&path, Some(&token)).unwrap();
+        struct Cleanup(String);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                close_accurate_sessions_for_path(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(canonical);
+        let request = |page| {
+            let mut request = validation_request(&path, token.clone());
+            request.request_id = format!("knockout-atb-{page}");
+            request.session_owner_id = Some("viewer:test-knockout-atb".into());
+            request.page = page;
+            request.raster = RenderRaster::Dpi { dpi: 36.0, clip: None };
+            request.color = RenderColor {
+                pipeline: RenderColorPipeline::Accurate,
+                profile_id: Some("fogra39".into()),
+                intent: Some("relative".into()),
+            };
+            request.purpose = RenderPurpose::Accurate;
+            request.pipeline_identity = RENDER_WORKER_ACCURATE_PIPELINE_ID.into();
+            request.soundness = RenderSoundness::ColorVerified;
+            request
+        };
+
+        let (first_response, first_png) = super::render_response(request(1), None);
+        assert_eq!(first_response.status, RenderResponseStatus::Ready, "{first_response:?}");
+        assert_eq!(first_response.unsupported_reason, None);
+        assert_eq!(first_response.pipeline_identity, RENDER_WORKER_ACCURATE_PIPELINE_ID);
+        assert_eq!(first_response.soundness, RenderSoundness::ColorVerified);
+        assert_eq!((first_response.bitmap_width, first_response.bitmap_height), (Some(354), Some(425)));
+        let decoded = image::load_from_memory_with_format(&first_png, image::ImageFormat::Png)
+            .expect("PNG worker phải giải mã được sau khi classifier cho phép")
+            .to_rgb8();
+        assert_eq!(decoded.dimensions(), (354, 425));
+        let non_white = decoded.pixels().filter(|pixel| pixel.0.iter().any(|channel| *channel < 240)).count();
+        assert!(non_white > 15_000, "không chấp nhận PNG trắng/rỗng: {non_white}");
+        // Logo ATB ở góc trên phải có mảng cam; không chấp nhận ảnh xám hoặc
+        // chỉ đúng kích thước. Đây là smoke pixel, không chứng nhận RIP exact.
+        let orange_logo = decoded.enumerate_pixels().filter(|(x, y, pixel)| {
+            let [r, g, b] = pixel.0;
+            (250..330).contains(x) && (15..55).contains(y)
+                && r > 200 && (35..180).contains(&g) && b < 110 && r > g.saturating_add(40)
+        }).count();
+        assert!(orange_logo > 150, "logo ATB phải giữ màu cam: {orange_logo}");
+
+        // Trang 21 chứa knockout ngoài miền vector đã chứng minh. Worker phải
+        // từ chối, không phát pixel thử nghiệm dưới nhãn color-verified.
+        let (complex_response, complex_png) = super::render_response(request(21), None);
+        assert_eq!(complex_response.status, RenderResponseStatus::Unsupported, "{complex_response:?}");
+        assert_eq!(complex_response.unsupported_reason, Some(RenderUnsupportedReason::KnockoutTransparency));
+        assert!(complex_png.is_empty());
+        assert_eq!((complex_response.bitmap_width, complex_response.bitmap_height), (None, None));
+        assert_eq!(sha256_file(Path::new(&path)).unwrap(), SOURCE_SHA256);
+        eprintln!("KNOCKOUT_ATB_WORKER {}", serde_json::json!({
+            "scope": "render_response + classifier + decoded PNG; no GUI/stdio",
+            "source_sha256": SOURCE_SHA256,
+            "pipeline_identity": first_response.pipeline_identity,
+            "page_1_status": first_response.status,
+            "page_1_png_sha256": hex::encode(sha2::Sha256::digest(&first_png)),
+            "page_1_dimensions": [decoded.width(), decoded.height()],
+            "page_1_non_white_pixels": non_white,
+            "page_1_orange_logo_pixels": orange_logo,
+            "page_1_timing": first_response.timing,
+            "page_21_status": complex_response.status,
+            "page_21_unsupported_reason": complex_response.unsupported_reason,
+            "page_21_timing": complex_response.timing,
+            "test_executable_sha256": sha256_file(&std::env::current_exe().unwrap()).unwrap(),
+        }));
     }
 
     #[test]

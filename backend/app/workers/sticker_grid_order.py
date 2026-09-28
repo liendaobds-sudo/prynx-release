@@ -179,7 +179,11 @@ def build_sticker_grid_order(doc, settings, *, logical_page_count=None, repeat_t
                           for rotated in (False, True)]
     for raw in raw_candidates:
         rotated = bool(raw.get("isRotated"))
-        raw = apply_alternate_rotation(raw, settings.get("alternateRotation", "none"))
+        raw = apply_alternate_rotation(
+            raw,
+            settings.get("alternateRotation", "none"),
+            settings.get("alternateRotationAlignment", settings.get("alternate_rotation_alignment", "foot_to_foot")),
+        )
         bx = left if "left" in align else width - right - raw["width"] if "right" in align else left + (usable_w - raw["width"]) / 2
         by = top if "top" in align else height - bottom - raw["height"] if "bottom" in align else top + (usable_h - raw["height"]) / 2
         slots = []

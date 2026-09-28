@@ -642,15 +642,20 @@ def _enforce_manifest_admission(
     output_path: str,
 ) -> None:
     """Từ chối trước append nếu expansion chắc chắn vượt ngân sách máy hiện tại."""
+    from app.core.system_memory import read_memory_tier_mb
+
     total_mb, available_mb = read_memory_status_mb()
+    # PERF (audit 2026-09-28 §PERF28.03): chỉ trần trang theo tier installed;
+    # reserve/fraction/working-set bên dưới vẫn dùng usable và available thật.
+    tier_mb = read_memory_tier_mb(total_mb)
     env_page_cap = _positive_env_limit("PRYNX_MANIFEST_MAX_PAGES")
     page_cap = env_page_cap
     cap_reason = "PRYNX_MANIFEST_MAX_PAGES" if env_page_cap is not None else ""
-    if page_cap is None and total_mb is not None:
-        if total_mb < 8 * 1024:
+    if page_cap is None and tier_mb is not None:
+        if tier_mb < 8 * 1024:
             page_cap = LOW_RAM_MAX_EXPANDED_PAGES
             cap_reason = "máy dưới 8 GB RAM"
-        elif total_mb < 16 * 1024:
+        elif tier_mb < 16 * 1024:
             page_cap = MID_RAM_MAX_EXPANDED_PAGES
             cap_reason = "máy dưới 16 GB RAM"
 

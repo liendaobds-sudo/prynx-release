@@ -309,6 +309,9 @@ export async function sendCutlineDebugLog(
     message: string,
     fields: Record<string, unknown> = {},
 ): Promise<void> {
+    if (!import.meta.env.DEV) {
+        return;
+    }
     try {
         await authenticatedFetch(`${getApiUrl()}/sticker-sheet/debug-log`, {
             method: 'POST',

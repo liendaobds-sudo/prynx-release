@@ -177,3 +177,25 @@ def test_whole_page_worker_process_handles_later_page_without_single_instance_li
     inline = _render_classic_page(str(source), 12, (600, 600), geometry)
     assert result["paths"][0]["d"] == inline[0]
     assert result["segment_count"] == inline[1]
+
+
+@pytest.mark.parametrize("boundary", ["simple-bg", "ai", "vector"])
+def test_whole_page_worker_supports_non_alpha_boundary_sources(boundary):
+    from types import SimpleNamespace
+    from threading import RLock
+    from app.workers.sticker_classic_page_preview import build_classic_page_preview
+
+    source = Path(__file__).resolve().parents[2] / "test/Binder2.pdf"
+    if not source.exists():
+        pytest.skip("Corpus Binder2 riêng")
+    page = SimpleNamespace(stage="mask-review", boundary_source=boundary, operation_lock=RLock(),
+                           manifest={"mask_revision": 7, "instances": [{"id": x} for x in range(1,7)]},
+                           preview_width_px=600, preview_height_px=600)
+    session = SimpleNamespace(source_kind="pdf", source_path=source, pages={12: page})
+    result = build_classic_page_preview(session, page_number=12, base_revision=7, edits=[],
+        offset_mm=2, bleed_mm=0, cut_mode="original", corner_style="preserve", fill_holes=True,
+        cutline_smoothness=50, cutline_fidelity=50, curve_tension=50,
+        min_detail_area_mm2=1, cutline_denoise=30, cutline_simplify_mm=0)
+    assert result["page_number"] == 12 and result["mask_revision"] == 7
+    assert 0 < result["segment_count"]
+

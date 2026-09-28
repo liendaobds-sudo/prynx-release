@@ -1,0 +1,445 @@
+{
+  "schema_version": 1,
+  "date": "2026-09-28",
+  "status": "AUDIT_ONLY_AWAITING_APPROVAL",
+  "git_head": "bc3d6d5b1761e5c5309eb589ec6eb58ac31b3f58",
+  "working_tree_dirty": true,
+  "environment": {
+    "os": "Windows build 26200, x64",
+    "python": "3.11.9",
+    "logical_cpus": 16,
+    "installed_mib": 32768,
+    "usable_mib": 32527.9140625,
+    "versions": {
+      "fastapi": "0.138.1",
+      "pydantic": "2.13.5",
+      "pypdfium2": "5.13.0",
+      "Pillow": "12.3.0",
+      "openpyxl": "3.1.5",
+      "numpy": "1.26.4"
+    },
+    "cpu_model": "Not collected; WMI read denied. No escalation for this optional metadata."
+  },
+  "source_sha256": [
+    {
+      "path": "backend/app/core/system_memory.py",
+      "sha256": "7f0c4d5d6744d168bff03a6eee21b03136b4d40d623d746fb67ad69162952cb9"
+    },
+    {
+      "path": "backend/app/core/heavy_job_scheduler.py",
+      "sha256": "da0251741e744637d8fb2563b9a71820b7f386b3403fc51dfb167fff0c3cbb01"
+    },
+    {
+      "path": "backend/app/api/routes/qc.py",
+      "sha256": "50736abc1976c3a120a0244e6c76c35df194f55884e69dc219e5db441c9905d3"
+    },
+    {
+      "path": "backend/app/core/llm_checker.py",
+      "sha256": "23811a219fd5a898df45fb2da847a72cccb7fae0787da6fbc6fd04051320ee54"
+    },
+    {
+      "path": "backend/app/api/routes/vdp.py",
+      "sha256": "129c6a32960b6ed2af0aaa3a418c4b4d442b0551c6d02d833a04096eb63de8dd"
+    },
+    {
+      "path": "backend/app/workers/vdp_datasource.py",
+      "sha256": "a45e35809d48c60ecb36acc27f94c5cb0ab5c951112f131db532484c672c7e7b"
+    },
+    {
+      "path": "backend/app/workers/vdp_preview.py",
+      "sha256": "e605e4f2f516c6baee6fb39c45852952861d59fccc1961905d71dae0ad744499"
+    },
+    {
+      "path": "backend/app/api/routes/export.py",
+      "sha256": "0ee8e18cbe9365b7b683274ffbf0908092e9964d96048fa8c5e695824e1642d5"
+    },
+    {
+      "path": "backend/app/core/comparison_engine.py",
+      "sha256": "08ee492f2b8671c4aaa308dbbaafdd67288b78b6cb24c6e9033822d6b8ea4cc1"
+    },
+    {
+      "path": "desktop/src/i18n/index.ts",
+      "sha256": "d1b31a5ee898eb91ff8cb6cddf7674b168be04873003afa07bb617d861f1186d"
+    },
+    {
+      "path": "desktop/src-tauri/src/lib.rs",
+      "sha256": "0c8f1ca40c88c5f097bf12b0e462c849fd6f954b97b314b6c75b1709e9724c0e"
+    },
+    {
+      "path": "docs/audit/PERF_2026-09-28/probe.py",
+      "sha256": "34a7392a8620f535a750a4fbb8a55a7155da971693798a56d99a6a4c3a4b4187"
+    },
+    {
+      "path": "docs/audit/PERF_2026-09-28/compare_probe.py",
+      "sha256": "34ceba3d7ed57ee7d9717eb8abd4d48705b5e2ff6f1e5abf45aee6b31fbf6edf"
+    }
+  ],
+  "methodology": {
+    "runs": "N=3 exploratory, not p95 confidence estimates",
+    "system_cache": "Not flushed; no cold-disk claim",
+    "isolation": "Temporary directories, SQLite memory, no real network, no production configuration changes",
+    "heartbeat": "Same asyncio loop, nominal 5ms sleep; actual Windows idle gap ~18.5ms; not network latency or browser FPS",
+    "licensing": "Dependencies supplied in direct route tests; benchmark token fixture injected only into isolated child, no server/auth guard source changes"
+  },
+  "routes": {
+    "cpu": 16,
+    "memory_mib": [
+      32527.9140625,
+      18890.56640625
+    ],
+    "installed_mib": 32768,
+    "scope": "Direct async route calls on one event loop with synthetic fixtures; no HTTP server, GUI, or installed runtime; license dependency supplied as fixture.",
+    "idle_control": {
+      "elapsed_ms": 231.507,
+      "max_heartbeat_gap_ms": 18.51
+    },
+    "qc_cloud_sync_transport_250ms": {
+      "n": 3,
+      "median_elapsed_ms": 250.466,
+      "median_max_heartbeat_gap_ms": 250.551,
+      "samples": [
+        {
+          "elapsed_ms": 250.466,
+          "max_heartbeat_gap_ms": 250.551
+        },
+        {
+          "elapsed_ms": 250.394,
+          "max_heartbeat_gap_ms": 250.477
+        },
+        {
+          "elapsed_ms": 250.6,
+          "max_heartbeat_gap_ms": 250.68
+        }
+      ]
+    },
+    "qc_offload_control_only_not_production": {
+      "elapsed_ms": 251.19,
+      "max_heartbeat_gap_ms": 16.095
+    },
+    "vdp_csv_100000_rows": {
+      "utf8_bytes": 3866810,
+      "n": 3,
+      "median_elapsed_ms": 176.637,
+      "median_max_heartbeat_gap_ms": 176.828,
+      "samples": [
+        {
+          "elapsed_ms": 176.637,
+          "max_heartbeat_gap_ms": 176.828
+        },
+        {
+          "elapsed_ms": 215.269,
+          "max_heartbeat_gap_ms": 215.363
+        },
+        {
+          "elapsed_ms": 164.746,
+          "max_heartbeat_gap_ms": 164.835
+        }
+      ]
+    },
+    "vdp_xlsx_10000_rows": {
+      "fixture_bytes": 306558,
+      "n": 3,
+      "median_elapsed_ms": 551.363,
+      "median_max_heartbeat_gap_ms": 542.113,
+      "samples": [
+        {
+          "elapsed_ms": 553.321,
+          "max_heartbeat_gap_ms": 542.113
+        },
+        {
+          "elapsed_ms": 551.363,
+          "max_heartbeat_gap_ms": 551.141
+        },
+        {
+          "elapsed_ms": 497.872,
+          "max_heartbeat_gap_ms": 497.767
+        }
+      ]
+    },
+    "vdp_real_preview_one_record": {
+      "consumer": "Registered API, no current UI caller found for previewVdpRecord; not proof of live-overlay lag.",
+      "image_size": [
+        1190,
+        1684
+      ],
+      "png_hashes": [
+        "8e012fed0adc9357bfaff8fa4d84e68a3005348b44368726a12f9342fc8cd503",
+        "8e012fed0adc9357bfaff8fa4d84e68a3005348b44368726a12f9342fc8cd503",
+        "8e012fed0adc9357bfaff8fa4d84e68a3005348b44368726a12f9342fc8cd503"
+      ],
+      "n": 3,
+      "median_elapsed_ms": 123.579,
+      "median_max_heartbeat_gap_ms": 123.671,
+      "samples": [
+        {
+          "elapsed_ms": 257.887,
+          "max_heartbeat_gap_ms": 257.97
+        },
+        {
+          "elapsed_ms": 102.913,
+          "max_heartbeat_gap_ms": 103.016
+        },
+        {
+          "elapsed_ms": 123.579,
+          "max_heartbeat_gap_ms": 123.671
+        }
+      ]
+    },
+    "worker_policy_reserved_ram_boundary": [
+      {
+        "usable_mib": 8192,
+        "available_mib": 6144,
+        "workers": 2
+      },
+      {
+        "usable_mib": 7952,
+        "available_mib": 5964,
+        "workers": 1
+      },
+      {
+        "usable_mib": 16384,
+        "available_mib": 12000,
+        "workers": 15
+      },
+      {
+        "usable_mib": 16144,
+        "available_mib": 12000,
+        "workers": 2
+      },
+      {
+        "usable_mib": 32768,
+        "available_mib": 12000,
+        "workers": 15
+      },
+      {
+        "usable_mib": 32528,
+        "available_mib": 12000,
+        "workers": 15
+      }
+    ],
+    "gray_export_transform_inside_pdfium_lock": [
+      {
+        "lock_owned": true,
+        "elapsed_ms": 80.583
+      },
+      {
+        "lock_owned": true,
+        "elapsed_ms": 78.795
+      },
+      {
+        "lock_owned": true,
+        "elapsed_ms": 79.678
+      }
+    ]
+  },
+  "compare": {
+    "command": ".\\backend\\venv\\Scripts\\python.exe -B docs/audit/PERF_2026-09-28/compare_probe.py --workers 1,cpu-1 --runs 3 --pages 20 --dpi 150 --stages",
+    "samples": [
+      {
+        "workers": 1,
+        "elapsed_s": 3.7751399999833666,
+        "first_page_s": 0.48601789999520406,
+        "peak_working_set_mib": 265.4609375,
+        "artifact_bytes": 9498432,
+        "stages": {
+          "render_s": 0.927,
+          "render_n": 40,
+          "compare_s": 2.335,
+          "compare_n": 20,
+          "save_s": 0.209,
+          "save_n": 14,
+          "commit_s": 0.143,
+          "commit_n": 9,
+          "main_serial_s": 1.28,
+          "unaccounted_s": 2.496
+        }
+      },
+      {
+        "workers": 15,
+        "elapsed_s": 1.6338432999909855,
+        "first_page_s": 0.47571319999406114,
+        "peak_working_set_mib": 413.609375,
+        "artifact_bytes": 9498432,
+        "stages": {
+          "render_s": 0.946,
+          "render_n": 40,
+          "compare_s": 2.56,
+          "compare_n": 20,
+          "save_s": 0.018,
+          "save_n": 14,
+          "commit_s": 0.07,
+          "commit_n": 8,
+          "main_serial_s": 1.034,
+          "unaccounted_s": 0.6
+        }
+      },
+      {
+        "workers": 15,
+        "elapsed_s": 1.6666011000052094,
+        "first_page_s": 0.47683780000079423,
+        "peak_working_set_mib": 410.59375,
+        "artifact_bytes": 9498432,
+        "stages": {
+          "render_s": 0.973,
+          "render_n": 40,
+          "compare_s": 2.51,
+          "compare_n": 20,
+          "save_s": 0.024,
+          "save_n": 14,
+          "commit_s": 0.078,
+          "commit_n": 8,
+          "main_serial_s": 1.074,
+          "unaccounted_s": 0.593
+        }
+      },
+      {
+        "workers": 1,
+        "elapsed_s": 3.404195500013884,
+        "first_page_s": 0.39398190000792965,
+        "peak_working_set_mib": 268.50390625,
+        "artifact_bytes": 9498432,
+        "stages": {
+          "render_s": 0.823,
+          "render_n": 40,
+          "compare_s": 2.204,
+          "compare_n": 20,
+          "save_s": 0.203,
+          "save_n": 14,
+          "commit_s": 0.064,
+          "commit_n": 8,
+          "main_serial_s": 1.09,
+          "unaccounted_s": 2.314
+        }
+      },
+      {
+        "workers": 1,
+        "elapsed_s": 3.47510300000431,
+        "first_page_s": 0.4132521999999881,
+        "peak_working_set_mib": 265.73828125,
+        "artifact_bytes": 9498432,
+        "stages": {
+          "render_s": 0.859,
+          "render_n": 40,
+          "compare_s": 2.211,
+          "compare_n": 20,
+          "save_s": 0.196,
+          "save_n": 14,
+          "commit_s": 0.091,
+          "commit_n": 8,
+          "main_serial_s": 1.147,
+          "unaccounted_s": 2.328
+        }
+      },
+      {
+        "workers": 15,
+        "elapsed_s": 1.655707900004927,
+        "first_page_s": 0.4803073999937624,
+        "peak_working_set_mib": 376.4296875,
+        "artifact_bytes": 9498432,
+        "stages": {
+          "render_s": 0.942,
+          "render_n": 40,
+          "compare_s": 2.51,
+          "compare_n": 20,
+          "save_s": 0.027,
+          "save_n": 14,
+          "commit_s": 0.096,
+          "commit_n": 8,
+          "main_serial_s": 1.065,
+          "unaccounted_s": 0.591
+        }
+      }
+    ],
+    "summary": [
+      {
+        "workers": 1,
+        "median_elapsed_s": 3.47510300000431,
+        "median_first_page_s": 0.4132521999999881,
+        "max_peak_working_set_mib": 268.50390625,
+        "artifact_bytes": 9498432,
+        "speedup_vs_1": 1,
+        "parity": true
+      },
+      {
+        "workers": 15,
+        "median_elapsed_s": 1.655707900004927,
+        "median_first_page_s": 0.47683780000079423,
+        "max_peak_working_set_mib": 413.609375,
+        "artifact_bytes": 9498432,
+        "speedup_vs_1": 2.0988623657554384,
+        "parity": true
+      }
+    ],
+    "scope": "Existing pipeline A/B worker configuration, not optimization made by this audit; synthetic 20-page corpus; no generalization to large-page process path",
+    "raw_log": "compare-output.txt"
+  },
+  "startup_import": {
+    "samples_ms": [
+      1151.222,
+      1392.074,
+      1213.179
+    ],
+    "median_ms": 1213.179,
+    "eager_modules": [
+      "cv2",
+      "numpy",
+      "pikepdf",
+      "httpx",
+      "reportlab",
+      "pypdfium2",
+      "pdfcompare_native"
+    ],
+    "scope": "Fresh Python process, app.main import only, no lifespan/server/UI; disk cache not flushed, no release build"
+  },
+  "locales": {
+    "samples": [
+      {
+        "lang": "vi",
+        "raw_bytes": 440700,
+        "compact_bytes": 396402,
+        "gzip_bytes": 132785,
+        "keys": 6084
+      },
+      {
+        "lang": "en",
+        "raw_bytes": 404680,
+        "compact_bytes": 360381,
+        "gzip_bytes": 126763,
+        "keys": 6084
+      }
+    ],
+    "scope": "Source JSON bytes + node compact/gzip, not production bundle or measured startup savings"
+  },
+  "tests": {
+    "backend_initial": {
+      "passed": 143,
+      "failed": 4,
+      "seconds": 45.25,
+      "failure": "Windows sandbox ProcessPoolExecutor named-pipe WinError 5"
+    },
+    "backend_parity_authorized_rerun": {
+      "passed": 27,
+      "seconds": 26.55,
+      "scope": "All cases in tests/test_compare_parallel_parity.py, including the four blocked cases"
+    },
+    "backend_unique_effective_passed": 147,
+    "frontend": {
+      "passed": 48,
+      "failed": 1,
+      "files": 6,
+      "seconds": 7.69,
+      "failure": "i18nCatalog: misc.acrobatViewer:compatibility_preview_warning absent from vi.json; call introduced by pre-existing dirty AcrobatViewer.tsx"
+    },
+    "typecheck": "PASS",
+    "full_suite": "NOT RUN",
+    "rust_build": "NOT RUN",
+    "app_build": "NOT RUN",
+    "gui_runtime": "NOT RUN",
+    "physical_8_16_gib": "NOT RUN"
+  },
+  "boundaries": [
+    "No production files edited",
+    "No builds, commits, snapshot updates, process termination, user PDF edits, or real cloud QC calls",
+    "Current viewer/PPE dirty source and historical binary benchmarks must not be treated as the same revision"
+  ]
+}

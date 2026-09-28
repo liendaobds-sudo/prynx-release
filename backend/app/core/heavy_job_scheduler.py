@@ -24,12 +24,8 @@ def _default_heavy_slots() -> tuple[int, str]:
     - ``<8 GB``  → 1 slot. Đây là phần bị thiếu: hai việc nặng song song (chuyển đổi
       Office, resize, tách nền, upscale) trên máy 8 GB đủ để đẩy máy vào swap.
     - ``<16 GB`` → 2 slot (giữ như cũ).
-    - ``>=16 GB`` → 2 slot, **giữ nguyên như cũ một cách CỐ Ý**. Nới lên cho máy mạnh là
-      thay đổi hành vi runtime của đúng những feature đã từng treo (xem
-      ``docs/BAO_CAO_AUDIT_UPSCALE_TREO_2026-07-28.md``, COM/LibreOffice nhiều instance),
-      nên phải đo và duyệt riêng chứ không nới âm thầm trong đợt audit kiến trúc.
-      Máy mạnh cũng KHÔNG bị kìm oan: những job trải hết lõi (bình bản, VDP, tem,
-      preflight) không đi qua scheduler này mà có trần riêng + process pool riêng.
+    - ``>=16 GB`` → 3 slot; ``>=64 GB`` → 4 slot. Các gate theo loại việc ở
+      dưới vẫn cách ly Office và các job trải hết máy, không nhân đôi process pool.
     - Không đọc được RAM → 2 slot, y như trước.
 
     ``PRYNX_MAX_HEAVY_JOBS`` vẫn ghi đè được cả hai chiều.
@@ -43,9 +39,12 @@ def _default_heavy_slots() -> tuple[int, str]:
         if forced > 0:
             return forced, f"env PRYNX_MAX_HEAVY_JOBS={forced}"
 
-    from app.core.system_memory import read_memory_status_mb
+    from app.core.system_memory import read_memory_status_mb, read_memory_tier_mb
 
-    total_mb, _available_mb = read_memory_status_mb()
+    usable_mb, _available_mb = read_memory_status_mb()
+    # PERF (audit 2026-09-28 §PERF28.03 B2a): reserved không làm hạ hạng máy;
+    # các reservation phía dưới vẫn đọc usable/available, không dùng tier này.
+    total_mb = read_memory_tier_mb(usable_mb)
     if total_mb is None:
         return 2, "ram_total_mb=unknown"
     if total_mb < 8 * 1024:

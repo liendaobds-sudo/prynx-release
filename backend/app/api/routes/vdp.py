@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Depends
-from fastapi.responses import FileResponse, Response
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 import os
@@ -928,7 +929,12 @@ async def _read_table_from_source(
         )
 
     try:
-        return read_source(normalized, payload, sheet=sheet, has_header=has_header)
+        # PERF (audit 2026-09-28 §PERF28.02): chỉ chuyển bytes/text đã đọc sang
+        # pool thường; parse Excel/CSV và chờ Sheets không chiếm event loop hay
+        # heavy slot. Không đưa UploadFile hoặc handle PDFium qua luồng khác.
+        return await run_in_threadpool(
+            read_source, normalized, payload, sheet=sheet, has_header=has_header
+        )
     except DataSourceError as exc:
         raise HTTPException(status_code=400, detail=exc.message)
 
@@ -992,7 +998,19 @@ async def _resolve_table(
     """
     if kind:
         return await _read_table_from_source(kind, file, url, text, sheet, has_header)
-    return _table_from_rows(rows_json, columns_json)
+    if rows_json is None:
+        return None
+    # PERF (audit 2026-09-28 §PERF28.02): nguồn đã nạp vẫn phải parse/copy
+    # toàn bộ rows JSON; không để đường validate/preview/report chặn vòng lặp.
+    return await run_in_threadpool(_table_from_rows, rows_json, columns_json)
+
+
+def _datasource_json_response(result: dict) -> JSONResponse:
+    """Tạo cùng JSON như FastAPI, nhưng không chạy trên vòng xử lý request."""
+    # PERF (audit 2026-09-28 §PERF28.02 A3): full rows còn tốn recursion và
+    # dumps sau khi parser đã offload. Giữ encoder mặc định (kể cả lọc _sa),
+    # byte/header cũ; không cắt bớt record hoặc đổi định dạng dữ liệu.
+    return JSONResponse(jsonable_encoder(result))
 
 
 @router.post("/datasource")
@@ -1023,7 +1041,7 @@ async def read_datasource(
     }
     if include_all_rows:
         result["rows"] = table.rows
-    return result
+    return await run_in_threadpool(_datasource_json_response, result)
 
 
 @router.post("/datasource/sheets")
@@ -1034,7 +1052,8 @@ async def read_datasource_sheets(
     """Liệt kê tên sheet của một file Excel ``.xlsx`` để người dùng chọn (Req 1.3)."""
     data = await file.read()
     try:
-        sheets = list_xlsx_sheets(data)
+        # PERF (audit 2026-09-28 §PERF28.02): mở workbook cũng là việc chặn.
+        sheets = await run_in_threadpool(list_xlsx_sheets, data)
     except DataSourceError as exc:
         raise HTTPException(status_code=400, detail=exc.message)
     return {"sheets": sheets}
@@ -1066,7 +1085,9 @@ async def validate_vdp(
         kind, file, url, text, sheet, has_header, rows, columns
     )
 
-    issues = validate_batch(vdp_fields, table)
+    # PERF (audit 2026-09-28 §PERF28.02): validator quét đủ record/đường ảnh,
+    # thuần dữ liệu, không render PDF; dùng pool thường như bước đọc nguồn.
+    issues = await run_in_threadpool(validate_batch, vdp_fields, table)
     gating = gating_state(issues)
 
     return {
@@ -1230,7 +1251,9 @@ async def error_report_vdp(
         table = await _resolve_table(
             kind, file, url, text, sheet, has_header, rows, columns
         )
-        issue_list = validate_batch(vdp_fields, table)
+        # PERF (audit 2026-09-28 §PERF28.02): báo cáo dùng cùng validator,
+        # không để nhánh tính lại lỗi quay về chạy đồng bộ trên event loop.
+        issue_list = await run_in_threadpool(validate_batch, vdp_fields, table)
     else:
         raise HTTPException(
             status_code=400,

@@ -1,0 +1,109 @@
+{
+  "date": "2026-09-28",
+  "baseline_commit": "bc3d6d5b1761e5c5309eb589ec6eb58ac31b3f58",
+  "workspace_dirty": true,
+  "command": "npx vitest run --config ../docs/audit/WHITE_BORDER_2026-09-28/ui_contract_probe.config.mts",
+  "diagnostic_passed": 3,
+  "meaning": "3 ca xác nhận hiện tượng lỗi, không phải nghiệm thu bản sửa; mock I/O, callback/store/hooks thật",
+  "observations": {
+    "trim_metadata": {
+      "artifact": {
+        "label": "original-1",
+        "width": 160,
+        "height": 60,
+        "rotate": 0
+      },
+      "beforeDims": {
+        "w": 266.66666666666663,
+        "h": 133.33333333333331
+      },
+      "afterDims": {
+        "w": 266.66666666666663,
+        "h": 133.33333333333331
+      },
+      "loads": 1
+    },
+    "trim_double_bake": {
+      "beforeSecondBake": [
+        {
+          "label": "original-3",
+          "width": 300,
+          "height": 70,
+          "rotate": 90
+        },
+        {
+          "label": "original-1",
+          "width": 100,
+          "height": 50,
+          "rotate": 0
+        },
+        {
+          "label": "original-1",
+          "width": 100,
+          "height": 50,
+          "rotate": 180
+        }
+      ],
+      "afterSecondBake": [
+        {
+          "label": "original-1",
+          "width": 100,
+          "height": 50,
+          "rotate": 270
+        },
+        {
+          "label": "original-3",
+          "width": 300,
+          "height": 70,
+          "rotate": 90
+        },
+        {
+          "label": "original-3",
+          "width": 300,
+          "height": 70,
+          "rotate": 270
+        }
+      ]
+    },
+    "trim_stale_publish": {
+      "replacedName": "newer.pdf",
+      "finalName": "trimmed.pdf"
+    }
+  },
+  "source_sha256": [
+    {
+      "Path": "D:\\pdfcompare\\backend\\app\\core\\page_boxes.py",
+      "Hash": "F7ABA3264EA81B874D80DE2E727B6D44EBDC67CC25B1405F3BCEC113A57472BF"
+    },
+    {
+      "Path": "D:\\pdfcompare\\backend\\app\\workers\\resize_background_engine.py",
+      "Hash": "67D9CC52064C992B312740FB80CE294D4ED576CBA1AF64F2F554A4E8FB26CC63"
+    },
+    {
+      "Path": "D:\\pdfcompare\\backend\\app\\workers\\sticker_engine.py",
+      "Hash": "E188EFCCCE3CEA5C038AD115ECD42E26988BEAA0AC5976158D886E93E68EB683"
+    },
+    {
+      "Path": "D:\\pdfcompare\\desktop\\src\\components\\AcrobatViewer.tsx",
+      "Hash": "9AD5B181C41B1551B776EEA35C0858571AADB5D7EA8AC1ACB897FA9B0AF6562D"
+    },
+    {
+      "Path": "D:\\pdfcompare\\desktop\\src\\components\\ImpositionTab.tsx",
+      "Hash": "7E3C64720B2C3B92AECF40536ABF6DEE6337ACBB80EDF6258F22EB0F86C1F43F"
+    },
+    {
+      "Path": "D:\\pdfcompare\\desktop\\src\\hooks\\useWorkingPdf.ts",
+      "Hash": "F555A05C88251B072E3A55FE720BBE05CE9B6A89E299B10FEFCA65F78E406F89"
+    },
+    {
+      "Path": "D:\\pdfcompare\\desktop\\src\\hooks\\viewer\\usePdfLoader.ts",
+      "Hash": "CFDF7A997E631FC5383E01E3F755D40D440E918C47B9B0A1EB65AF7B4D95E5F9"
+    }
+  ],
+  "baseline_tests": {
+    "backend": 168,
+    "frontend": 122,
+    "total": 290
+  },
+  "runtime_verified": false
+}

@@ -11,8 +11,10 @@ from PIL import Image
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
+from app.workers.sticker_bleed_masks import _bleed_roi_bbox
 from app.workers.sticker_engine import (
     StickerEngine,
+    _band_tiles,
     _build_feathered_bleed_join_mask,
 )
 
@@ -215,3 +217,40 @@ def test_low_dpi_alpha_fringe_is_fully_covered_at_bleed_join(tmp_path):
     pale_share = float(np.mean(np.max(np.abs(colors - PALE_CYAN), axis=1) < 12))
     assert blue_share > 0.95
     assert pale_share < 0.01
+
+
+def test_bleed_roi_bbox_large_mask_memory_and_accuracy():
+    """Kiểm tra _bleed_roi_bbox tính chính xác bbox và không bị ArrayMemoryError với mask hàng triệu pixel."""
+    # Mask rỗng
+    empty = np.zeros((100, 100), dtype=np.uint8)
+    assert _bleed_roi_bbox(empty) is None
+
+    # Mask nhỏ toạ độ cụ thể: y từ 20 đến 49, x từ 30 đến 79
+    sample = np.zeros((100, 100), dtype=np.uint8)
+    sample[20:50, 30:80] = 1
+    y0, y1, x0, x1 = _bleed_roi_bbox(sample, margin=5)
+    assert y0 == 15
+    assert y1 == 55
+    assert x0 == 25
+    assert x1 == 85
+
+    # Mask kích thước lớn mô phỏng trang A4 300 DPI (2480 x 3508) gần kín trang (hơn 8 triệu pixel)
+    large = np.zeros((3508, 2480), dtype=np.uint8)
+    large[10:3500, 10:2470] = 1
+    y0, y1, x0, x1 = _bleed_roi_bbox(large, margin=8)
+    assert y0 == 2
+    assert y1 == 3508
+    assert x0 == 2
+    assert x1 == 2478
+
+
+def test_band_tiles_generator_on_dense_band():
+    """Kiểm tra _band_tiles sinh tile chính xác trên band dày."""
+    band = np.zeros((1000, 1000), dtype=np.uint8)
+    band[100:200, 100:200] = 1
+    tiles = list(_band_tiles(band, band_radius=10, tile=256))
+    assert len(tiles) >= 1
+    gy0, gy1, gx0, gx1, cy0, cy1, cx0, cx1 = tiles[0]
+    assert cy0 == 100
+    assert cx0 == 100
+

@@ -51,6 +51,8 @@ import zlib
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
+from app.core.system_memory import memory_tier_mb
+
 logger = logging.getLogger(__name__)
 
 # Nhãn `accuracy` trả về. Giữ nguyên chuỗi mà `separations.py` đang dùng để
@@ -298,6 +300,8 @@ def _auto_memory_budget_mb(
     total_ram_mb: float | None,
     available_ram_mb: float | None,
     concurrency: int = 1,
+    *,
+    tier_ram_mb: float | None = None,
 ) -> int:
     """Chọn ngân sách PPE theo tier RAM, không hard-cap máy mạnh.
 
@@ -313,15 +317,18 @@ def _auto_memory_budget_mb(
     slots = max(1, int(concurrency))
     if total_ram_mb is None or total_ram_mb <= 0:
         return 512
+    # PERF (audit 2026-09-28 §PERF28.03 B2h): RAM lắp đặt chỉ chọn hạng;
+    # ngân sách vẫn lấy usable/available thật, không cộng phần reserved.
+    tier_mb = memory_tier_mb(total_ram_mb, tier_ram_mb) or total_ram_mb
     available = available_ram_mb if available_ram_mb and available_ram_mb > 0 else None
-    if total_ram_mb < 8 * 1024:
+    if tier_mb < 8 * 1024:
         if available is None:
             return 384
         # PERF (audit 2026-08-10 §PPE.SCOPE.8): máy low-tier còn sạch cần đủ
         # ngân sách cho Export CMYK 300 DPI; khi RAM trống giảm, 25%/slot co
         # budget xuống trước khi hệ thống phải swap.
         return max(256, min(640, int(available * 0.25 / slots)))
-    if total_ram_mb < 16 * 1024:
+    if tier_mb < 16 * 1024:
         if available is None:
             return 1024
         return max(512, min(1024, int(available * 0.50 / slots)))
@@ -335,7 +342,7 @@ def _auto_memory_budget_mb(
 def _memory_budget_mb() -> int:
     """Ngân sách mỗi lần render: env/config ghi đè, còn lại tự chọn theo RAM."""
     from app.config import settings
-    from app.core.system_memory import read_memory_status_mb
+    from app.core.system_memory import read_memory_status_mb, read_memory_tier_mb
 
     override = getattr(settings, "PRYNX_PPE_MEMORY_BUDGET_MB", None)
     if override is not None:
@@ -346,7 +353,10 @@ def _memory_budget_mb() -> int:
     from app.core.heavy_job_scheduler import max_active_heavy_jobs
 
     total_mb, available_mb = read_memory_status_mb()
-    value = _auto_memory_budget_mb(total_mb, available_mb, max_active_heavy_jobs())
+    value = _auto_memory_budget_mb(
+        total_mb, available_mb, max_active_heavy_jobs(),
+        tier_ram_mb=read_memory_tier_mb(total_mb),
+    )
     if value <= 0:  # chốt phòng vệ cho mọi thay đổi chính sách về sau
         raise ValueError("PRYNX_PPE_MEMORY_BUDGET_MB must be greater than zero")
     return value
@@ -355,6 +365,8 @@ def _memory_budget_mb() -> int:
 def _auto_session_cache_budget_mb(
     total_ram_mb: float | None,
     available_ram_mb: float | None,
+    *,
+    tier_ram_mb: float | None = None,
 ) -> int:
     """Ngân sách cache sống lâu của một document session.
 
@@ -364,11 +376,13 @@ def _auto_session_cache_budget_mb(
     """
     if total_ram_mb is None or total_ram_mb <= 0:
         return 128
+    # PERF (audit 2026-09-28 §PERF28.03 B2h): cùng hợp đồng tier/budget như render.
+    tier_mb = memory_tier_mb(total_ram_mb, tier_ram_mb) or total_ram_mb
     available = available_ram_mb if available_ram_mb and available_ram_mb > 0 else None
-    if total_ram_mb < 8 * 1024:
+    if tier_mb < 8 * 1024:
         basis = available if available is not None else total_ram_mb
         return max(32, min(96, int(basis * 0.08)))
-    if total_ram_mb < 16 * 1024:
+    if tier_mb < 16 * 1024:
         basis = available if available is not None else total_ram_mb
         return max(96, min(256, int(basis * 0.12)))
     basis = available if available is not None else total_ram_mb
@@ -377,10 +391,12 @@ def _auto_session_cache_budget_mb(
 
 def _session_cache_budget_mb() -> int:
     """Ngân sách resource cache cho một session theo RAM khả dụng."""
-    from app.core.system_memory import read_memory_status_mb
+    from app.core.system_memory import read_memory_status_mb, read_memory_tier_mb
 
     total_mb, available_mb = read_memory_status_mb()
-    return _auto_session_cache_budget_mb(total_mb, available_mb)
+    return _auto_session_cache_budget_mb(
+        total_mb, available_mb, tier_ram_mb=read_memory_tier_mb(total_mb),
+    )
 
 
 _NativeResult = TypeVar("_NativeResult")

@@ -1,7 +1,8 @@
 """Đọc RAM vật lý mà không thêm phụ thuộc ``psutil``.
 
-Đường Windows dùng ``GlobalMemoryStatusEx``; Linux đọc ``/proc/meminfo``.
-Mọi lỗi trả ``(None, None)`` để caller áp chính sách bảo thủ thay vì làm hỏng job.
+RAM OS dùng được/khả dụng: Windows dùng ``GlobalMemoryStatusEx``, Linux đọc
+``/proc/meminfo``. RAM lắp đặt trên Windows được đọc riêng để phân hạng máy,
+không thay thế ngân sách bộ nhớ thật. Không đọc được thì trả ``None`` ở trường đó.
 """
 
 from __future__ import annotations
@@ -34,7 +35,7 @@ def estimate_pdf_worker_mb(source_bytes: int, *, raster_mb: float = 0.0) -> floa
 
 
 def read_memory_status_mb() -> tuple[float | None, float | None]:
-    """Trả ``(tổng RAM, RAM khả dụng)`` theo MiB."""
+    """Trả ``(RAM OS dùng được, RAM khả dụng)`` theo MiB, không phải RAM lắp đặt."""
     if os.name == "nt":
         try:
             import ctypes
@@ -74,6 +75,47 @@ def read_memory_status_mb() -> tuple[float | None, float | None]:
     return total, available
 
 
+def read_installed_memory_mb() -> float | None:
+    """PERF (audit 2026-09-28 §PERF28.03): đọc RAM lắp đặt từ SMBIOS Windows.
+
+    API trả KiB qua con trỏ 64-bit; giá trị này chỉ dùng chọn hạng phần cứng.
+    Ngoài Windows hoặc API thất bại/không có dữ liệu thì caller dùng RAM OS cũ.
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+
+        read_installed = ctypes.windll.kernel32.GetPhysicallyInstalledSystemMemory
+        read_installed.argtypes = [ctypes.POINTER(ctypes.c_ulonglong)]
+        read_installed.restype = ctypes.c_int
+        memory_kib = ctypes.c_ulonglong()
+        if read_installed(ctypes.byref(memory_kib)) and memory_kib.value > 0:
+            return memory_kib.value / 1024.0
+    except Exception:
+        return None
+    return None
+
+
+def memory_tier_mb(
+    usable_mb: float | None, installed_mb: float | None
+) -> float | None:
+    """Chọn hạng phần cứng từ snapshot; hàm thuần, không tự đọc hệ điều hành.
+
+    PERF (audit 2026-09-28 §PERF28.03 B2): kết quả chỉ dùng so ngưỡng tier,
+    không thay usable/available trong phép tính dung lượng hoặc admission.
+    """
+    if usable_mb is not None and usable_mb > 0:
+        if installed_mb is not None and installed_mb >= usable_mb:
+            return installed_mb
+    return usable_mb
+
+
+def read_memory_tier_mb(usable_mb: float | None) -> float | None:
+    """Đọc installed tại biên runtime; policy thuần dùng ``memory_tier_mb``."""
+    return memory_tier_mb(usable_mb, read_installed_memory_mb())
+
+
 def plan_worker_count(
     *,
     kind: str,
@@ -82,19 +124,20 @@ def plan_worker_count(
     hard_ceiling: int | None = None,
     env_override: str | None = None,
 ) -> tuple[int, str]:
-    """Số worker **process** cho một việc nặng, gate theo CẢ CPU lẫn RAM.
+    """Số worker cho một việc nặng, gate theo CẢ CPU lẫn hạng RAM.
 
     KIENTRUC (audit 2026-07-29 §C.3): trước đây bình bản và preflight chỉ chia theo
     ``cpu_count - 1`` mà KHÔNG đọc RAM. Mỗi worker là một process giữ PDF trong bộ nhớ,
     nên máy 8 GB nhiều lõi vào job lớn là đường ngắn nhất tới OOM/treo. Đây là chiều
     NGƯỢC của rule #1 trong AGENTS.md: máy yếu chưa được bảo vệ.
 
-    Chính sách (đồng bộ với ``_auto_sticker_hw_profile`` và
-    ``core/print_engine/facade._auto_memory_budget_mb``):
+    Chính sách worker (các budget riêng ở Sticker/PPE không do helper này cấp):
 
     - Nền: ``cpu_count - 1`` — luôn chừa 1 nhân cho UI/backend.
-    - Trần theo TỔNG RAM: ``<8 GB`` → 1 worker; ``<16 GB`` → 2 worker; ``>=16 GB`` →
+    - Trần theo hạng RAM: ``<8 GB`` → 1 worker; ``<16 GB`` → 2 worker; ``>=16 GB`` →
       KHÔNG hạ (máy mạnh chạy hết công suất — rule #1).
+      Windows ưu tiên RAM lắp đặt hợp lệ, không tính phần dành cho phần cứng là
+      máy yếu hơn. Fallback về RAM OS dùng được khi API thiếu/lỗi/mâu thuẫn.
     - Trần theo RAM KHẢ DỤNG (``available * 0.6 / per_worker_mb``) CHỈ áp cho máy
       ``<16 GB``. Cố tình KHÔNG áp cho ``>=16 GB``: rule #1 nói rõ chỉ máy yếu mới được
       giảm, và đo thử trên máy 32 GB/16 lõi cho thấy trần theo RAM khả dụng kéo worker
@@ -116,18 +159,27 @@ def plan_worker_count(
     reason_parts = [f"cpu={cpu_count}", f"base={base}"]
 
     total_mb, available_mb = read_memory_status_mb()
-    is_weak = total_mb is not None and total_mb < 16 * 1024
-
+    installed_mb = read_installed_memory_mb()
+    tier_mb = memory_tier_mb(total_mb, installed_mb)
+    # PERF (audit 2026-09-28 §PERF28.03): giống Tauri, chỉ tin SMBIOS nếu không
+    # nhỏ hơn RAM OS dùng được. Không làm tròn RAM hay cộng phần reserved vào
+    # available/budget. Mất telemetry OS vẫn giữ policy cũ, không tự đoán tier.
+    if installed_mb is not None:
+        reason_parts.append(f"ram_installed_mb={installed_mb:.0f}")
     if total_mb is not None:
-        if total_mb < 8 * 1024:
+        reason_parts.append(f"ram_usable_mb={total_mb:.0f}")
+    is_weak = tier_mb is not None and tier_mb < 16 * 1024
+
+    if tier_mb is not None:
+        if tier_mb < 8 * 1024:
             ram_cap = 1
-        elif total_mb < 16 * 1024:
+        elif tier_mb < 16 * 1024:
             ram_cap = 2
         else:
             ram_cap = base  # >=16 GB: giữ nguyên full (rule #1)
         if ram_cap < workers:
             workers = ram_cap
-        reason_parts.append(f"ram_total_mb={total_mb:.0f}->cap{ram_cap}")
+        reason_parts.append(f"ram_tier_mb={tier_mb:.0f}->cap{ram_cap}")
 
     # Trần theo RAM khả dụng CHỈ cho máy yếu — xem docstring.
     if is_weak and available_mb is not None and per_worker_mb > 0:

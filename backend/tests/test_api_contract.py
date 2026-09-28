@@ -9,6 +9,7 @@ Nếu một field ở đây thực sự cần bỏ: sửa phía desktop TRƯỚC
 """
 
 import pytest
+from pydantic import ValidationError
 
 from app.api.routes import imposition as imposition_routes
 from app.api.routes.imposition import ImposeJobAccessResponse
@@ -202,6 +203,8 @@ from app.api.routes import office_convert as office_convert_routes  # noqa: E402
 from app.api.routes import preflight as preflight_routes  # noqa: E402
 from app.api.routes import system as system_routes  # noqa: E402
 from app.schemas.preflight import (  # noqa: E402
+    AutoTrimRequest,
+    AutoTrimResponse,
     CropRegionsResponse,
     FixFileResponse,
     FlattenLayersResponse,
@@ -232,7 +235,6 @@ PREFLIGHT_FIX_FILE_PATHS = [
     "/preflight/layers/delete",
     "/preflight/layers/reorder",
     "/preflight/set-page-boxes",
-    "/preflight/auto-trim",
     "/preflight/add-bleed",
     "/preflight/mirror-bleed",
     "/preflight/convert-spot",
@@ -248,6 +250,7 @@ def test_preflight_nhom_sua_file_dung_chung_mot_model(path):
     "path,method,expected",
     [
         ("/preflight/layers/flatten", "POST", FlattenLayersResponse),
+        ("/preflight/auto-trim", "POST", AutoTrimResponse),
         ("/preflight/crop-regions", "POST", CropRegionsResponse),
         ("/preflight/preview-hide", "POST", PreviewImageResponse),
         ("/preflight/objects/{file_id}/{page}", "GET", PageObjectsResponse),
@@ -275,6 +278,28 @@ def test_fix_file_response_khong_siet():
     """Nhánh thất bại vẫn trả `success=False` mà không có tên file → phải hợp lệ."""
     assert FixFileResponse(success=False).output_filename is None
     assert FixFileResponse(success=True, output_filename="fixed_ab12.pdf").output_filename
+
+
+def test_auto_trim_mode_contract_is_backward_compatible_and_explicit():
+    legacy = AutoTrimRequest(file_id="nguon")
+    assert legacy.mode == "trim"
+    assert legacy.pages is None and legacy.trim_sides is None
+    assert AutoTrimRequest(file_id="nguon", mode="fill").margin_mm == 0
+    for mode in ("trim", "fill"):
+        result = AutoTrimResponse(success=True, output_filename="vien.pdf", mode=mode)
+        assert result.model_dump() == {
+            "success": True, "output_filename": "vien.pdf", "mode": mode,
+        }
+    with pytest.raises(ValidationError):
+        AutoTrimResponse(success=True, output_filename="vien.pdf")
+    with pytest.raises(ValidationError):
+        AutoTrimResponse(success=True, mode="edge_fill")
+
+
+@pytest.mark.parametrize("margin", [float("nan"), float("inf"), -float("inf")])
+def test_auto_trim_rejects_nonfinite_margin(margin):
+    with pytest.raises(ValidationError):
+        AutoTrimRequest(file_id="nguon", margin_mm=margin)
 
 
 def test_flatten_giu_canh_bao_raster():

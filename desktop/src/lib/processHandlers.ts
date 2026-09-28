@@ -247,6 +247,9 @@ export async function runProcessEngine(
         const requestedAlternateRotation = isGuillotine
             ? guillotineSettings?.alternateRotation
             : dieCutSettings?.alternateRotation;
+        const requestedAlternateRotationAlignment = isGuillotine
+            ? guillotineSettings?.alternateRotationAlignment
+            : dieCutSettings?.alternateRotationAlignment;
         const dieShapes = Object.values(dieCutSettings?.detectedShapesByPage || {});
         const rectangleStickerInking = isDieCut && !isCnc && (
             dieCutSettings?.cutType === 'one_dao'
@@ -265,6 +268,9 @@ export async function runProcessEngine(
         ) && (
             requestedAlternateRotation === 'row' || requestedAlternateRotation === 'column'
         ) ? requestedAlternateRotation : 'none';
+        const effectiveAlternateRotationAlignment = effectiveAlternateRotation !== 'none'
+            ? (requestedAlternateRotationAlignment || 'foot_to_foot')
+            : 'foot_to_foot';
         // Page-sheet dùng capability guillotine để giữ marks; raw UI state không đi qua boundary này.
         const caps = getImposerCapability(isPageSheet ? 'guillotine' : settings.imposerMode);
         const pontSettingsMode = caps.supportsPont || isPageSheet;
@@ -328,6 +334,7 @@ export async function runProcessEngine(
                     })
                     : 'simple_auto',
                 alternateRotation: effectiveAlternateRotation,
+                alternateRotationAlignment: effectiveAlternateRotationAlignment,
                 taskMode: normalizedTaskMode,
                 layoutType: isGuillotine || isDieCut || isCnc ? settings.layoutType || 'sequential' : 'sequential',
                 align: settings.align || 'center',

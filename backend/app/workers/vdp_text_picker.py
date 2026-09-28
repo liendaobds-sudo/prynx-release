@@ -1092,7 +1092,7 @@ def pick_text_to_vdp_field(
         )
         # [VDP BASELINE PARITY] Neo khung quanh baseline_y theo đúng công thức của ReportLab:
         need_top = max(by1, baseline_y + (effective_fs * 0.95 if has_ascender_or_accent else effective_fs * 0.75))
-        need_bottom = min(by0, baseline_y - (effective_fs * 0.28 if has_descender else 0.05 * effective_fs))
+        need_bottom = min(by0, baseline_y - effective_fs * 0.28) if has_descender else (baseline_y - 0.05 * effective_fs)
 
         target_h = max(
             effective_fs * 1.25,
@@ -1517,7 +1517,7 @@ def auto_detect_vdp_tags(
             )
             # [VDP BASELINE PARITY] Neo khung quanh baseline_y theo đúng công thức của ReportLab:
             need_top = max(by1, baseline_y + (effective_fs * 0.95 if has_ascender_or_accent else effective_fs * 0.75))
-            need_bottom = min(by0, baseline_y - (effective_fs * 0.28 if has_descender else 0.05 * effective_fs))
+            need_bottom = min(by0, baseline_y - effective_fs * 0.28) if has_descender else (baseline_y - 0.05 * effective_fs)
 
             target_h = max(
                 effective_fs * 1.25,

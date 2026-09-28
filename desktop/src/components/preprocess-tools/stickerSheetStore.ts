@@ -177,7 +177,7 @@ interface StickerSheetStore {
     setBrushRadius: (tabId: string, radius: number) => void;
     setSelectedInstance: (tabId: string, instanceId: number | null) => void;
     setOutputDpi: (tabId: string, dpi: number, dpiY?: number) => void;
-    setOutputSettings: (tabId: string, settings: Partial<StickerOutputSettings>) => void;
+    setOutputSettings: (tabId: string, settings: Partial<StickerOutputSettings>, delayMs?: number) => void;
     setPreserveExistingCut: (tabId: string, preserve: boolean) => void;
     setActivePage: (tabId: string, pageNumber: number) => void;
     selectSource: (
@@ -239,6 +239,32 @@ const REFINE_DESIRED = new Map<string, {
 const CUTLINE_TIMERS = new Map<string, ReturnType<typeof setTimeout>>();
 const CUTLINE_RUNNING = new Set<string>();
 const CUTLINE_DESIRED = new Map<string, StickerCutlinePreviewRequest>();
+const CUTLINE_PREVIEW_FRAME_CACHE = new Map<string, StickerCutlinePreview>();
+const MAX_CUTLINE_PREVIEW_FRAMES = 40;
+
+function cutlinePreviewFrameCacheKey(tabId: string, req: StickerCutlinePreviewRequest): string {
+    const editsKey = req.edits.map(e => e.id).join('|');
+    return [
+        tabId,
+        req.sessionId,
+        req.pageNumber,
+        req.maskRevision,
+        req.dpi,
+        req.dpiY,
+        req.offsetMm,
+        req.bleedMm,
+        req.cutMode,
+        req.cornerStyle,
+        req.fillHoles ? 1 : 0,
+        req.cutlineSmoothness,
+        req.cutlineFidelity,
+        req.curveTension,
+        req.minDetailAreaMm2,
+        req.cutlineDenoise,
+        req.cutlineSimplifyMm,
+        editsKey,
+    ].join(':');
+}
 
 function sameStickerOutputSettings(
     left: StickerOutputSettings,
@@ -516,6 +542,9 @@ function cancelRequests(tabId: string): void {
         CUTLINE_TIMERS.delete(key);
         CUTLINE_DESIRED.delete(key);
     }
+    for (const key of CUTLINE_PREVIEW_FRAME_CACHE.keys()) {
+        if (key.startsWith(prefix)) CUTLINE_PREVIEW_FRAME_CACHE.delete(key);
+    }
 }
 
 function isRefineAssetSyncError(
@@ -645,7 +674,7 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
         });
         if (changed) scheduleCurrentCutlinePreview(tabId, pageNumber);
     },
-    setOutputSettings: (tabId, settings) => {
+    setOutputSettings: (tabId, settings, delayMs = 0) => {
         let pageNumber = 1;
         let changed = false;
         let shouldRefreshPreview = false;
@@ -659,6 +688,12 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
             if (sameStickerOutputSettings(tab.outputSettings, outputSettings)) return state;
             pageNumber = tab.activeSourcePage;
             changed = true;
+            if (tab.outputSettings.cutMode !== outputSettings.cutMode) {
+                const prefix = `${tabId}:`;
+                for (const key of CUTLINE_PREVIEW_FRAME_CACHE.keys()) {
+                    if (key.startsWith(prefix)) CUTLINE_PREVIEW_FRAME_CACHE.delete(key);
+                }
+            }
             shouldRefreshPreview = cutlineGeometryChanged(tab.outputSettings, outputSettings);
             const pages = shouldRefreshPreview
                 ? Object.fromEntries(Object.entries(tab.pages).map(([key, page]) => [
@@ -666,8 +701,8 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                     {
                         ...page,
                         preserveExistingCut: false,
-                        cutlinePreview: null,
-                        isCutlinePreviewing: false,
+                        cutlinePreview: Number(key) === pageNumber ? page.cutlinePreview : null,
+                        isCutlinePreviewing: Number(key) === pageNumber,
                     },
                 ])) as Record<number, StickerSheetPageState>
                 : tab.pages;
@@ -687,7 +722,13 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                 },
             };
         });
-        if (changed && shouldRefreshPreview) scheduleCurrentCutlinePreview(tabId, pageNumber);
+        if (changed && shouldRefreshPreview) {
+
+
+
+
+            scheduleCurrentCutlinePreview(tabId, pageNumber, delayMs);
+        }
     },
     setPreserveExistingCut: (tabId, preserveExistingCut) => set(state => {
         const tab = state.tabs[tabId] || defaultTabState();
@@ -704,14 +745,20 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
     setActivePage: (tabId, pageNumber) => {
         let normalized = 1;
         let needsPreview = false;
+        let previousPage = 1;
         set(state => {
             const tab = state.tabs[tabId] || defaultTabState();
+            previousPage = tab.activeSourcePage;
             normalized = Math.max(1, Math.min(
                 tab.inspection?.page_count || Math.max(1, pageNumber),
                 Math.round(pageNumber),
             ));
             const page = pageState(tab, normalized);
-            needsPreview = Boolean(page.manifest && !page.cutlinePreview);
+            needsPreview = Boolean(
+                page.manifest
+                && !page.cutlinePreview
+                && (page.manifest.boundary_source !== 'existing-cut' || !page.preserveExistingCut)
+            );
             return {
                 tabs: {
                     ...state.tabs,
@@ -723,6 +770,11 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                 },
             };
         });
+        if (previousPage !== normalized) {
+            const prevKey = cutlineRequestKey(tabId, previousPage);
+            REQUEST_CONTROLLERS.get(prevKey)?.abort();
+            REQUEST_CONTROLLERS.delete(prevKey);
+        }
         if (needsPreview) scheduleCurrentCutlinePreview(tabId, normalized, 0);
     },
     selectSource: (
@@ -1189,7 +1241,7 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                             alphaThreshold: payload.manifest.alpha_threshold ?? 128,
                             shadowCleanup: payload.manifest.shadow_cleanup ?? 'auto',
                             isRefining: false,
-                             isCutlinePreviewing: needsGeneratedCutline,
+                            isCutlinePreviewing: needsGeneratedCutline,
                             cutlinePreview: null,
                             error: '',
                         })),
@@ -1272,11 +1324,17 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
             return !['detecting', 'mask-review', 'confirming', 'mask-ready', 'exporting']
                 .includes(page.status);
         });
+        const activePageNumber = tab.activeSourcePage || 1;
+        const sortedPages = [...pendingPages].sort((a, b) => {
+            if (a === activePageNumber) return -1;
+            if (b === activePageNumber) return 1;
+            return a - b;
+        });
         const preparedLease = workspaceLease;
         const reuseWorkspaceSource = preparedLease
             ? async () => preparedLease
             : undefined;
-        await Promise.all(pendingPages.map(pageNumber => (
+        await Promise.all(sortedPages.map(pageNumber => (
             get().detectStickers(tabId, strategy, pageNumber, reuseWorkspaceSource)
         )));
     },
@@ -1392,7 +1450,8 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
         // UIUX/PERF (audit 2026-08-10 §CUTLINE.LIVE4): tuning đã có hàng đợi
         // coalesce một request đang chạy. Gửi nhịp đầu ngay để đường bế chuyển động
         // trong lúc kéo, thay vì debounce mãi tới sau khi người dùng thả chuột.
-        scheduleCurrentCutlinePreview(tabId, pageNumber, 0);
+        // UIUX/PERF (audit 2026-09-28 §CUTLINE.DEBOUNCE): debounce 60ms cho slider kéo thông số
+        scheduleCurrentCutlinePreview(tabId, pageNumber, 60);
     },
     confirmMask: async (tabId, requestedPage) => {
         const previous = get().tabs[tabId];
@@ -2037,6 +2096,31 @@ function cutlineRequestKey(tabId: string, pageNumber: number): string {
     return `${tabId}:cutline:${pageNumber}`;
 }
 
+function getRunningCutlineKey(tabId: string): string | null {
+    const prefix = `${tabId}:cutline:`;
+    for (const key of CUTLINE_RUNNING) {
+        if (key.startsWith(prefix)) return key;
+    }
+    return null;
+}
+
+function getNextDesiredCutlinePage(tabId: string): number | null {
+    const prefix = `${tabId}:cutline:`;
+    const tab = useStickerSheetStore.getState().tabs[tabId];
+    const activePage = tab?.activeSourcePage || 1;
+    const activeKey = cutlineRequestKey(tabId, activePage);
+    if (CUTLINE_DESIRED.has(activeKey)) return activePage;
+
+    for (const key of CUTLINE_DESIRED.keys()) {
+        if (key.startsWith(prefix)) {
+            const pageStr = key.slice(prefix.length);
+            const pageNum = Number(pageStr);
+            if (Number.isInteger(pageNum)) return pageNum;
+        }
+    }
+    return null;
+}
+
 function armCutlinePreview(tabId: string, pageNumber: number, delayMs: number): void {
     const key = cutlineRequestKey(tabId, pageNumber);
     if (CUTLINE_RUNNING.has(key) || !CUTLINE_DESIRED.has(key)) return;
@@ -2082,6 +2166,39 @@ function scheduleCurrentCutlinePreview(
         cutlineSimplifyMm: resolveStickerSheetAutoSimplifyMm(page.manifest, tab.outputSettings.cutMode),
     };
     const key = cutlineRequestKey(tabId, pageNumber);
+    // PERF (audit 2026-09-28 §CUTLINE.CLIENT_CACHE): trả kết quả ngay lập tức (0ms)
+    // nếu cấu hình này đã từng được tính trước đó (đổi qua lại preset/cornerStyle).
+    const frameKey = cutlinePreviewFrameCacheKey(tabId, request);
+    const cachedFrame = CUTLINE_PREVIEW_FRAME_CACHE.get(frameKey);
+    if (cachedFrame) {
+        CUTLINE_DESIRED.delete(key);
+        const previousTimer = CUTLINE_TIMERS.get(key);
+        if (previousTimer) {
+            clearTimeout(previousTimer);
+            CUTLINE_TIMERS.delete(key);
+        }
+        useStickerSheetStore.setState(state => {
+            const current = state.tabs[tabId];
+            const currentPage = current ? pageState(current, pageNumber) : null;
+            if (
+                !current
+                || currentPage?.manifest?.session_id !== request.sessionId
+                || currentPage.isRefining
+            ) return state;
+            return {
+                tabs: {
+                    ...state.tabs,
+                    [tabId]: updatePage(current, pageNumber, pageStateValue => ({
+                        ...pageStateValue,
+                        cutlinePreview: cachedFrame,
+                        isCutlinePreviewing: false,
+                        error: '',
+                    })),
+                },
+            };
+        });
+        return;
+    }
     CUTLINE_DESIRED.set(key, request);
     useStickerSheetStore.setState(state => {
         const current = state.tabs[tabId];
@@ -2106,6 +2223,22 @@ function scheduleCurrentCutlinePreview(
 async function runCutlinePreview(tabId: string, pageNumber: number): Promise<void> {
     const key = cutlineRequestKey(tabId, pageNumber);
     if (CUTLINE_RUNNING.has(key)) return;
+
+    const tab = useStickerSheetStore.getState().tabs[tabId];
+    const activePage = tab?.activeSourcePage || 1;
+    const isActive = pageNumber === activePage;
+
+    const currentRunningKey = getRunningCutlineKey(tabId);
+    if (currentRunningKey && currentRunningKey !== key) {
+        if (isActive) {
+            const runningController = REQUEST_CONTROLLERS.get(currentRunningKey);
+            runningController?.abort();
+            REQUEST_CONTROLLERS.delete(currentRunningKey);
+            CUTLINE_RUNNING.delete(currentRunningKey);
+        } else {
+            return;
+        }
+    }
     const requested = CUTLINE_DESIRED.get(key);
     if (!requested) return;
     CUTLINE_DESIRED.delete(key);
@@ -2117,6 +2250,7 @@ async function runCutlinePreview(tabId: string, pageNumber: number): Promise<voi
         || (beforePage.manifest.mask_revision ?? 1) !== requested.maskRevision
     ) return;
     CUTLINE_RUNNING.add(key);
+    const { controller, generation } = nextRequest(key);
     try {
         const payload = await previewStickerCutline(requested.sessionId, {
             baseRevision: requested.maskRevision,
@@ -2135,7 +2269,15 @@ async function runCutlinePreview(tabId: string, pageNumber: number): Promise<voi
             minDetailAreaMm2: requested.minDetailAreaMm2,
             cutlineDenoise: requested.cutlineDenoise,
             cutlineSimplifyMm: requested.cutlineSimplifyMm,
+            signal: controller.signal,
         });
+        if (!requestIsCurrent(key, controller, generation)) return;
+        const frameKey = cutlinePreviewFrameCacheKey(tabId, requested);
+        CUTLINE_PREVIEW_FRAME_CACHE.set(frameKey, payload);
+        if (CUTLINE_PREVIEW_FRAME_CACHE.size > MAX_CUTLINE_PREVIEW_FRAMES) {
+            const oldestKey = CUTLINE_PREVIEW_FRAME_CACHE.keys().next().value;
+            if (oldestKey) CUTLINE_PREVIEW_FRAME_CACHE.delete(oldestKey);
+        }
         const queued = CUTLINE_DESIRED.has(key);
         useStickerSheetStore.setState(state => {
             const current = state.tabs[tabId];
@@ -2193,6 +2335,8 @@ async function runCutlinePreview(tabId: string, pageNumber: number): Promise<voi
             };
         });
     } catch (error) {
+        if (!requestIsCurrent(key, controller, generation)) return;
+        if (controller.signal.aborted || (error instanceof Error && error.name === 'AbortError')) return;
         const queued = CUTLINE_DESIRED.has(key);
         useStickerSheetStore.setState(state => {
             const current = state.tabs[tabId];
@@ -2237,7 +2381,17 @@ async function runCutlinePreview(tabId: string, pageNumber: number): Promise<voi
             };
         });
     } finally {
+        if (REQUEST_CONTROLLERS.get(key) === controller) {
+            REQUEST_CONTROLLERS.delete(key);
+        }
         CUTLINE_RUNNING.delete(key);
-        if (CUTLINE_DESIRED.has(key)) armCutlinePreview(tabId, pageNumber, 0);
+        if (CUTLINE_DESIRED.has(key)) {
+            armCutlinePreview(tabId, pageNumber, 0);
+        } else {
+            const nextPendingPage = getNextDesiredCutlinePage(tabId);
+            if (nextPendingPage !== null) {
+                armCutlinePreview(tabId, nextPendingPage, 0);
+            }
+        }
     }
 }

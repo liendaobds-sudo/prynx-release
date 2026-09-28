@@ -2329,8 +2329,9 @@ const VdpAutoFitText = ({ field, scale, text }: { field: VdpPreviewField; scale:
     const effBoxH = isVert ? (field.width ?? 0) : (field.height ?? 0);
     const boxWPx = Math.max(1, (effBoxW / 25.4 * 72) * scale);
     const boxHPx = Math.max(1, (effBoxH / 25.4 * 72) * scale);
-    // Căn giữa văn bản theo chiều dọc trong khung (y="50%" + dominantBaseline="central")
-    // khớp hoàn hảo với ReportLab canvas backend (Paragraph wrapOn + ty = rl_y + (h - text_h) / 2).
+    // [VDP BASELINE PARITY] Neo chân chữ (alphabetic baseline) chính xác 100% khớp ReportLab / PDFium backend:
+    // Khoảng cách từ đỉnh khung tới baseline dòng đầu: (boxH + fontPx) / 2 - totalLeadingPx / 2.
+    // SVG text với dominantBaseline="alphabetic" neo đúng đường chân chữ ban đầu trên bản thiết kế PDF.
 
     const [scaleX, setScaleX] = useState<number>(1);
     const [naturalWidth, setNaturalWidth] = useState<number>(0);
@@ -2463,11 +2464,15 @@ const VdpAutoFitText = ({ field, scale, text }: { field: VdpPreviewField; scale:
             >
                 {(() => {
                     const lines = String(text ?? '').split('\n');
+                    const lineH = field.lineHeight ? Number(field.lineHeight) : 1.0;
+                    const leadingPx = fontPx * lineH;
+                    const totalLeadingPx = (lines.length - 1) * leadingPx;
+                    const firstBaselineY = (boxHPx + fontPx) / 2 - totalLeadingPx / 2;
                     return (
                         <text
                             x={align === 'center' ? '50%' : align === 'right' ? '100%' : '0%'}
-                            y="50%"
-                            dominantBaseline="central"
+                            y={firstBaselineY}
+                            dominantBaseline="alphabetic"
                             textAnchor={align === 'center' ? 'middle' : align === 'right' ? 'end' : 'start'}
                             fill={field.fontColor || '#1e293b'}
                             stroke={hasStroke ? field.strokeColor : undefined}
@@ -2483,19 +2488,15 @@ const VdpAutoFitText = ({ field, scale, text }: { field: VdpPreviewField; scale:
                             {lines.length <= 1 ? (
                                 text
                             ) : (
-                                lines.map((line, idx) => {
-                                    const lineH = field.lineHeight ? Number(field.lineHeight) : 1.15;
-                                    const totalH = (lines.length - 1) * fontPx * lineH;
-                                    return (
-                                        <tspan
-                                            key={idx}
-                                            x={align === 'center' ? '50%' : align === 'right' ? '100%' : '0%'}
-                                            dy={idx === 0 ? `${-totalH / 2}px` : `${fontPx * lineH}px`}
-                                        >
-                                            {line}
-                                        </tspan>
-                                    );
-                                })
+                                lines.map((line, idx) => (
+                                    <tspan
+                                        key={idx}
+                                        x={align === 'center' ? '50%' : align === 'right' ? '100%' : '0%'}
+                                        dy={idx === 0 ? 0 : `${leadingPx}px`}
+                                    >
+                                        {line}
+                                    </tspan>
+                                ))
                             )}
                         </text>
                     );
@@ -3525,8 +3526,8 @@ export const LivePageFrame: (props: LivePageFrameSourceProps) => React.ReactNode
         if (!interaction || !onVdpFieldsChange || !pageDim) return;
         const dx = curX - interaction.startX;
         const dy = curY - interaction.startY;
-        // Bỏ qua vi dịch chuyển dưới 3px khi kéo để không làm nhảy vị trí khi người dùng chỉ click chọn
-        if (interaction.type === 'move' && Math.hypot(dx, dy) < 3) return;
+        // Bỏ qua vi dịch chuyển dưới 4px khi kéo để không làm nhảy vị trí khi người dùng chỉ click chọn
+        if (interaction.type === 'move' && Math.hypot(dx, dy) < 4) return;
         const scale = (actualWidth100 * zoom) / pageDim.w; // = displayWidth / pageDim.w
         const dxMM = (dx / scale) / 72 * 25.4;
         const dyMM = (dy / scale) / 72 * 25.4;

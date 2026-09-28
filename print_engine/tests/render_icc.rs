@@ -418,3 +418,213 @@ fn black_point_compensation_toggle_changes_result() {
         "tắt bù điểm đen phải đổi kết quả (và phải xoá LUT cũ)"
     );
 }
+
+// COLOR (audit 2026-09-28 §KNOCK.04): Lab nhúng không có miền RGB0..1.
+fn embedded_lab_resources(doc: &mut Document) -> Dictionary {
+    let profile = lcms2::Profile::new_lab4_context(lcms2::GlobalContext::new(),
+        &lcms2::CIExyY { x: 0.3457, y: 0.3585, Y: 1.0 }).unwrap();
+    let mut stream = Stream::new(dictionary! {
+        "N" => 3,
+        "Range" => vec![0.into(), 100.into(), (-128).into(), 127.into(), (-128).into(), 127.into()],
+        "Alternate" => vec!["Lab".into(), Object::Dictionary(dictionary! {
+            "WhitePoint" => vec![0.9642.into(), 1.into(), 0.8249.into()],
+        })],
+    }, profile.icc().unwrap());
+    stream.compress().unwrap();
+    let profile_id = doc.add_object(stream);
+    dictionary! { "ColorSpace" => dictionary! {
+        "CS0" => vec!["ICCBased".into(), Object::Reference(profile_id)],
+    } }
+}
+
+fn render_icc_doc(doc: &Document, cm: &ColorManager) -> PageRender {
+    render_page_managed(doc, 1, 72., PageBox::Crop, RenderOptions::softproof(), Some(cm)).unwrap()
+}
+
+fn replace_resources(doc: &mut Document, resources: Dictionary) {
+    let page = *doc.get_pages().get(&1).unwrap();
+    doc.get_object_mut(page).unwrap().as_dict_mut().unwrap()
+        .set("Resources", resources);
+}
+
+#[test]
+fn embedded_lab_vector_keeps_physical_lab_components() {
+    let cm = cm_or_skip!();
+    let mut doc = build("/CS0 cs 64.7059 59 68 scn 0 0 10 10 re f");
+    let resources = embedded_lab_resources(&mut doc);
+    replace_resources(&mut doc, resources);
+    let page = render_icc_doc(&doc, &cm);
+    let expected = cm.lab_to_cmyk(64.7059, 59., 68.).unwrap();
+    for (ch, expected) in expected.iter().enumerate() {
+        let actual = page.buffer.plate_u8(ch)[center(&page)] as f32 / 255.;
+        assert!((actual - expected).abs() < 0.01, "kênh{ch}: {actual} != {expected}");
+    }
+    assert!(!page.warnings.ink_unsound(), "{:?}", page.warnings);
+}
+
+#[test]
+fn embedded_lab_spot_alternate_does_not_turn_pantone_white() {
+    let cm = cm_or_skip!();
+    let mut doc = build("/Spot cs 1 scn 0 0 10 10 re f");
+    let mut resources = embedded_lab_resources(&mut doc);
+    let spaces = resources.get_mut(b"ColorSpace").unwrap().as_dict_mut().unwrap();
+    let lab = spaces.get(b"CS0").unwrap().clone();
+    spaces.set("Spot", vec!["Separation".into(), "Orange".into(), lab,
+        Object::Dictionary(dictionary! {
+            "FunctionType" => 2, "Domain" => vec![0.into(), 1.into()], "N" => 1,
+            "C0" => vec![100.into(), 0.into(), 0.into()],
+            "C1" => vec![64.7059.into(), 59.into(), 68.into()],
+        })]);
+    replace_resources(&mut doc, resources);
+    let page = render_icc_doc(&doc, &cm);
+    assert_eq!(page.buffer.plate_u8(4)[center(&page)], 255, "kẽm spot giữ nguyên");
+    let lut = page.buffer.space().spot_alternate(4).unwrap();
+    let actual = lut.cmyk_at(1.);
+    let expected = cm.lab_to_cmyk(64.7059, 59., 68.).unwrap();
+    for ch in 0..4 { assert!((actual[ch]-expected[ch]).abs()<0.01, "{actual:?} != {expected:?}"); }
+    assert!(lut.cmyk_at(0.).iter().sum::<f32>() < 0.02);
+}
+
+#[test]
+fn embedded_lab_image_and_indexed_render_lab_but_guard_unverified_range() {
+    let cm = cm_or_skip!();
+    for indexed in [false, true] {
+        let mut doc = build("q 10 0 0 10 0 0 cm /Im0 Do Q");
+        let mut resources = embedded_lab_resources(&mut doc);
+        let lab = resources.get(b"ColorSpace").unwrap().as_dict().unwrap().get(b"CS0").unwrap().clone();
+        let cs = if indexed { Object::Array(vec!["Indexed".into(), lab, 0.into(),
+            Object::String(vec![165,187,196], lopdf::StringFormat::Hexadecimal)]) } else { lab };
+        let img = doc.add_object(Stream::new(dictionary! {
+            "Type" => "XObject", "Subtype" => "Image", "Width" => 1, "Height" => 1,
+            "BitsPerComponent" => 8, "ColorSpace" => cs,
+        }, if indexed { vec![0] } else { vec![165,187,196] }));
+        resources.set("XObject", dictionary! { "Im0" => Object::Reference(img) });
+        replace_resources(&mut doc, resources);
+        let page = render_icc_doc(&doc, &cm);
+        let expected = cm.lab_to_cmyk(165. / 255. * 100., 59., 68.).unwrap();
+        for ch in 0..4 {
+            let actual = page.buffer.plate_u8(ch)[center(&page)] as f32 / 255.;
+            assert!((actual - expected[ch]).abs()<0.01, "indexed={indexed}, ch={ch}: {actual} != {}", expected[ch]);
+        }
+        assert!(page.warnings.ink_unsound(), "IR chưa giữ Range nên không chứng nhận ảnh: {:?}", page.warnings);
+    }
+}
+
+#[test]
+fn embedded_lab_header_is_used_without_alternate_and_without_compression() {
+    let cm = cm_or_skip!();
+    let mut doc = build("/CS0 cs 31.3725 50 14 scn 0 0 10 10 re f");
+    let resources = embedded_lab_resources(&mut doc);
+    let profile = resources.get(b"ColorSpace").unwrap().as_dict().unwrap()
+        .get(b"CS0").unwrap().as_array().unwrap()[1].as_reference().unwrap();
+    let stream = doc.get_object_mut(profile).unwrap().as_stream_mut().unwrap();
+    let bytes = stream.decompressed_content().unwrap();
+    *stream = Stream::new(dictionary! { "N" => 3,
+        "Range" => vec![0.into(), 100.into(), (-128).into(), 127.into(), (-128).into(), 127.into()],
+    }, bytes);
+    replace_resources(&mut doc, resources);
+    let page = render_icc_doc(&doc, &cm);
+    let expected = cm.lab_to_cmyk(31.3725, 50., 14.).unwrap();
+    for ch in 0..4 {
+        let actual = page.buffer.plate_u8(ch)[center(&page)] as f32 / 255.;
+        assert!((actual - expected[ch]).abs() < 0.01);
+    }
+    assert!(!page.warnings.ink_unsound());
+}
+
+#[test]
+fn broken_icc_spot_alternate_degrades_preview_but_not_the_measured_spot_plate() {
+    let cm = cm_or_skip!();
+    let mut doc = build("/Spot cs 1 scn 0 0 10 10 re f");
+    let profile = doc.add_object(Stream::new(dictionary! {
+        "N" => 3, "Alternate" => vec!["Lab".into(), Object::Dictionary(dictionary! {})],
+    }, b"profile hong".to_vec()));
+    replace_resources(&mut doc, dictionary! { "ColorSpace" => dictionary! {
+        "Spot" => vec!["Separation".into(), "Orange".into(),
+            Object::Array(vec!["ICCBased".into(), Object::Reference(profile)]),
+            Object::Dictionary(dictionary! {
+                "FunctionType" => 2, "Domain" => vec![0.into(), 1.into()], "N" => 1,
+                "C0" => vec![100.into(), 0.into(), 0.into()],
+                "C1" => vec![64.7059.into(), 59.into(), 68.into()],
+            })],
+    } });
+    let preview = render_icc_doc(&doc, &cm);
+    assert!(preview.warnings.ink_unsound(), "alternate hỏng phải hạ proof");
+    assert!(!preview.warnings.approximated_colorspaces.is_empty());
+    let measured = render_page_managed(&doc, 1, 72., PageBox::Crop,
+        RenderOptions::ink_accurate(), Some(&cm)).unwrap();
+    assert_eq!(measured.buffer.plate_u8(4)[center(&measured)], 255);
+    assert!(!measured.warnings.ink_unsound(), "ICC không đổi lượng mực trên kẽm spot");
+}
+
+#[test]
+fn valid_embedded_lab_does_not_evaluate_unused_alternate() {
+    let cm = cm_or_skip!();
+    for alternate in [Object::Name(b"KhongTonTai".to_vec()),
+        Object::Array(vec!["CalRGB".into(), Object::Dictionary(dictionary! {})])] {
+        let mut doc = build("/CS0 cs 64.7059 59 68 scn 0 0 10 10 re f");
+        let resources = embedded_lab_resources(&mut doc);
+        let id = resources.get(b"ColorSpace").unwrap().as_dict().unwrap()
+            .get(b"CS0").unwrap().as_array().unwrap()[1].as_reference().unwrap();
+        doc.get_object_mut(id).unwrap().as_stream_mut().unwrap().dict.set("Alternate", alternate);
+        replace_resources(&mut doc, resources);
+        let page = render_icc_doc(&doc, &cm);
+        assert!(!page.warnings.ink_unsound(), "{:?}", page.warnings);
+        assert!(page.buffer.plate_u8(1)[center(&page)] > 150);
+    }
+}
+
+#[test]
+fn embedded_cmyk_keeps_process_plates_despite_a_devicen_alternate() {
+    let cm = cm_or_skip!();
+    let mut doc = build("/CS0 cs 1 1 1 1 scn 0 0 10 10 re f");
+    let profile = doc.add_object(Stream::new(dictionary! { "N" => 4,
+        "Alternate" => vec!["DeviceN".into(),
+            Object::Array(vec!["SpotA".into(), "SpotB".into(), "SpotC".into(), "SpotD".into()]),
+            "DeviceCMYK".into(), Object::Dictionary(dictionary! {
+                "FunctionType" => 4, "Domain" => vec![0.into(),1.into(),0.into(),1.into(),0.into(),1.into(),0.into(),1.into()],
+            })],
+    }, std::fs::read(icc_dir().join("FOGRA39.icc")).unwrap()));
+    replace_resources(&mut doc, dictionary! { "ColorSpace" => dictionary! {
+        "CS0" => vec!["ICCBased".into(), Object::Reference(profile)],
+    } });
+    let page = render_icc_doc(&doc, &cm);
+    assert_eq!(page.buffer.space().len(), 4);
+    for ch in 0..4 { assert_eq!(page.buffer.plate_u8(ch)[center(&page)], 255); }
+    assert!(!page.warnings.ink_unsound());
+}
+
+#[test]
+fn embedded_lab_matte_is_not_silently_clamped_to_unit_range() {
+    let cm = cm_or_skip!();
+    let mut doc = build("q 10 0 0 10 0 0 cm /Im0 Do Q");
+    let mut resources = embedded_lab_resources(&mut doc);
+    let lab = resources.get(b"ColorSpace").unwrap().as_dict().unwrap()
+        .get(b"CS0").unwrap().clone();
+    let mask = doc.add_object(Stream::new(dictionary! {
+        "Type" => "XObject", "Subtype" => "Image", "Width" => 1, "Height" => 1,
+        "BitsPerComponent" => 8, "ColorSpace" => "DeviceGray", "Matte" => vec![100.into(), 0.into(), 0.into()],
+    }, vec![128]));
+    let image = doc.add_object(Stream::new(dictionary! {
+        "Type" => "XObject", "Subtype" => "Image", "Width" => 1, "Height" => 1,
+        "BitsPerComponent" => 8, "ColorSpace" => lab, "SMask" => Object::Reference(mask),
+    }, vec![191,128,128]));
+    resources.set("XObject", dictionary! { "Im0" => Object::Reference(image) });
+    replace_resources(&mut doc, resources);
+    let page = render_icc_doc(&doc, &cm);
+    assert!(page.warnings.unsupported_transparency);
+    assert!(page.warnings.skipped_ops.iter().any(|(op,_)| op.contains("Matte")));
+}
+
+#[test]
+fn embedded_lab_custom_range_is_guarded() {
+    let cm = cm_or_skip!();
+    let mut doc = build("/CS0 cs 25 0 0 scn 0 0 10 10 re f");
+    let resources = embedded_lab_resources(&mut doc);
+    let id = resources.get(b"ColorSpace").unwrap().as_dict().unwrap()
+        .get(b"CS0").unwrap().as_array().unwrap()[1].as_reference().unwrap();
+    doc.get_object_mut(id).unwrap().as_stream_mut().unwrap().dict.set("Range",
+        vec![0.into(),50.into(),(-60).into(),60.into(),(-60).into(),60.into()]);
+    replace_resources(&mut doc, resources);
+    assert!(render_icc_doc(&doc, &cm).warnings.ink_unsound());
+}

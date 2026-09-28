@@ -37,6 +37,7 @@ from app.models.job import UploadedFile
 # KIENTRUC (audit 2026-07-29 §A.2): response model dùng chung của nhóm preflight.
 # Model request vẫn khai inline bên dưới (chưa gom, xem nhật ký lô 8).
 from app.schemas.preflight import (
+    AutoTrimResponse,
     CropRegionsResponse,
     ExportPdfxResponse,
     FixFileResponse,
@@ -1248,9 +1249,9 @@ async def crop_regions(req: CropRegionsRequest):
         raise_http(e, "Không crop được nhiều vùng")
 
 
-@router.post("/preflight/auto-trim", response_model=FixFileResponse)
+@router.post("/preflight/auto-trim", response_model=AutoTrimResponse)
 async def auto_trim(req: AutoTrimRequest):
-    """Xén viền dư màu phẳng; cạnh được chọn tường minh là bắt buộc."""
+    """Xóa/phủ viền dư màu phẳng; mọi cạnh đã chọn đều là bắt buộc."""
     file_path = _get_file_path(req.file_id)
     from app.core.page_boxes import PageBoxesEngine
     engine = PageBoxesEngine()
@@ -1259,10 +1260,15 @@ async def auto_trim(req: AutoTrimRequest):
         # không chặn event loop trong lúc xóa viền cho PDF nhiều trang.
         output = await run_in_threadpool(
             engine.auto_trim, file_path, req.pages, req.margin_mm, req.trim_sides,
+            mode=req.mode,
         )
-        return {"success": True, "output_filename": Path(output).name}
+        # WBR28.FILL: sidecar cũ bỏ qua field mode; client phải kiểm echo này
+        # trước khi nhận artifact để không vô tình xén khi người dùng chọn phủ.
+        return {"success": True, "output_filename": Path(output).name, "mode": req.mode}
+    except ValueError as e:
+        raise_http(e, "Không thể xử lý viền với lựa chọn hiện tại", status_code=422)
     except Exception as e:
-        raise_http(e, "Không tự động xóa lề trắng được")
+        raise_http(e, "Không xử lý được viền PDF")
 
 
 @router.post("/preflight/add-bleed", response_model=FixFileResponse)

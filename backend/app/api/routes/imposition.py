@@ -625,11 +625,13 @@ def _nup_preparation_worker_count() -> int:
         if forced > 0:
             return max(1, min(admitted_jobs, forced))
 
-    from app.core.system_memory import read_memory_status_mb
+    from app.core.system_memory import read_memory_status_mb, read_memory_tier_mb
 
     total_ram_mb, _available_ram_mb = read_memory_status_mb()
+    # PERF (audit 2026-09-28 §PERF28.03): phân hạng installed, không đổi
+    # policy thuần hay giới hạn số job đã admission của executor.
     return nup_preparation_workers_for_ram(
-        total_ram_mb,
+        read_memory_tier_mb(total_ram_mb),
         cpu_count=os.cpu_count() or 1,
         admitted_jobs=admitted_jobs,
     )
@@ -1222,6 +1224,7 @@ def _launch_impose_job(body: dict, prefix: str, license_info: dict = None) -> di
         settings = normalize_pont_settings(settings)  # FIX (audit 2026-08-05 §OC.2)
         from app.workers.nup_layout_solver import (
             normalize_alternate_rotation,
+            normalize_alternate_rotation_alignment,
             rectangle_inking_is_allowed,
         )
         alternate_rotation = normalize_alternate_rotation(
@@ -1229,6 +1232,12 @@ def _launch_impose_job(body: dict, prefix: str, license_info: dict = None) -> di
                 "alternateRotation", settings.get("alternate_rotation", "none")
             ),
             strict=True,
+        )
+        alternate_rotation_alignment = normalize_alternate_rotation_alignment(
+            settings.get(
+                "alternateRotationAlignment",
+                settings.get("alternate_rotation_alignment", "foot_to_foot"),
+            )
         )
         _job_is_die_cut = bool(settings.get("isDieCutMode", False))
         _job_diecut_inking = rectangle_inking_is_allowed(
@@ -1247,7 +1256,9 @@ def _launch_impose_job(body: dict, prefix: str, license_info: dict = None) -> di
             or (_job_is_die_cut and not _job_diecut_inking)
         ):
             alternate_rotation = "none"
+            alternate_rotation_alignment = "foot_to_foot"
         settings["alternateRotation"] = alternate_rotation
+        settings["alternateRotationAlignment"] = alternate_rotation_alignment
         from app.workers.nup_cut_border import (
             cut_border_is_applicable,
             normalize_cut_border_settings,
@@ -1516,6 +1527,7 @@ class PreviewLayoutRequest(BaseModel):
     # `true_shape_nesting`, nhưng chỉ auto-route `optimal_auto` được phép nhường lưới.
     allow_legacy_fallback: StrictBool = False
     alternate_rotation: Literal["none", "row", "column"] = "none"
+    alternate_rotation_alignment: Literal["head_to_head", "foot_to_foot"] = "foot_to_foot"
     shape_type: str = "CUSTOM"
     shape_props: Dict[str, Any] = Field(default_factory=dict)
     pont_config: Optional[PontConfigPayload] = None
@@ -2201,7 +2213,15 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
     # INKING: các cổng hình học bên dưới dùng trạng thái đã được xác thực.
     # chuẩn là RECTANGLE (bao gồm hình vuông); CNC/hình khác luôn bị khóa.
     _preview_alternate_rotation = req.alternate_rotation
-    from app.workers.nup_layout_solver import rectangle_inking_is_allowed, sequential_required_items
+    _preview_alternate_rotation_alignment = getattr(req, "alternate_rotation_alignment", "foot_to_foot") or "foot_to_foot"
+    from app.workers.nup_layout_solver import (
+        rectangle_inking_is_allowed,
+        sequential_required_items,
+        normalize_alternate_rotation_alignment,
+    )
+    _preview_alternate_rotation_alignment = normalize_alternate_rotation_alignment(
+        _preview_alternate_rotation_alignment
+    )
     _preview_diecut_inking = rectangle_inking_is_allowed(
         is_die_cut=bool(req.is_die_cut),
         is_cnc=str(req.imposer_mode or "").lower() == "cnc",
@@ -2218,6 +2238,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
         or (bool(req.is_die_cut) and not _preview_diecut_inking)
     ):
         _preview_alternate_rotation = "none"
+        _preview_alternate_rotation_alignment = "foot_to_foot"
 
     if req.strategy == 'manual' and (req.cols <= 0 or req.rows <= 0):
         raise HTTPException(
@@ -2449,6 +2470,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                 grid_settings["gridStrategy"] = req.strategy
                 grid_settings["cols"], grid_settings["rows"] = req.cols, req.rows
                 grid_settings["alternateRotation"] = _preview_alternate_rotation
+                grid_settings["alternateRotationAlignment"] = _preview_alternate_rotation_alignment
                 try:
                     grid_preview = (
                         build_sticker_manual_repeat_order(doc, grid_settings, logical_page_count=req.total_pages).preview
@@ -2708,6 +2730,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                         _ct_cl, _dsm_cl, round(float(_dom_cl or 0), 3),
                         int(req.cols or 0), int(req.rows or 0),
                         _preview_alternate_rotation,
+                        _preview_alternate_rotation_alignment,
                     )
                     _hit = _ZONE_NEST_CACHE.get(_ck)
                     if _hit is not None:
@@ -2731,6 +2754,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                                 _sol = _sm_c(
                                     _tw_g, _th_g, req.gap_x, req.gap_y,
                                     req.cols, req.rows, _preview_alternate_rotation,
+                                    alternate_rotation_alignment=_preview_alternate_rotation_alignment,
                                 )
                                 if (_sol.get('overallWidth', 0) > zone_w + 0.01
                                         or _sol.get('overallHeight', 0) > zone_h + 0.01):
@@ -2740,6 +2764,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                                     zone_w, zone_h, _tw_g, _th_g,
                                     req.gap_x, req.gap_y, req.strategy, _sg_c,
                                     _preview_alternate_rotation,
+                                    alternate_rotation_alignment=_preview_alternate_rotation_alignment,
                                 )
                             _r = {'items': [{
                                 'x': _c['x'], 'y': _c['y'],
@@ -2765,6 +2790,8 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                             cut_type=_ct_cl,
                             die_size_mode=_dsm_cl,
                             die_offset_mm=_dom_cl,
+                            alternate_rotation=_preview_alternate_rotation,
+                            alternate_rotation_alignment=_preview_alternate_rotation_alignment,
                         )
                     except Exception as _e_zc:
                         logger.warning("preview zone_layout_fn p_idx=%s lỗi: %s", p_idx, _e_zc)
@@ -3519,6 +3546,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                     _lay_ct = _sm_ct(
                         _trim_w_ct, _trim_h_ct, req.gap_x, req.gap_y,
                         req.cols, req.rows, _preview_alternate_rotation,
+                        alternate_rotation_alignment=_preview_alternate_rotation_alignment,
                     )
                 else:
                     _lay_ct = _sol_ct(
@@ -3527,6 +3555,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                         gap_x=req.gap_x, gap_y=req.gap_y,
                         strategy='simple_auto', secondary_gap=getattr(req, 'split_gap', None),
                         alternate_rotation=_preview_alternate_rotation,
+                        alternate_rotation_alignment=_preview_alternate_rotation_alignment,
                     )
                 _cells_ct = _lay_ct.get('cells', [])
                 _cap_ct = len(_cells_ct)
@@ -3670,6 +3699,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                     _lay_ce = _sm_ce(
                         _trim_w_ce, _trim_h_ce, req.gap_x, req.gap_y,
                         req.cols, req.rows, _preview_alternate_rotation,
+                        alternate_rotation_alignment=_preview_alternate_rotation_alignment,
                     )
                     if (_lay_ce.get('overallWidth', 0) > _uw_ce + 0.01
                             or _lay_ce.get('overallHeight', 0) > _uh_ce + 0.01):
@@ -3685,6 +3715,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                         gap_x=req.gap_x, gap_y=req.gap_y,
                         strategy=req.strategy, secondary_gap=getattr(req, 'split_gap', None),
                         alternate_rotation=_preview_alternate_rotation,
+                        alternate_rotation_alignment=_preview_alternate_rotation_alignment,
                     )
                 _cells_ce = _lay_ce.get('cells', [])
                 if _cells_ce:
@@ -3807,6 +3838,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                     _mp_layout = solve_manual(
                         _trim_w_mp, _trim_h_mp, req.gap_x, req.gap_y,
                         req.cols, req.rows, _preview_alternate_rotation,
+                        alternate_rotation_alignment=_preview_alternate_rotation_alignment,
                     )
                     if (_mp_layout.get('overallWidth', 0) > req.usable_w + 0.01
                             or _mp_layout.get('overallHeight', 0) > req.usable_h + 0.01):
@@ -3822,6 +3854,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                         gap_x=req.gap_x, gap_y=req.gap_y,
                         strategy=req.strategy, secondary_gap=getattr(req, 'split_gap', None),
                         alternate_rotation=_preview_alternate_rotation,
+                        alternate_rotation_alignment=_preview_alternate_rotation_alignment,
                         required_items=(
                             sequential_required_items(
                                 _live_preview_page_count, req.target_quantity,
@@ -4034,6 +4067,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                     result = solve_manual(
                         trim_w, trim_h, req.gap_x, req.gap_y,
                         req.cols, req.rows, _preview_alternate_rotation,
+                        alternate_rotation_alignment=_preview_alternate_rotation_alignment,
                     )
                     if (result.get('overallWidth', 0) > compute_w + 0.01
                             or result.get('overallHeight', 0) > compute_h + 0.01):
@@ -4053,6 +4087,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                         strategy=req.strategy,
                         secondary_gap=_split_gap_val,
                         alternate_rotation=_preview_alternate_rotation,
+                        alternate_rotation_alignment=_preview_alternate_rotation_alignment,
                         required_items=(
                             sequential_required_items(
                                 _live_preview_page_count, req.target_quantity,
@@ -4098,7 +4133,10 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                     th = page.rect.height - 2 * bleed_pt
                 cols_m = max(1, getattr(req, 'cols', 1))
                 rows_m = max(1, getattr(req, 'rows', 1))
-                sol_m = solve_manual(tw, th, req.gap_x, req.gap_y, cols_m, rows_m, _preview_alternate_rotation)
+                sol_m = solve_manual(
+                    tw, th, req.gap_x, req.gap_y, cols_m, rows_m, _preview_alternate_rotation,
+                    alternate_rotation_alignment=_preview_alternate_rotation_alignment,
+                )
                 items_m = [{
                     'x': c['x'], 'y': c['y'],
                     'width': c['width'], 'height': c['height'],
@@ -4144,6 +4182,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                     die_size_mode=_dsm_a,
                     die_offset_mm=_dom_a,
                     alternate_rotation=_preview_alternate_rotation,
+                    alternate_rotation_alignment=_preview_alternate_rotation_alignment,
                 )
                 def _compute_preview_sticker_layout():
                     return compute_sticker_layout_for_page(
@@ -4169,6 +4208,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                         die_size_mode=_dsm_a,
                         die_offset_mm=_dom_a,
                         alternate_rotation=_preview_alternate_rotation,
+                        alternate_rotation_alignment=_preview_alternate_rotation_alignment,
                         target_quantity=getattr(req, 'target_quantity', None),
                     )
                 try:
@@ -4360,6 +4400,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                 result = solve_manual(
                     trim_w, trim_h, req.gap_x, req.gap_y,
                     req.cols, req.rows, _preview_alternate_rotation,
+                    alternate_rotation_alignment=_preview_alternate_rotation_alignment,
                 )
                 if (result.get('overallWidth', 0) > req.usable_w + 0.01
                         or result.get('overallHeight', 0) > req.usable_h + 0.01):
@@ -4378,6 +4419,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                     strategy=req.strategy,
                     secondary_gap=getattr(req, 'split_gap', None),
                     alternate_rotation=_preview_alternate_rotation,
+                    alternate_rotation_alignment=_preview_alternate_rotation_alignment,
                     required_items=(
                         sequential_required_items(
                             req.total_pages or 1, req.target_quantity,
@@ -4406,7 +4448,11 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
             )
             from app.workers.nup_layout_solver import apply_alternate_rotation
             if str(req.shape_type or '').strip().upper() == 'RECTANGLE':
-                result = apply_alternate_rotation(result, _preview_alternate_rotation)
+                result = apply_alternate_rotation(
+                    result,
+                    _preview_alternate_rotation,
+                    alignment=_preview_alternate_rotation_alignment,
+                )
         
         items = result.get("items", [])
         items = apply_preview_collisions(items, req.item_w, req.item_h, req, result.get("widthUsed", 0), result.get("heightUsed", 0))
@@ -4531,6 +4577,7 @@ def _sticker_nest_cache_key(
     *, file_path, mtime, page_idx, compute_w, compute_h, gap_x, gap_y,
     strategy, shape_override, shape_props, bleed_pt, secondary_gap,
     cut_type, die_size_mode, die_offset_mm, alternate_rotation='none',
+    alternate_rotation_alignment='foot_to_foot',
 ):
     """Một cache key dùng chung cho batch capacity và preview từng trang.
 
@@ -4548,6 +4595,7 @@ def _sticker_nest_cache_key(
         float(secondary_gap) if secondary_gap is not None else None,
         cut_type, die_size_mode, float(die_offset_mm or 0),
         str(alternate_rotation or 'none'),
+        str(alternate_rotation_alignment or 'foot_to_foot'),
     )
 
 
@@ -4622,6 +4670,7 @@ class PreviewLayoutBatchRequest(BaseModel):
     gap_y: float
     strategy: str = "optimal_auto"
     alternate_rotation: Literal["none", "row", "column"] = "none"
+    alternate_rotation_alignment: Literal["head_to_head", "foot_to_foot"] = "foot_to_foot"
     cols: int = 0
     rows: int = 0
     # Mỗi phần tử: {page_idx:int, shape_type?:str, shape_props?:dict, item_w?:float, item_h?:float}
@@ -4732,7 +4781,13 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
         req.task_mode = "step_repeat" if req.task_mode == "step_repeat" else "nup"
         req.cut_type = "default"
     _batch_alternate_rotation = req.alternate_rotation
-    from app.workers.nup_layout_solver import rectangle_inking_is_allowed
+    from app.workers.nup_layout_solver import (
+        rectangle_inking_is_allowed,
+        normalize_alternate_rotation_alignment,
+    )
+    _batch_alternate_rotation_alignment = normalize_alternate_rotation_alignment(
+        getattr(req, "alternate_rotation_alignment", "foot_to_foot")
+    )
     _batch_shapes = {
         str(index): page.get("shape_type")
         for index, page in enumerate(req.pages or [])
@@ -4750,6 +4805,7 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
         or (bool(req.is_die_cut) and not _batch_diecut_inking)
     ):
         _batch_alternate_rotation = "none"
+        _batch_alternate_rotation_alignment = "foot_to_foot"
     enforce_feature(_imposition_feature(req), license_info)
     if req.strategy == 'manual' and (req.cols <= 0 or req.rows <= 0):
         raise HTTPException(
@@ -4895,6 +4951,7 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
                 gridStrategy="manual", cols=req.cols, rows=req.rows, targetQuantity=1,
                 targetQuantitiesByPage={}, taskMode="nup", layoutType="sequential",
                 alternateRotation=_batch_alternate_rotation,
+                alternateRotationAlignment=_batch_alternate_rotation_alignment,
                 sheetWidth=(req.sheet_w or (compute_w + req.margin_left + req.margin_right)) / (72 / 25.4),
                 sheetHeight=(req.sheet_h or (compute_h + req.margin_top + req.margin_bottom)) / (72 / 25.4),
             )
@@ -4926,6 +4983,7 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
                 die_size_mode=req.die_size_mode,
                 die_offset_mm=req.die_offset_mm,
                 alternate_rotation=_batch_alternate_rotation,
+                alternate_rotation_alignment=_batch_alternate_rotation_alignment,
             )
         else:
             _batch_ck = (
@@ -4941,6 +4999,7 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
                 int(req.cols or 0), int(req.rows or 0),
                 bool(req.page_sheet_mode),
                 _batch_alternate_rotation,
+                _batch_alternate_rotation_alignment,
                 round(float(req.sheet_w or 0), 3),
                 round(float(req.sheet_h or 0), 3),
                 round(float(req.margin_left or 0), 3),
@@ -4975,6 +5034,7 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
                         die_size_mode=getattr(req, 'die_size_mode', 'die'),
                         die_offset_mm=getattr(req, 'die_offset_mm', 0),
                         alternate_rotation=_batch_alternate_rotation,
+                        alternate_rotation_alignment=_batch_alternate_rotation_alignment,
                     )
 
                 result, _ = _get_or_compute_sticker_layout(
@@ -5003,6 +5063,7 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
                     res = solve_manual(
                         trim_w, trim_h, req.gap_x, req.gap_y,
                         req.cols, req.rows, _batch_alternate_rotation,
+                        alternate_rotation_alignment=_batch_alternate_rotation_alignment,
                     )
                     if (res.get('overallWidth', 0) > compute_w + 0.01
                             or res.get('overallHeight', 0) > compute_h + 0.01):
@@ -5018,6 +5079,7 @@ def preview_layouts_batch(req: PreviewLayoutBatchRequest, license_info: dict = D
                         strategy=req.strategy,
                         secondary_gap=_secondary_gap,
                         alternate_rotation=_batch_alternate_rotation,
+                        alternate_rotation_alignment=_batch_alternate_rotation_alignment,
                     )
                 _cells = list(res.get('cells', []))
                 if (

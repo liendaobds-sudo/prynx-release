@@ -10,7 +10,7 @@ import {
     type PrepareStickerWorkspaceSource,
     type StickerMaskTool,
 } from './stickerSheetStore';
-import { ToolNumberInput, ToolSectionLabel } from './ToolUI';
+import { ToolCollapsibleSection, ToolNumberInput, ToolSectionLabel } from './ToolUI';
 
 
 interface Props {
@@ -28,6 +28,12 @@ const TOOL_OPTIONS: Array<{ id: StickerMaskTool; label: string; hint: string }> 
     { id: 'merge', label: 'Gộp với tem', hint: 'Chọn chi tiết rời, sau đó chọn tem chính.' },
 ];
 
+const CORNER_STYLES = [
+    { id: 'preserve', label: '🎯 Giữ nguyên' },
+    { id: 'round', label: '🟢 Góc tròn' },
+    { id: 'miter', label: '🔺 Góc nhọn' },
+] as const;
+
 function cutlineRoundRadiusMm(roundness: number): number {
     // QUALITY (feedback 2026-08-19 §CUTROUND.7): phải khớp helper backend.
     return Math.max(0, Math.min(100, roundness)) / 100 * 3;
@@ -36,60 +42,6 @@ function cutlineRoundRadiusMm(roundness: number): number {
 function formatStageElapsed(milliseconds: number): string {
     const seconds = milliseconds / 1000;
     return seconds < 10 ? `${seconds.toFixed(1)}s` : `${Math.round(seconds)}s`;
-}
-
-interface CutlineSliderProps {
-    label: string;
-    ariaLabel: string;
-    value: number;
-    min?: number;
-    max?: number;
-    step?: number;
-    valueLabel: string;
-    lowLabel: string;
-    highLabel: string;
-    disabled: boolean;
-    onChange: (value: number) => void;
-}
-
-function CutlineSlider({
-    label,
-    ariaLabel,
-    value,
-    min = 0,
-    max = 100,
-    step = 1,
-    valueLabel,
-    lowLabel,
-    highLabel,
-    disabled,
-    onChange,
-}: CutlineSliderProps) {
-    return (
-        <label className="block">
-            <div className="mb-1 flex items-center justify-between gap-2 text-[11px] font-semibold text-slate-700 dark:text-zinc-200">
-                <span>{tv(label, 'preprocess.stickerSheet')}</span>
-                <span className="text-[10px] font-bold text-violet-700 dark:text-violet-300">
-                    {valueLabel}
-                </span>
-            </div>
-            <input
-                type="range"
-                aria-label={tv(ariaLabel, 'preprocess.stickerSheet')}
-                min={min}
-                max={max}
-                step={step}
-                value={value}
-                onChange={event => onChange(Number(event.target.value))}
-                disabled={disabled}
-                className="w-full accent-violet-600"
-            />
-            <div className="mt-0.5 flex justify-between text-[9px] text-slate-500 dark:text-zinc-400">
-                <span>{tv(lowLabel, 'preprocess.stickerSheet')}</span>
-                <span>{tv(highLabel, 'preprocess.stickerSheet')}</span>
-            </div>
-        </label>
-    );
 }
 
 export default function StickerSheetPanel({
@@ -137,6 +89,7 @@ export default function StickerSheetPanel({
         && previewSimplification.maximum_error_bound_mm >= 0
         ? previewSimplification : null;
     const [settingsOpen, setSettingsOpen] = useState(state.status === 'mask-review');
+    const [cutFirstPageOnly, setCutFirstPageOnly] = useState(false);
     const busy = state.isRefining
         || state.isCutlinePreviewing
         || ['inspecting', 'detecting', 'confirming', 'exporting'].includes(state.status);
@@ -278,7 +231,7 @@ export default function StickerSheetPanel({
                         type="button"
                         onClick={() => fileInputRef.current?.click()}
                         disabled={busy}
-                        className="w-full h-10 rounded-lg border border-dashed border-violet-400 bg-violet-50 text-[12px] font-bold text-violet-700 hover:bg-violet-100 disabled:opacity-50 dark:border-violet-700 dark:bg-violet-950/30 dark:text-violet-300"
+                        className="w-full h-10 rounded-lg border border-dashed border-teal-500/40 bg-teal-50/50 text-[12px] font-bold text-teal-700 hover:bg-teal-50 disabled:opacity-50 dark:border-teal-700/50 dark:bg-teal-950/20 dark:text-teal-300"
                     >
                         {tv('Chọn một hoặc nhiều ảnh')}
                     </button>
@@ -311,7 +264,7 @@ export default function StickerSheetPanel({
                         <button
                             type="button"
                             onClick={() => { void prepareCutline(); }}
-                            className="h-10 min-w-0 rounded-lg bg-violet-600 px-3 text-[11px] font-bold text-white shadow-sm hover:bg-violet-700"
+                            className="h-10 min-w-0 rounded-lg bg-indigo-600 px-3 text-[11px] font-bold text-white shadow-sm hover:bg-indigo-700"
                         >
                             {tv('Nhận diện trang hiện tại')}
                         </button>
@@ -326,7 +279,7 @@ export default function StickerSheetPanel({
                                     prepareWorkspaceSource,
                                 );
                             }}
-                            className="h-10 min-w-0 rounded-lg border border-violet-300 bg-white px-2 text-[11px] font-bold text-violet-700 hover:bg-violet-50 dark:border-violet-800 dark:bg-zinc-900 dark:text-violet-300"
+                            className="h-10 min-w-0 rounded-lg border border-slate-300 bg-white px-2 text-[11px] font-bold text-slate-700 hover:bg-slate-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
                         >
                             {tv('Nhận diện tất cả trang')} ({pendingPageCount})
                         </button>
@@ -344,10 +297,10 @@ export default function StickerSheetPanel({
 
                     {autoSimplifyMm > 0 && (
                         <div data-testid="sticker-sheet-cutline-quality" role="status"
-                            className="rounded-lg bg-violet-50/70 px-3 py-2 text-[10px] text-slate-600 dark:bg-violet-950/20 dark:text-zinc-400">
+                            className="rounded-lg bg-teal-500/10 px-3 py-2 text-[10px] text-slate-600 dark:text-zinc-400">
                             <div className="mb-1 flex items-center justify-between gap-2 font-semibold">
                                 <span>{t('preprocess.sticker:simplify_label')}</span>
-                                <span className="text-violet-700 dark:text-violet-300">
+                                <span className="text-teal-700 dark:text-teal-300">
                                     {t('preprocess.sticker:simplify_auto')}
                                 </span>
                             </div>
@@ -367,8 +320,136 @@ export default function StickerSheetPanel({
                     )}
 
                     {canTuneCutline && (
-                        <div className="rounded-xl border border-violet-200 bg-violet-50/70 p-3 dark:border-violet-800 dark:bg-violet-950/20">
+                        <div className="rounded-xl border border-slate-200 bg-white/70 p-3 dark:border-zinc-700 dark:bg-zinc-900/40">
                             <ToolSectionLabel>{tv('Xem và chỉnh đường bế', 'preprocess.stickerSheet')}</ToolSectionLabel>
+
+                            {/* UIUX (audit 2026-09-28): Co/giãn viền và Kiểu góc theo chuẩn giao diện PDF/PNG có biên (StickerTool) */}
+                            <div className="space-y-2 mb-3">
+                                <div className="flex items-center justify-between">
+                                    <span className="text-[12.5px] font-semibold text-slate-600 dark:text-zinc-300">
+                                        {tv('Co / giãn viền')}
+                                    </span>
+                                    {state.outputSettings.offsetMm !== 0 && (
+                                        <div className="flex items-center gap-1.5 text-[11px]">
+                                            <span className={`font-semibold ${
+                                                state.outputSettings.offsetMm < 0
+                                                    ? 'text-amber-600 dark:text-amber-400'
+                                                    : 'text-teal-600 dark:text-teal-400'
+                                            }`}>
+                                                {state.outputSettings.offsetMm > 0
+                                                    ? `+${state.outputSettings.offsetMm.toFixed(1)} mm (${tv('nới ra')})`
+                                                    : `${state.outputSettings.offsetMm.toFixed(1)} mm (${tv('thu vào')})`}
+                                            </span>
+                                            <button
+                                                type="button"
+                                                title={tv('Đặt lại về 0 mm (chuẩn mép tem)')}
+                                                onClick={() => actions.setOutputSettings(tabId, { offsetMm: 0 }, 0)}
+                                                className="text-[10px] font-bold text-teal-600 hover:text-teal-800 dark:text-teal-400 underline"
+                                            >
+                                                {tv('Đặt lại')}
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+                                <div className="flex gap-2 items-end">
+                                    <ToolNumberInput
+                                        label={tv('Co / giãn viền')}
+                                        hideLabel
+                                        ariaLabel={tv('Co / giãn viền')}
+                                        value={state.outputSettings.offsetMm}
+                                        onChange={val => actions.setOutputSettings(tabId, { offsetMm: val }, 0)}
+                                        suffix="mm"
+                                        step={0.5}
+                                        min={-10}
+                                        max={10}
+                                        className="w-[90px] shrink-0"
+                                    />
+                                    <label
+                                        className={`flex-1 h-[36px] rounded-lg border px-3 flex items-center gap-2 cursor-pointer select-none transition-all ${
+                                            cutFirstPageOnly
+                                                ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300'
+                                                : 'border-slate-300 bg-white hover:border-slate-400 hover:bg-slate-50 text-slate-700 dark:border-zinc-600 dark:bg-zinc-900 dark:hover:border-zinc-500 dark:hover:bg-zinc-800 dark:text-zinc-300'
+                                        }`}
+                                    >
+                                        <input
+                                            type="checkbox"
+                                            checked={cutFirstPageOnly}
+                                            onChange={(event) => setCutFirstPageOnly(event.target.checked)}
+                                            className="peer sr-only"
+                                        />
+                                        <span
+                                            aria-hidden="true"
+                                            className={`h-[18px] w-[18px] shrink-0 rounded border-2 flex items-center justify-center transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-teal-500 peer-focus-visible:ring-offset-2 dark:peer-focus-visible:ring-offset-zinc-900 ${
+                                                cutFirstPageOnly
+                                                    ? 'border-teal-600 bg-teal-600 text-white'
+                                                    : 'border-slate-400 bg-white dark:border-zinc-500 dark:bg-zinc-950'
+                                            }`}
+                                        >
+                                            {cutFirstPageOnly && (
+                                                <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                                    <path d="M3 8.25 6.5 11.5 13 4.5" strokeLinecap="round" strokeLinejoin="round" />
+                                                </svg>
+                                            )}
+                                        </span>
+                                        <span className="min-w-0 flex-1 text-[11px] font-bold leading-tight">
+                                            {t('preprocess.sticker:tao_duong_cat_cho_trang_dau_2')}
+                                        </span>
+                                        <span
+                                            role="note"
+                                            tabIndex={0}
+                                            aria-label={t('preprocess.sticker:file_nhieu_loai_tem_dung_chung_1_khuon')}
+                                            onClick={(event) => event.preventDefault()}
+                                            onKeyDown={(event) => {
+                                                if (event.key === 'Enter' || event.key === ' ') {
+                                                    event.preventDefault();
+                                                }
+                                            }}
+                                            className="relative group/help ml-auto flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-current/25 bg-black/5 text-[10px] font-bold leading-none text-current/70 hover:bg-black/10 dark:bg-white/10 dark:hover:bg-white/15 cursor-help"
+                                        >
+                                            ?
+                                            <span
+                                                role="tooltip"
+                                                className="pointer-events-none absolute bottom-full right-0 z-[100] mb-2 w-max max-w-[280px] rounded-lg bg-slate-800 px-3 py-2.5 text-left text-[12px] font-normal leading-relaxed text-white opacity-0 shadow-xl transition-all invisible group-hover/help:visible group-hover/help:opacity-100 group-focus-within/help:visible group-focus-within/help:opacity-100 dark:bg-zinc-700 whitespace-normal break-words"
+                                            >
+                                                {t('preprocess.sticker:file_nhieu_loai_tem_dung_chung_1_khuon')}
+                                                <span
+                                                    aria-hidden="true"
+                                                    className="absolute top-full right-2 -mt-1 h-2 w-2 rotate-45 bg-slate-800 dark:bg-zinc-700"
+                                                />
+                                            </span>
+                                        </span>
+                                    </label>
+                                </div>
+
+                                <div className="flex gap-1.5 pt-1">
+                                    {CORNER_STYLES.map(option => (
+                                        <button
+                                            key={option.id}
+                                            type="button"
+                                            onClick={() => {
+                                                const nextStyle = option.id;
+                                                if (state.outputSettings.cornerStyle !== nextStyle) {
+                                                    actions.setOutputSettings(tabId, { cornerStyle: nextStyle }, 0);
+                                                }
+                                                if (nextStyle === 'preserve') {
+                                                    actions.setCutlineTuning(tabId, { tension: 0 });
+                                                } else if (nextStyle === 'round' && state.curveTension === 0) {
+                                                    actions.setCutlineTuning(tabId, { tension: 50 });
+                                                }
+                                            }}
+                                            aria-pressed={state.outputSettings.cornerStyle === option.id}
+                                            className={`flex-1 h-[32px] rounded border text-[12px] transition-all flex items-center justify-center font-bold ${
+                                                state.outputSettings.cornerStyle === option.id
+                                                    ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300'
+                                                    : 'border-slate-200 dark:border-white/10 hover:bg-slate-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400'
+                                            }`}
+                                        >
+                                            {tv(option.label)}
+                                        </button>
+                                    ))}
+                                </div>
+                            </div>
+
                             {canRefinePreview && (
                                 <div className="mb-3">
                                     <div className="mb-1.5 text-[11px] font-semibold text-slate-700 dark:text-zinc-200">
@@ -384,10 +465,10 @@ export default function StickerSheetPanel({
                                                 type="button"
                                                 aria-pressed={state.shadowCleanup === value}
                                                 onClick={() => actions.setMaskTuning(tabId, { shadowCleanup: value })}
-                                                className={`h-9 rounded-lg border text-[11px] font-bold transition-colors ${
+                                                className={`h-8 rounded-lg border text-[11px] font-bold transition-colors ${
                                                     state.shadowCleanup === value
-                                                        ? 'border-violet-500 bg-white text-violet-700 shadow-sm dark:bg-zinc-900 dark:text-violet-300'
-                                                        : 'border-violet-200 bg-violet-50 text-slate-600 dark:border-violet-900 dark:bg-violet-950/20 dark:text-zinc-300'
+                                                        ? 'border-teal-500 bg-teal-500/10 text-teal-700 shadow-sm dark:bg-zinc-900 dark:text-teal-300'
+                                                        : 'border-slate-200 bg-white text-slate-600 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300'
                                                 }`}
                                             >
                                                 {tv(label)}
@@ -397,85 +478,142 @@ export default function StickerSheetPanel({
                                 </div>
                             )}
 
-                            <div className="space-y-3">
-                                {/* §CUTJAG.3: mask của mô hình gần như nhị phân (đo được:
-                                    chỉ 2,06% pixel trung gian) nên marching-squares chỉ
-                                    trả về bậc thang pixel. Thanh này làm mượt mask TRƯỚC
-                                    khi dựng đường bế — đứng đầu nhóm vì nó tác động lên
-                                    đầu vào của ba thanh còn lại. */}
-                                <CutlineSlider
-                                    label="Khử răng cưa"
-                                    ariaLabel="Mức khử răng cưa đường bế"
-                                    value={state.cutlineDenoise}
-                                    step={5}
-                                    valueLabel={state.cutlineDenoise === 0
-                                        ? tv('Tắt', 'preprocess.stickerSheet')
-                                        : `${Math.round(state.cutlineDenoise)}%`}
-                                    lowLabel="Giữ nguyên biên"
-                                    highLabel="Mượt hơn"
-                                    disabled={!canTuneCutline}
-                                    onChange={cutlineDenoise => actions.setCutlineTuning(
-                                        tabId,
-                                        { cutlineDenoise },
-                                    )}
-                                />
-                                <CutlineSlider
-                                    label="Bám sát hình gốc"
-                                    ariaLabel="Mức bám sát hình gốc"
-                                    value={state.cutlineFidelity}
-                                    valueLabel={`${Math.round(state.cutlineFidelity)}%`}
-                                    lowLabel="Mượt hơn"
-                                    highLabel="Bám sát"
-                                    disabled={!canTuneCutline}
-                                    onChange={fidelity => {
-                                        // UIUX (audit 2026-08-10 §CUTROUND.3): cùng một
-                                        // thao tác tạo fairing và dùng Join Round khi có Offset.
-                                        actions.setOutputSettings(tabId, { cornerStyle: 'round' });
-                                        actions.setCutlineTuning(tabId, {
-                                            fidelity,
-                                            smoothness: Math.max(50, 100 - fidelity),
-                                        });
-                                    }}
-                                />
-                                <CutlineSlider
-                                    label="Độ bo cong"
-                                    ariaLabel="Độ bo cong đường bế"
-                                    value={state.curveTension}
-                                    valueLabel={`${roundRadiusMm.toFixed(2)} mm`}
-                                    lowLabel="Ít bo"
-                                    highLabel="Bo tròn"
-                                    disabled={!canTuneCutline}
-                                    onChange={roundness => {
-                                        actions.setOutputSettings(tabId, { cornerStyle: 'round' });
-                                        actions.setCutlineTuning(tabId, { tension: roundness });
-                                    }}
-                                />
-                                <CutlineSlider
-                                    label="Lọc chi tiết rời"
-                                    ariaLabel="Mức lọc chi tiết rời"
-                                    value={state.minDetailAreaMm2}
-                                    min={0}
-                                    max={5}
-                                    step={0.1}
-                                    valueLabel={`${state.minDetailAreaMm2.toFixed(1)} mm²`}
-                                    lowLabel="Giữ chi tiết nhỏ"
-                                    highLabel="Lọc mạnh"
-                                    disabled={!canTuneCutline}
-                                    onChange={minDetailAreaMm2 => actions.setCutlineTuning(
-                                        tabId,
-                                        { minDetailAreaMm2 },
-                                    )}
-                                />
-                            </div>
+                            <ToolCollapsibleSection
+                                title={t('preprocess.sticker:cutline_tuning_title')}
+                                storageKey="sticker_sheet_tinh_chinh"
+                                defaultOpen={true}
+                            >
+                                <section
+                                    data-testid="sticker-cutline-tuning"
+                                    className="pt-1"
+                                >
+                                    <div className="divide-y divide-slate-200/80 dark:divide-zinc-700/60">
+                                        <div className="py-2.5 first:pt-0">
+                                            <div className="mb-1.5 flex items-center justify-between gap-2">
+                                                <label htmlFor="sticker-curve-tension" className="text-xs font-bold text-slate-700 dark:text-zinc-300">
+                                                    {t('preprocess.stickerSheet:cutline_tension')}
+                                                </label>
+                                                <span className="shrink-0 text-xs font-bold tabular-nums text-teal-600 dark:text-teal-400">
+                                                    {roundRadiusMm.toFixed(2)} mm
+                                                </span>
+                                            </div>
+                                            <input
+                                                id="sticker-curve-tension"
+                                                type="range"
+                                                aria-label={tv('Độ bo cong đường bế', 'preprocess.stickerSheet')}
+                                                min={0}
+                                                max={100}
+                                                step={5}
+                                                value={state.curveTension}
+                                                disabled={!canTuneCutline}
+                                                onChange={(event) => {
+                                                    const roundness = Number(event.target.value);
+                                                    if (state.outputSettings.cornerStyle !== 'round' && roundness > 0) {
+                                                        actions.setOutputSettings(tabId, { cornerStyle: 'round' });
+                                                    }
+                                                    actions.setCutlineTuning(tabId, { tension: roundness });
+                                                }}
+                                                className="block w-full accent-teal-600 dark:accent-teal-400 disabled:opacity-50"
+                                            />
+                                        </div>
+
+                                        <div className="py-2.5 first:pt-0">
+                                            <div className="mb-1.5 flex items-center justify-between gap-2">
+                                                <label htmlFor="sticker-cutline-denoise" className="text-xs font-bold text-slate-700 dark:text-zinc-300">
+                                                    {t('preprocess.sticker:khu_rang_cua')}
+                                                </label>
+                                                <span className="shrink-0 text-xs font-bold tabular-nums text-teal-600 dark:text-teal-400">
+                                                    {state.cutlineDenoise === 0
+                                                        ? t('preprocess.sticker:khu_rang_cua_tat')
+                                                        : `${Math.round(state.cutlineDenoise)}%`}
+                                                </span>
+                                            </div>
+                                            <input
+                                                id="sticker-cutline-denoise"
+                                                type="range"
+                                                aria-label={tv('Mức khử răng cưa đường bế', 'preprocess.stickerSheet')}
+                                                min={0}
+                                                max={100}
+                                                step={5}
+                                                value={state.cutlineDenoise}
+                                                disabled={!canTuneCutline}
+                                                onChange={(event) => actions.setCutlineTuning(
+                                                    tabId,
+                                                    { cutlineDenoise: Number(event.target.value) },
+                                                )}
+                                                className="block w-full accent-teal-600 dark:accent-teal-400 disabled:opacity-50"
+                                            />
+                                        </div>
+
+                                        <div className="py-2.5 first:pt-0">
+                                            <div className="mb-1.5 flex items-center justify-between gap-2">
+                                                <label htmlFor="sticker-cutline-fidelity" className="text-xs font-bold text-slate-700 dark:text-zinc-300">
+                                                    {tv('Bám sát hình gốc', 'preprocess.stickerSheet')}
+                                                </label>
+                                                <span className="shrink-0 text-xs font-bold tabular-nums text-teal-600 dark:text-teal-400">
+                                                    {Math.round(state.cutlineFidelity)}%
+                                                </span>
+                                            </div>
+                                            <input
+                                                id="sticker-cutline-fidelity"
+                                                type="range"
+                                                aria-label={tv('Mức bám sát hình gốc', 'preprocess.stickerSheet')}
+                                                min={0}
+                                                max={100}
+                                                step={1}
+                                                value={state.cutlineFidelity}
+                                                disabled={!canTuneCutline}
+                                                onChange={(event) => {
+                                                    const fidelity = Number(event.target.value);
+                                                    if (state.outputSettings.cornerStyle !== 'round') {
+                                                        actions.setOutputSettings(tabId, { cornerStyle: 'round' });
+                                                    }
+                                                    actions.setCutlineTuning(tabId, {
+                                                        fidelity,
+                                                        smoothness: Math.max(50, 100 - fidelity),
+                                                    });
+                                                }}
+                                                className="block w-full accent-teal-600 dark:accent-teal-400 disabled:opacity-50"
+                                            />
+                                        </div>
+
+                                        <div className="py-2.5 first:pt-0">
+                                            <div className="mb-1.5 flex items-center justify-between gap-2">
+                                                <label htmlFor="sticker-min-detail-area" className="text-xs font-bold text-slate-700 dark:text-zinc-300">
+                                                    {tv('Lọc chi tiết rời', 'preprocess.stickerSheet')}
+                                                </label>
+                                                <span className="shrink-0 text-xs font-bold tabular-nums text-teal-600 dark:text-teal-400">
+                                                    {state.minDetailAreaMm2.toFixed(1)} mm²
+                                                </span>
+                                            </div>
+                                            <input
+                                                id="sticker-min-detail-area"
+                                                type="range"
+                                                aria-label={tv('Mức lọc chi tiết rời', 'preprocess.stickerSheet')}
+                                                min={0}
+                                                max={5}
+                                                step={0.1}
+                                                value={state.minDetailAreaMm2}
+                                                disabled={!canTuneCutline}
+                                                onChange={(event) => actions.setCutlineTuning(
+                                                    tabId,
+                                                    { minDetailAreaMm2: Number(event.target.value) },
+                                                )}
+                                                className="block w-full accent-teal-600 dark:accent-teal-400 disabled:opacity-50"
+                                            />
+                                        </div>
+                                    </div>
+                                </section>
+                            </ToolCollapsibleSection>
 
                             {state.isRefining ? (
-                                <div className="mt-2 flex items-center text-[10px] font-semibold text-violet-700 dark:text-violet-300">
-                                    <span className="mr-1.5 h-3 w-3 animate-spin rounded-full border-2 border-violet-500 border-t-transparent" />
+                                <div className="mt-2 flex items-center text-[10px] font-semibold text-teal-700 dark:text-teal-300">
+                                    <span className="mr-1.5 h-3 w-3 animate-spin rounded-full border-2 border-teal-500 border-t-transparent" />
                                     {tv('Đang khử bóng…', 'preprocess.stickerSheet')}
                                 </div>
                             ) : state.isCutlinePreviewing ? (
-                                <div className="mt-2 flex items-center text-[10px] font-semibold text-violet-700 dark:text-violet-300">
-                                    <span className="mr-1.5 h-3 w-3 animate-spin rounded-full border-2 border-violet-500 border-t-transparent" />
+                                <div className="mt-2 flex items-center text-[10px] font-semibold text-teal-700 dark:text-teal-300">
+                                    <span className="mr-1.5 h-3 w-3 animate-spin rounded-full border-2 border-teal-500 border-t-transparent" />
                                     {tv('Đang cập nhật đường bế…', 'preprocess.stickerSheet')}
                                 </div>
                             ) : (
@@ -526,8 +664,8 @@ export default function StickerSheetPanel({
                                                 disabled={busy}
                                                 className={`min-h-10 rounded-lg border px-1.5 text-[10px] font-bold transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                                                     state.activeTool === option.id
-                                                        ? 'border-violet-500 bg-violet-100 text-violet-800 dark:bg-violet-950/50 dark:text-violet-200'
-                                                        : 'border-slate-200 bg-white text-slate-600 hover:border-violet-300 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300'
+                                                        ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300'
+                                                        : 'border-slate-200 bg-white text-slate-600 hover:border-teal-300 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300'
                                                 }`}
                                             >
                                                 {tv(option.label)}
@@ -554,7 +692,7 @@ export default function StickerSheetPanel({
                                         value={state.brushRadius}
                                         onChange={event => actions.setBrushRadius(tabId, Number(event.target.value))}
                                         disabled={busy}
-                                        className="min-w-0 flex-1 accent-violet-600"
+                                        className="min-w-0 flex-1 accent-teal-600 dark:accent-teal-400"
                                     />
                                 </label>
                             )}
@@ -637,8 +775,8 @@ export default function StickerSheetPanel({
                                             disabled={busy || isExporting}
                                             className={`min-h-14 rounded-xl border px-2 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                                                 !state.outputSettings.cropToSticker
-                                                    ? 'border-violet-500 bg-violet-100 text-violet-800 dark:bg-violet-950/50 dark:text-violet-200'
-                                                    : 'border-slate-200 bg-white text-slate-600 hover:border-violet-300 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300'
+                                                    ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300 font-semibold'
+                                                    : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300'
                                             }`}
                                         >
                                             <span className="block text-[11px] font-bold">{tv('Giữ nguyên tấm')}</span>
@@ -652,8 +790,8 @@ export default function StickerSheetPanel({
                                             disabled={busy || isExporting}
                                             className={`min-h-14 rounded-xl border px-2 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                                                 state.outputSettings.cropToSticker
-                                                    ? 'border-violet-500 bg-violet-100 text-violet-800 dark:bg-violet-950/50 dark:text-violet-200'
-                                                    : 'border-slate-200 bg-white text-slate-600 hover:border-violet-300 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300'
+                                                    ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300 font-semibold'
+                                                    : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300'
                                             }`}
                                         >
                                             <span className="block text-[11px] font-bold">{tv('Tách từng tem')}</span>
@@ -669,7 +807,7 @@ export default function StickerSheetPanel({
                                             type="button"
                                             onClick={() => { void finalizeMaskAndExport(onExportPng); }}
                                             disabled={!onExportPng || busy || isExporting || !allPagesExportable}
-                                            className="h-11 rounded-xl border border-violet-300 bg-white text-[11px] font-bold text-violet-700 shadow-sm hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-violet-800 dark:bg-zinc-900 dark:text-violet-300"
+                                            className="h-11 rounded-xl border border-slate-300 bg-white text-[11px] font-bold text-slate-700 shadow-sm hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300"
                                         >
                                             {tv('Lưu bộ PNG')}
                                         </button>
@@ -677,7 +815,7 @@ export default function StickerSheetPanel({
                                             type="button"
                                             onClick={() => { void finalizeMaskAndExport(onExport); }}
                                             disabled={!onExport || busy || isExporting || !allPagesExportable}
-                                            className="h-11 rounded-xl bg-violet-600 px-2 text-[11px] font-bold text-white shadow-sm hover:bg-violet-700 disabled:cursor-not-allowed disabled:opacity-50"
+                                            className="h-11 rounded-xl bg-indigo-600 px-2 text-[11px] font-bold text-white shadow-sm hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
                                         >
                                             {isExporting ? tv('Đang tạo file…') : tv('Tạo PDF có đường cắt')}
                                         </button>

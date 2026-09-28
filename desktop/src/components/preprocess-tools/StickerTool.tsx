@@ -3,7 +3,7 @@ import { ChevronDown, CircleDot, Square } from 'lucide-react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 import { recipeRecorder, type RecipeOperationTicket } from '../../lib/recipe/RecipeRecorder';
-import { ToolCollapsibleSection, ToolCheckboxOption, ToolNumberInput, ToolSectionLabel } from './ToolUI';
+import { ToolCollapsibleSection, ToolNumberInput, ToolSectionLabel } from './ToolUI';
 import { RichSelect, ToolItem } from '../imposition-tools/SharedUI';
 import {
     useWorkspaceStore,
@@ -25,6 +25,7 @@ import { requestOpenTool } from '../../lib/tabNavigation';
 import { MIXED_NESTING_ENABLED } from '../../lib/mixed-nesting/rollout';
 import { useToolActivationGuard } from '../../hooks/useToolActivationGuard';
 import { useClassicCutlinePreview } from './useClassicCutlinePreview';
+import { sendCutlineDebugLog } from '../../lib/stickerSheetApi';
 
 interface Props {
     tabId?: string;
@@ -240,6 +241,15 @@ export function resetStickerPreferences(): boolean {
         warnStickerStorage(error);
         return false;
     }
+}
+
+function filterOutNoiseWarnings(text?: string | null): string {
+    if (!text) return '';
+    return text
+        .split(/(?=Trang \d+:)/g)
+        .filter(part => !part.includes('chưa tìm được dải màu viền sạch') && !part.includes('Màu viền lấy mẫu không ổn định'))
+        .join(' ')
+        .trim();
 }
 
 export default function StickerTool({
@@ -768,7 +778,8 @@ export default function StickerTool({
         let warningText: string | undefined;
         if (warnHeader) {
             try { warningText = decodeURIComponent(warnHeader); } catch { warningText = warnHeader; }
-            setWarning(warningText);
+            const cleaned = filterOutNoiseWarnings(warningText);
+            setWarning(cleaned);
         }
         
         const outputPath = response.headers.get('X-Sticker-Output-Path') || undefined;
@@ -878,8 +889,9 @@ export default function StickerTool({
                     const confidenceWarning = t('preprocess.sticker:canh_bao_do_tin_cay_thap', {
                         confidence: Math.round(result.cutConfidence * 100),
                     });
-                    setWarning(result.warning
-                        ? `${result.warning}\n${confidenceWarning}`
+                    const cleanedWarning = filterOutNoiseWarnings(result.warning);
+                    setWarning(cleanedWarning
+                        ? `${cleanedWarning}\n${confidenceWarning}`
                         : confidenceWarning);
                 }
             }
@@ -931,6 +943,9 @@ export default function StickerTool({
 
     // Auto-fix bleedColorType when switching tabs
     const handleProductTypeChange = (type: 'sticker' | 'rectangle') => {
+        void sendCutlineDebugLog('UI_ACTION', `Chọn kiểu xử lý bù xén: ${type === 'sticker' ? 'Bế tem nhãn' : 'Xén vuông góc'}`, {
+            productType: type,
+        });
         if (controlledProductType === undefined) setInternalProductType(type);
         onProductTypeChange?.(type);
         const normalizedBleedColorType = normalizeStickerBleedColorType(bleedColorType, type);
@@ -1289,16 +1304,6 @@ export default function StickerTool({
                                         </button>
                                     </div>
                                 </div>
-                                {!activeObjectSelection && (
-                                    <div className="mt-2 mb-4">
-                                        <ToolCheckboxOption
-                                            selected={cropToSticker}
-                                            onClick={() => setCropToSticker(value => !value)}
-                                            label={t('preprocess.sticker:crop_trang_theo_tem')}
-                                            desc={t('preprocess.sticker:crop_trang_theo_tem_desc')}
-                                        />
-                                    </div>
-                                )}
                             </>
                         )}
                     </section>
@@ -1472,6 +1477,49 @@ export default function StickerTool({
                                 className="block w-full accent-teal-600 dark:accent-teal-400 disabled:opacity-50"
                             />
                         </div>
+                        {!activeObjectSelection && (
+                            <div className="py-3 first:pt-0">
+                                <label className="block text-xs font-bold text-slate-700 dark:text-zinc-300 mb-2">
+                                    {tv('Kiểu xuất file')}
+                                </label>
+                                <div
+                                    role="group"
+                                    aria-label={tv('Kiểu xuất file')}
+                                    className="grid grid-cols-2 gap-2"
+                                >
+                                    <button
+                                        type="button"
+                                        aria-label={tv('Giữ nguyên tấm')}
+                                        aria-pressed={!cropToSticker}
+                                        onClick={() => setCropToSticker(false)}
+                                        disabled={isProcessing}
+                                        className={`min-h-14 rounded-xl border px-2 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                                            !cropToSticker
+                                                ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300 font-semibold'
+                                                : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300'
+                                        }`}
+                                    >
+                                        <span className="block text-[11px] font-bold">{tv('Giữ nguyên tấm')}</span>
+                                        <span className="mt-0.5 block text-[9px] font-medium opacity-75">{tv('Một trang, giữ vị trí và đường cắt từng tem')}</span>
+                                    </button>
+                                    <button
+                                        type="button"
+                                        aria-label={tv('Tách ra từng tem')}
+                                        aria-pressed={cropToSticker}
+                                        onClick={() => setCropToSticker(true)}
+                                        disabled={isProcessing}
+                                        className={`min-h-14 rounded-xl border px-2 py-2 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                                            cropToSticker
+                                                ? 'border-teal-500 bg-teal-500/10 text-teal-700 dark:text-teal-300 font-semibold'
+                                                : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-300'
+                                        }`}
+                                    >
+                                        <span className="block text-[11px] font-bold">{tv('Tách ra từng tem')}</span>
+                                        <span className="mt-0.5 block text-[9px] font-medium opacity-75">{tv('Mỗi tem là một trang PDF riêng')}</span>
+                                    </button>
+                                </div>
+                            </div>
+                        )}
                     </div>
                 </section>
                 </ToolCollapsibleSection>
@@ -1675,7 +1723,7 @@ export default function StickerTool({
                         </span>
                     </div>
                 )}
-            {cutlinePreview.error && (
+            {cutlinePreview.error && !cutlinePreview.error.includes('Không suy ra được một biên tem') && !cutlinePreview.error.includes('single continuous sticker boundary') && (
                 <div
                     role="alert"
                     aria-live="assertive"
@@ -1683,17 +1731,6 @@ export default function StickerTool({
                 >
                     <span className="text-[12px] text-amber-700 dark:text-amber-300 font-medium">
                         ⚠️ {cutlinePreview.error}
-                    </span>
-                </div>
-            )}
-            {cutlinePreview.warning && (
-                <div
-                    role="alert"
-                    aria-live="polite"
-                    className="mt-2 rounded-lg border border-amber-200 bg-amber-50 p-3 dark:border-amber-800/50 dark:bg-amber-900/20"
-                >
-                    <span className="whitespace-pre-line text-[12px] font-medium text-amber-700 dark:text-amber-300">
-                        ⚠️ {cutlinePreview.warning}
                     </span>
                 </div>
             )}

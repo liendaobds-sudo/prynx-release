@@ -19,7 +19,13 @@ impl Renderer<'_> {
         if kind==2 {
             let obj=dict.get(b"Shading").map_err(|e|PpeError::MalformedPdf(e.to_string()))?;
             let cs=resolve_shading_colorspace(self.doc,obj,resources,&mut self.warnings)?;
-            let shading=resolve_shading_with_colorspace(self.doc,obj,cs)?;
+            // MEMORY (audit 2026-09-28 §KNOCK.R1): registrar retained chỉ1px,
+            // nên phải giữ cả budget request, không dựa riêng default của buffer.
+            // Chốt này cho một lần resolve, chưa là lease cho toàn scene tích lũy.
+            let remaining=self.opts.memory_budget_bytes.min(self.buffer.memory_limit_bytes())
+                .saturating_sub(self.buffer.memory_used_bytes());
+            let shading=crate::shading::resolve_shading_with_colorspace_bounded(
+                self.doc,obj,cs,remaining,self.opts.cancellation_token())?;
             let mut state=StateStack::new(initial);
             if let Some(gs)=pdf::dict_get_dict(self.doc,dict,"ExtGState") {
                 let mut res=Dictionary::new();res.set("ExtGState",lopdf::dictionary!{"PatternGS"=>gs.clone()});
@@ -100,5 +106,64 @@ impl Renderer<'_> {
         let gs=stack.current();let mut paint=self.retained_resource_paint(gs);
         if stroke{paint.alpha=gs.stroke_alpha;paint.overprint=self.opts.simulate_overprint && gs.stroke_overprint;}
         self.retain_draw(RetainedKind::Group{commands,isolated:false,knockout,blend_space:self.blend_space},paint,gs);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lopdf::{dictionary, Stream};
+
+    fn mesh_pattern_document() -> Document {
+        let mut doc = Document::with_version("1.7");
+        let mesh = Stream::new(dictionary! {
+            "ShadingType"=>7, "ColorSpace"=>"DeviceGray", "BitsPerCoordinate"=>8,
+            "BitsPerComponent"=>8, "BitsPerFlag"=>8,
+            "Decode"=>vec![0.into(),100.into(),0.into(),100.into(),0.into(),1.into()],
+        }, vec![0; 37 * 64]);
+        let resources = dictionary! { "Pattern"=>dictionary! {
+            "P"=>dictionary! {"PatternType"=>2,"Shading"=>Object::Stream(mesh)},
+        }};
+        let pages = doc.new_object_id();
+        let contents = doc.add_object(Stream::new(Dictionary::new(),
+            b"/Pattern cs /P scn 0 0 100 100 re f".to_vec()));
+        let page = doc.add_object(dictionary! { "Type"=>"Page","Parent"=>pages,
+            "MediaBox"=>vec![0.into(),0.into(),100.into(),100.into()],
+            "Resources"=>resources,"Contents"=>contents });
+        doc.set_object(pages, dictionary! {"Type"=>"Pages","Kids"=>vec![Object::Reference(page)],"Count"=>1});
+        let catalog = doc.add_object(dictionary! {"Type"=>"Catalog","Pages"=>pages});
+        doc.trailer.set("Root", catalog);
+        doc
+    }
+
+    #[test]
+    fn retained_mesh_pattern_obeys_request_budget_not_registrar_default() {
+        let doc = mesh_pattern_document();
+        let opts = RenderOptions::viewer().with_memory_budget_bytes(1024);
+        assert!(matches!(
+            RetainedPage::compile(&doc, 1, opts, None),
+            Err(PpeError::MemoryBudgetExceeded { .. })
+        ), "registrar1px mặc định512MiB không được bỏ qua budget request1KiB");
+    }
+
+    #[test]
+    fn retained_mesh_pattern_keeps_compact_patches_when_budget_is_sufficient() {
+        let doc = mesh_pattern_document();
+        let page = RetainedPage::compile(&doc, 1,
+            RenderOptions::viewer().with_memory_budget_bytes(1024 * 1024), None).unwrap();
+        assert_eq!(page.warnings.dropped_objects, 0);
+        let RetainedKind::Group { commands, .. } = &page.commands[0].kind else { panic!("thiếu group pattern"); };
+        let RetainedKind::Shading { shading, .. } = &commands[0].kind else { panic!("thiếu shading pattern"); };
+        let ShadingKind::Patches { patches } = &shading.kind else { panic!("patch không được giữ gọn"); };
+        assert_eq!(patches.len(), 64);
+    }
+
+    #[test]
+    fn retained_mesh_pattern_preserves_cancellation() {
+        let doc = mesh_pattern_document();
+        let token = crate::cancel::CancelToken::new();
+        token.cancel();
+        assert!(matches!(RetainedPage::compile(&doc, 1,
+            RenderOptions::viewer().with_cancel_token(token), None), Err(PpeError::Cancelled)));
     }
 }

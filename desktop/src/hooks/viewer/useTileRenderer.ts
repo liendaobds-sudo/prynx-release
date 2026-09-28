@@ -6,6 +6,12 @@ import {
     type TileUrlSource,
 } from '../../lib/tileUrlCache';
 import { CancelledTileRenderError } from './tileRenderScheduler';
+import {
+    isRecognizedPpeUnsupportedStatus,
+    parsePpeUnsupportedStatus,
+    type PpeUnsupportedStatus,
+} from './ppeUnsupportedPolicy';
+export { parsePpeUnsupportedStatus, type PpeUnsupportedStatus } from './ppeUnsupportedPolicy';
 import { authenticatedFetch, getApiUrl } from '../../lib/api';
 import {
     nativeRenderCoordinator,
@@ -112,12 +118,24 @@ const DISPLAY_ONLY_STAGES: readonly ViewerColorStage[] = ['display'];
 const ACCURATE_ONLY_STAGES: readonly ViewerColorStage[] = ['accurate'];
 export const ACCURATE_VIEWER_DPI_BUCKET = 12;
 const PPE_NATIVE_FALLBACK_BEFORE_START_PREFIX = 'PPE_NATIVE_FALLBACK_BEFORE_START:';
-const PPE_NATIVE_UNSUPPORTED_PREFIX = 'PPE_NATIVE_UNSUPPORTED:';
 
-export interface PpeUnsupportedStatus {
-    reason: string;
-    detail: string;
-    fallbackFontSha256?: string | null;
+export function resolveViewerPageColorMode({
+    requestedAccurate, strictProofRequired, viewerEngineMode, unsupported,
+}: {
+    requestedAccurate: boolean;
+    strictProofRequired: boolean;
+    viewerEngineMode: ViewerEngineMode;
+    unsupported: PpeUnsupportedStatus | null;
+}): { accurateColorPage: boolean; compatibility: PpeUnsupportedStatus | null } {
+    const compatibility = requestedAccurate && !strictProofRequired && viewerEngineMode !== 'ppe-only'
+        && isRecognizedPpeUnsupportedStatus(unsupported) ? unsupported : null;
+    return { accurateColorPage: requestedAccurate && !compatibility, compatibility };
+}
+
+interface PpeCapabilityScope {
+    key: string;
+    epoch: number;
+    pages: ReadonlyMap<number, { status: PpeUnsupportedStatus; message: string }>;
 }
 
 function renderErrorMessage(error: unknown): string {
@@ -129,24 +147,6 @@ function canFallbackPpeToHttp(error: unknown): boolean {
     return renderErrorMessage(error)
         .trimStart()
         .startsWith(PPE_NATIVE_FALLBACK_BEFORE_START_PREFIX);
-}
-
-export function parsePpeUnsupportedStatus(error: unknown): PpeUnsupportedStatus | null {
-    const message = renderErrorMessage(error).trimStart();
-    if (!message.startsWith(PPE_NATIVE_UNSUPPORTED_PREFIX)) return null;
-    try {
-        const raw = JSON.parse(message.slice(PPE_NATIVE_UNSUPPORTED_PREFIX.length));
-        if (!raw || typeof raw.reason !== 'string' || typeof raw.detail !== 'string') return null;
-        return {
-            reason: raw.reason,
-            detail: raw.detail,
-            fallbackFontSha256: typeof raw.fallbackFontSha256 === 'string'
-                ? raw.fallbackFontSha256
-                : null,
-        };
-    } catch {
-        return null;
-    }
 }
 
 export function shouldAutoDisableAccurateColor(
@@ -480,6 +480,22 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
         normalizedIntent,
     )}${accurateProofIdentity === defaultProofIdentity ? '' : `|${accurateProofIdentity}`}`;
     const accurateRenderIdentity = `${fileIdentity}|simulation:${normalizedProfileId}:${normalizedIntent}|${accurateProofIdentity}`;
+    // COLOR (audit 2026-09-28 §KNOCK.V1): trạng thái theo nội dung/proof thật,
+    // không theo :rN của tile-refined. Đổi A→B→A vẫn là epoch mới để response
+    // muộn không hồi sinh quyết định của lần mở cũ. Không cache chéo tab.
+    const capabilityKey = JSON.stringify([
+        nativePath || pdfUrl || 'memory', nativeDocumentIdentity?.token ?? 'memory', accuratePipelineIdentity,
+    ]);
+    const capabilityScopeRef = useRef<PpeCapabilityScope>({ key: capabilityKey, epoch: 1, pages: new Map() });
+    if (capabilityScopeRef.current.key !== capabilityKey) {
+        capabilityScopeRef.current = { key: capabilityKey, epoch: capabilityScopeRef.current.epoch + 1, pages: new Map() };
+    }
+    const capabilityEpoch = capabilityScopeRef.current.epoch;
+    const [capabilityState, setCapabilityState] = useState(capabilityScopeRef.current);
+    const getPpeUnsupportedStatus = useCallback((page: number): PpeUnsupportedStatus | null => {
+        if (capabilityScopeRef.current.epoch !== capabilityEpoch || capabilityState.epoch !== capabilityEpoch) return null;
+        return capabilityState.pages.get(page)?.status ?? null;
+    }, [capabilityEpoch, capabilityState]);
     const shadowedPagesRef = useRef<{ fileIdentity: string; keys: Set<string> }>({
         fileIdentity,
         keys: new Set(),
@@ -731,6 +747,16 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
             };
 
             if (useAccuratePipeline) {
+                if (capabilityScopeRef.current.epoch !== capabilityEpoch) return Promise.reject(new CancelledTileRenderError());
+                const knownUnsupported = capabilityScopeRef.current.pages.get(pageNum);
+                if (knownUnsupported) {
+                    // Không gọi PPE lặp theo từng mức zoom; accurate vẫn thất bại,
+                    // caller phải chủ động tạo yêu cầu DISPLAY mới cho cả trang.
+                    setAccurateColorFailure(previous => previous?.fileIdentity === accurateRenderIdentity
+                        && previous.message === knownUnsupported.message ? previous
+                        : { fileIdentity: accurateRenderIdentity, message: knownUnsupported.message });
+                    return Promise.reject(new Error(knownUnsupported.message));
+                }
                 let actualEngine: 'ppe-native' | 'ppe-http' = 'ppe-native';
                 // COLOR (audit 2026-08-07 §GV.3): trang CMYK/DeviceN/transparency
                 // được dựng trong không gian mực rồi mới quy profile mô phỏng→sRGB. Chỉ xin
@@ -749,6 +775,10 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
                     pageNum,
                     ownerId,
                 });
+                const assertAccurateResultCurrent = () => {
+                    if (abortController.signal.aborted || capabilityScopeRef.current.epoch !== capabilityEpoch
+                        || capabilityScopeRef.current.pages.has(pageNum)) throw new CancelledTileRenderError();
+                };
                 return nativeRenderCoordinator.renderPng({
                     request: coordinatedRequest,
                     bypassScheduler: true,
@@ -806,6 +836,7 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
                                         request_id: request.requestId, priority: request.priority,
                                         round_trip_ms: performance.now() - ipcStartedAt, bytes: bytes.byteLength,
                                     });
+                                    assertAccurateResultCurrent();
                                     setAccurateColorFailure(null);
                                     return bytes;
                                 } catch (nativeError) {
@@ -862,6 +893,7 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
                                 throw new Error(detail.detail || `HTTP ${response.status}`);
                             }
                             const bytes = await response.arrayBuffer();
+                            assertAccurateResultCurrent();
                             setAccurateColorFailure(null);
                             return bytes;
                         } catch (error) {
@@ -869,10 +901,30 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
                                 abortController.signal.aborted
                                 || error instanceof CancelledTileRenderError
                                 || renderErrorMessage(error).includes('đã bị hủy')
+                                || capabilityScopeRef.current.epoch !== capabilityEpoch
                             ) {
                                 throw new CancelledTileRenderError();
                             }
                             const message = renderErrorMessage(error);
+                            const unsupported = parsePpeUnsupportedStatus(error);
+                            if (isRecognizedPpeUnsupportedStatus(unsupported)) {
+                                const current = capabilityScopeRef.current;
+                                if (!current.pages.has(pageNum)) {
+                                    const next: PpeCapabilityScope = { ...current, pages: new Map(current.pages).set(pageNum, {
+                                        status: Object.freeze({ ...unsupported }), message,
+                                    }) };
+                                    capabilityScopeRef.current = next;
+                                    setCapabilityState(next);
+                                }
+                                // Một quyết định áp toàn trang: các ô/nền PPE khác
+                                // đang chạy không được về sau rồi thắng lớp display.
+                                for (const [key, entry] of accurateRenderAbortRef.current) {
+                                    // Map có thể đã giữ controller mới cùng group;
+                                    // không hủy ngược toàn group đang báo unsupported.
+                                    if (key !== groupKey && entry.pageNum === pageNum
+                                        && entry.controller !== abortController) cancelAccurateGroup(key);
+                                }
+                            }
                             setAccurateColorFailure({ fileIdentity: accurateRenderIdentity, message });
                             // COLOR (feedback 2026-08-09 §RENDER.F1): trang rủi ro phải
                             // fail-closed; không lấy PDFium sai màu làm ảnh dự phòng rồi lại
@@ -953,7 +1005,7 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
                 }, 'image/png');
             });
         })();
-    }, [activePageRef, accurateColorEnabled, accurateColorPages, accurateDpiAnchor, accuratePipelineIdentity, accurateProofIdentity, accurateRenderIdentity, cancelAccurateGroup, cancelAccurateRendersForViewport, file, nativeDocumentIdentity, normalizedIntent, normalizedProfileId, numPages, outputPreviewFilter, pageBackgroundRgb, pdfRef, pdfUrl, renderOwnerId, simulateBlackInk, simulatePaperColor, viewerEngineMode, viewerShadowEnabled]);
+    }, [activePageRef, accurateColorEnabled, accurateColorPages, accurateDpiAnchor, accuratePipelineIdentity, accurateProofIdentity, accurateRenderIdentity, cancelAccurateGroup, cancelAccurateRendersForViewport, capabilityEpoch, file, nativeDocumentIdentity, normalizedIntent, normalizedProfileId, numPages, outputPreviewFilter, pageBackgroundRgb, pdfRef, pdfUrl, renderOwnerId, simulateBlackInk, simulatePaperColor, viewerEngineMode, viewerShadowEnabled]);
 
     // Text extraction via pdfjs
     const getTextBlocksForPage = useCallback(async (pageNum: number, existingBlocks: Record<number, ViewerTextBlock[]>) => {
@@ -985,6 +1037,7 @@ export function useTileRenderer({ file, pdfRef, pdfUrl, activePage, tabId, isAct
         // PERF (audit 2026-09-25 §R25.GPU.31): tile nét hơn không đổi nội dung scene.
         nativeSceneDocumentToken: nativeDocumentIdentity?.token ?? 'memory',
         accurateColorError,
+        getPpeUnsupportedStatus,
         cancelAccurateGroup,
     };
 }

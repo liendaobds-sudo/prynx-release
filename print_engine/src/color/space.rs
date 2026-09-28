@@ -117,6 +117,16 @@ enum SourceColorFamily {
 }
 
 impl ColorSpace {
+    /// COLOR (audit 2026-09-28 §KNOCK.04): dùng chung miền mẫu cho vector,
+    /// Indexed và ảnh; ICC Lab không được decode như RGB chỉ vì có3kênh.
+    pub(crate) fn uses_lab_components(&self) -> bool {
+        match self {
+            Self::Lab => true,
+            Self::IccBased { alternate, .. } => alternate.uses_lab_components(),
+            _ => false,
+        }
+    }
+
     fn source_family(&self) -> SourceColorFamily {
         match self {
             ColorSpace::DeviceCMYK => SourceColorFamily::DeviceCmyk,
@@ -158,6 +168,33 @@ impl ColorSpace {
             ColorSpace::Separation { .. } => vec![1.0],
             ColorSpace::DeviceN { colorants, .. } => vec![1.0; colorants.len()],
             ColorSpace::Pattern { .. } => vec![0.0],
+        }
+    }
+
+    /// COLOR (audit 2026-09-28 §KNOCK.PROCESS): miền mực process đã có
+    /// danh tính kênh rõ ràng cho số học transparency group DeviceCMYK.
+    /// DeviceN chỉ được nhận khi mọi tên đều là process không trùng nhau;
+    /// alternate CMYK không chứng minh một mực pha, /None hoặc colorspace
+    /// khác là an toàn. Tên trùng dùng phép gộp max riêng, chưa được chứng nhận.
+    pub(crate) fn supports_process_group_blending(&self) -> bool {
+        match self {
+            ColorSpace::DeviceCMYK | ColorSpace::DeviceGray => true,
+            ColorSpace::DeviceN { colorants, .. } => {
+                let mut seen = 0u8;
+                !colorants.is_empty() && colorants.iter().all(|colorant| {
+                    let bit = match colorant {
+                        Some(Colorant::Cyan) => 1,
+                        Some(Colorant::Magenta) => 2,
+                        Some(Colorant::Yellow) => 4,
+                        Some(Colorant::Black) => 8,
+                        _ => return false,
+                    };
+                    let unique = seen & bit == 0;
+                    seen |= bit;
+                    unique
+                })
+            }
+            _ => false,
         }
     }
 
@@ -293,7 +330,7 @@ impl ColorSpace {
                 }
 
                 // 3 kênh: dùng đúng profile nhúng trong file, không giả định sRGB.
-                if matches!(**alternate, ColorSpace::DeviceRGB) {
+                if matches!(**alternate, ColorSpace::DeviceRGB | ColorSpace::Lab) {
                     if let (Some(cm), Some(bytes)) = (cm, profile.as_ref()) {
                         if let Some(cmyk) = cm.embedded_to_cmyk(
                             bytes,
@@ -306,7 +343,7 @@ impl ColorSpace {
                         // Profile nhúng hỏng: hạ cờ rồi mới lùi về sRGB. Lặng lẽ
                         // coi như sRGB sẽ cho màu sai mà không ai biết.
                         warn.note_approximated_colorspace(
-                            "ICCBased: profile nhúng không đọc được, dùng sRGB",
+                            "ICCBased: profile nhúng không đọc được, dùng alternate",
                         );
                     }
                 }
@@ -329,6 +366,11 @@ impl ColorSpace {
                 lookup,
             } => {
                 warn.note_colorspace_used("Indexed");
+                if matches!(base.as_ref(), ColorSpace::IccBased { .. }) && base.uses_lab_components() {
+                    // Range ICC chưa giữ trong IR; không chứng nhận lookup Lab
+                    // theo miền mặc định như thể đã xử lý mọi Range của PDF.
+                    warn.note_approximated_colorspace("Indexed ICC Lab: chưa chứng nhận miền Range");
+                }
                 let idx = (comp(comps, 0).round().max(0.0) as usize).min(*hival);
                 let n = base.n_components();
                 let mut base_comps = Vec::with_capacity(n);
@@ -365,7 +407,7 @@ impl ColorSpace {
                 }
                 let ch = space.register(colorant.clone())?;
                 if space.wants_spot_alternates() && space.spot_alternate(ch).is_none() {
-                    if let Some(alt) = sample_spot_alternate(tint, alternate, 0, 1, cm, depth) {
+                    if let Some(alt) = sample_spot_alternate(tint, alternate, 0, 1, cm, depth, warn) {
                         space.set_spot_alternate(ch, alt);
                     }
                 }
@@ -401,7 +443,7 @@ impl ColorSpace {
                         // các kênh. Đây là xấp xỉ chuẩn cho đường xem, và chỉ được
                         // dùng ở bước xuất ảnh — đường đo vẫn giữ kẽm riêng.
                         if let Some(alt) =
-                            sample_spot_alternate(tint, alternate, i, colorants.len(), cm, depth)
+                            sample_spot_alternate(tint, alternate, i, colorants.len(), cm, depth, warn)
                         {
                             space.set_spot_alternate(ch, alt);
                         }
@@ -457,11 +499,9 @@ fn comp(comps: &[f32], i: usize) -> f32 {
 ///
 /// # Vì sao dùng cảnh báo nháp
 ///
-/// Việc lấy mẫu đi qua alternate space, nên nó sẽ ghi các note kiểu
-/// `note_colorspace_used("ICCBased")` và có thể bật cờ hạ độ tin cậy. Những cờ đó
-/// nói về *nội dung trang*, không phải về một phép quy đổi nội bộ. Ghi chúng vào
-/// `RenderWarnings` thật sẽ làm đường ĐO bị hạ tin cậy oan chỉ vì đường XEM cần
-/// một bảng tra — nên cảnh báo ở đây bị bỏ đi có chủ đích.
+/// Chỉ đường xem mới gọi lấy mẫu alternate. Vì vậy giữ nguyên diagnostic đo
+/// kẽm, nhưng lỗi chuyển màu ở đây PHẢI hạ độ tin cậy của chính ảnh xem; không
+/// được nuốt profile hỏng rồi gắn nhãn proof đúng màu.
 ///
 /// `None` khi alternate space không quy đổi được: caller để kênh không có bảng và
 /// bước xuất ảnh tự xử lý (xem [`crate::ink::InkBuffer::to_srgb`]).
@@ -472,6 +512,7 @@ fn sample_spot_alternate(
     n_comps: usize,
     cm: Option<&ColorManager>,
     depth: u32,
+    warn: &mut RenderWarnings,
 ) -> Option<SpotAlternate> {
     let steps = SpotAlternate::lut_steps();
     let mut lut = Vec::with_capacity(steps);
@@ -484,16 +525,24 @@ fn sample_spot_alternate(
             comps[comp_index] = t;
         }
         let alt_comps = tint.eval(&comps);
-        let ink = alternate
+        let converted = alternate
             .to_ink_depth(
                 &alt_comps,
                 &mut scratch_space,
                 &mut scratch_warn,
                 cm,
                 depth + 1,
-            )
-            .ok()??
-            .0;
+            );
+        for reason in &scratch_warn.approximated_colorspaces {
+            warn.note_approximated_colorspace(reason);
+        }
+        let ink = match converted {
+            Ok(Some((ink, _))) => ink,
+            _ => {
+                warn.note_approximated_colorspace("Không chuyển được alternate của mực pha");
+                return None;
+            }
+        };
         if ink.len() < 4 {
             return None;
         }
@@ -522,7 +571,7 @@ fn spread_cmyk(cmyk: [f32; 4], space: &InkSpace) -> Vec<f32> {
 fn decode_indexed_component(base: &ColorSpace, i: usize, byte: u8) -> f32 {
     let v = byte as f32 / 255.0;
     match base {
-        ColorSpace::Lab => match i {
+        base if base.uses_lab_components() => match i {
             0 => v * 100.0,
             _ => v * 255.0 - 128.0,
         },
@@ -600,21 +649,48 @@ fn resolve_cs_depth(
 
         "ICCBased" => {
             let stream_obj = arr.get(1).map(|o| pdf::deref(doc, o));
-            let (n, profile) = match stream_obj {
+            let (n, profile, declared_alternate) = match stream_obj {
                 Some(Object::Stream(s)) => {
                     let n = pdf::dict_get(doc, &s.dict, "N")
                         .and_then(pdf::as_num)
                         .unwrap_or(3.0) as usize;
-                    let bytes = s.decompressed_content().ok().map(Arc::new);
-                    (n, bytes)
+                    let bytes = pdf::stream_data(doc, arr.get(1).unwrap()).map(Arc::new);
+                    (n, bytes, pdf::dict_get(doc, &s.dict, "Alternate"))
                 }
-                _ => (3, None),
+                _ => (3, None, None),
             };
-            let alternate = match n {
+            let mut alternate = match n {
                 1 => ColorSpace::DeviceGray,
                 4 => ColorSpace::DeviceCMYK,
                 _ => ColorSpace::DeviceRGB,
             };
+            // Profile nguồn hợp lệ thắng Alternate; không phân giải một fallback
+            // CalRGB/hỏng rồi làm hạ proof dù không dùng nó. N1/N4 giữ hợp đồng cũ.
+            if n == 3 {
+                let primary = profile.as_ref().and_then(|bytes| lcms2::Profile::new_icc(bytes).ok())
+                    .map(|profile| profile.color_space());
+                match primary {
+                    Some(lcms2::ColorSpaceSignature::LabData) => alternate = ColorSpace::Lab,
+                    Some(lcms2::ColorSpaceSignature::RgbData) => alternate = ColorSpace::DeviceRGB,
+                    _ => if let Some(obj) = declared_alternate {
+                        let resolved = resolve_cs_depth(doc, obj, resources, warn, depth + 1)?;
+                        if resolved.n_components() == n {
+                            alternate = resolved;
+                        } else {
+                            warn.note_approximated_colorspace("ICCBased: số kênh Alternate không khớp N");
+                        }
+                    },
+                }
+                if alternate.uses_lab_components() {
+                    if let Some(Object::Stream(stream)) = stream_obj {
+                        if let Some(range) = pdf::dict_get(doc, &stream.dict, "Range") {
+                            if pdf::num_array(doc, range).as_deref() != Some(&[0., 100., -128., 127., -128., 127.]) {
+                                warn.note_approximated_colorspace("ICC Lab: chưa hỗ trợ Range khác miền chuẩn");
+                            }
+                        }
+                    }
+                }
+            }
             Ok(ColorSpace::IccBased {
                 alternate: Box::new(alternate),
                 profile,
@@ -1028,6 +1104,44 @@ mod tests {
             !OutputPreviewFilter::DeviceCmyk.matches_color_space(&sep("PANTONE 186 C")),
             "Separation không được phân loại theo alternate CMYK"
         );
+    }
+
+    #[test]
+    fn process_group_blending_requires_only_explicit_process_colorants() {
+        let device_n = |colorants| ColorSpace::DeviceN {
+            colorants,
+            alternate: Box::new(ColorSpace::DeviceCMYK),
+            tint: Arc::new(PdfFunction::Identity { n_out: 4 }),
+        };
+        for colorspace in [
+            ColorSpace::DeviceCMYK,
+            ColorSpace::DeviceGray,
+            device_n(vec![Some(Colorant::Cyan), Some(Colorant::Magenta), Some(Colorant::Yellow)]),
+            device_n(vec![Some(Colorant::Black)]),
+            device_n(vec![Some(Colorant::Black), Some(Colorant::Cyan)]),
+        ] {
+            assert!(colorspace.supports_process_group_blending(), "{colorspace:?}");
+        }
+        for colorspace in [
+            device_n(Vec::new()),
+            device_n(vec![None]),
+            device_n(vec![Some(Colorant::Cyan), None]),
+            device_n(vec![Some(Colorant::Cyan), Some(Colorant::Cyan)]),
+            device_n(vec![Some(Colorant::Spot("Varnish".into()))]),
+            device_n(vec![Some(Colorant::Cyan), Some(Colorant::Spot("Varnish".into()))]),
+            ColorSpace::DeviceRGB,
+            ColorSpace::Lab,
+            ColorSpace::IccBased { alternate: Box::new(ColorSpace::DeviceCMYK), profile: None },
+            ColorSpace::Indexed {
+                base: Box::new(ColorSpace::DeviceCMYK), hival: 0, lookup: Arc::new(vec![0; 4]),
+            },
+            ColorSpace::Pattern { base: None },
+            ColorSpace::Pattern { base: Some(Box::new(ColorSpace::DeviceCMYK)) },
+            sep("Cyan"),
+            sep("PANTONE 186 C"),
+        ] {
+            assert!(!colorspace.supports_process_group_blending(), "{colorspace:?}");
+        }
     }
 
     #[test]

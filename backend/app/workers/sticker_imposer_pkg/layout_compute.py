@@ -49,6 +49,8 @@ def compute_sticker_layout_for_page(
 
     alternate_rotation: str = 'none',
 
+    alternate_rotation_alignment: str = 'foot_to_foot',
+
     target_quantity: int = None,
 
 ) -> dict:
@@ -501,13 +503,21 @@ def compute_sticker_layout_for_page(
     from app.workers.nup_layout_solver import (
         apply_alternate_rotation,
         normalize_alternate_rotation,
+        normalize_alternate_rotation_alignment,
     )
     _effective_alternate_rotation = (
         normalize_alternate_rotation(alternate_rotation)
         if str(shape_type).strip().upper() == 'RECTANGLE'
         else 'none'
     )
-    result = apply_alternate_rotation(result, _effective_alternate_rotation)
+    _effective_alternate_rotation_alignment = normalize_alternate_rotation_alignment(
+        alternate_rotation_alignment
+    )
+    result = apply_alternate_rotation(
+        result,
+        _effective_alternate_rotation,
+        _effective_alternate_rotation_alignment,
+    )
 
     # 1 Tem: Khi người dùng yêu cầu đúng 1 tem trên tờ, chỉ giữ đúng 1 ô
     if target_quantity == 1 and result.get('items'):
@@ -528,6 +538,7 @@ def compute_sticker_layout_for_page(
     result['trimH'] = trim_h
 
     result['alternateRotation'] = _effective_alternate_rotation
+    result['alternateRotationAlignment'] = _effective_alternate_rotation_alignment
 
     result['isPageFallback'] = _is_page_fallback
 

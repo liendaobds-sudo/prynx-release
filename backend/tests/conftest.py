@@ -65,6 +65,24 @@ def _node_opts_out_of_auto_pro(nodeid: str) -> bool:
 
 
 @pytest.fixture(autouse=True)
+def _isolated_installed_ram(monkeypatch):
+    """PERF (audit 2026-09-28 §PERF28.03): không lấy RAM máy chạy test làm fixture.
+
+    Các test policy cũ chỉ giả lập RAM OS dùng được/khả dụng. Mặc định cho API
+    RAM lắp đặt báo không đọc được để giữ fallback đó; ca Windows mới sẽ thay
+    đúng API này, vẫn kiểm helper ctypes thật thay vì mock helper Python.
+    """
+    if os.name == "nt":
+        import ctypes
+
+        monkeypatch.setattr(
+            ctypes.windll.kernel32,
+            "GetPhysicallyInstalledSystemMemory",
+            lambda _memory_kib: 0,
+        )
+
+
+@pytest.fixture(autouse=True)
 def _isolated_sidecar_signing_secret(monkeypatch):
     """Giữ URL kết quả ở enforced mode nhưng dùng secret cục bộ của fixture.
 

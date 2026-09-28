@@ -119,10 +119,13 @@ def _step_repeat_time_budget_ms() -> int:
         if forced > 0:
             return forced
 
-    from app.core.system_memory import read_memory_status_mb
+    from app.core.system_memory import read_memory_status_mb, read_memory_tier_mb
 
     total_ram_mb, _available_ram_mb = read_memory_status_mb()
-    if total_ram_mb is not None and 0 < total_ram_mb < 16 * 1024:
+    # PERF (audit 2026-09-28 §PERF28.03): vùng RAM reserved không được
+    # khiến máy lắp 16 GiB bị giảm ngân sách tìm kiếm/chất lượng S&R.
+    tier_mb = read_memory_tier_mb(total_ram_mb)
+    if tier_mb is not None and 0 < tier_mb < 16 * 1024:
         return AUTOFILL_TIME_BUDGET_MS
     return DEFAULT_TIME_BUDGET_MS
 

@@ -26,6 +26,8 @@ MAX_CROP_DETECT_PIXELS = 20_000_000
 # một hàng/cột trắng do anti-alias của viewer khi artwork là raster/transparency.
 # Chồng mí vào phía nội dung, không nở page box và không thay đổi lượng bleed.
 MIRROR_SEAM_OVERLAP_PT = 0.25
+AUTO_FILL_SAMPLE_INSET_MM = 0.5
+AUTO_FILL_SAMPLE_DEPTH_PT = 72.0 / 300.0
 
 
 def _pike_box_to_list(box):
@@ -68,6 +70,132 @@ def _get_page_box(page, box_name: str, fallback=None):
     if mb is not None:
         return _pike_box_to_list(mb)
     return [0, 0, 595, 842]  # A4 default
+
+
+def _page_has_pattern_resources(doc, page) -> bool:
+    """Chặn Pattern bảo thủ, kể cả tài nguyên không được gọi trong Contents."""
+    from app.core.preflight_rules.resource_walker import iter_resource_dicts
+
+    pending = list(iter_resource_dicts(page, doc))
+    seen: set[tuple[int, int]] = set()
+    while pending:
+        resources = pending.pop()
+        key = resources.objgen
+        if key != (0, 0):
+            if key in seen:
+                continue
+            seen.add(key)
+        if resources.get("/Pattern"):
+            return True
+        # Walker dùng chung bao Form/AP nhưng chưa đi vào resource font Type3.
+        # Không đọc bytes ảnh hoặc tạo trần duyệt mới; objgen chặn vòng tham chiếu.
+        fonts = resources.get("/Font", pikepdf.Dictionary())
+        if not isinstance(fonts, pikepdf.Dictionary):
+            continue
+        for font in fonts.values():
+            if not isinstance(font, pikepdf.Dictionary) or font.get("/Subtype") != "/Type3":
+                continue
+            font_key = font.objgen
+            if font_key != (0, 0):
+                if font_key in seen:
+                    continue
+                seen.add(font_key)
+            pending.extend(iter_resource_dicts(font, doc))
+    return False
+
+
+def _append_edge_fill_preserving_page(doc, page, visible_box, content_box, user_unit):
+    """Phủ vành viền bằng dải vector, không dịch artwork hoặc thay page box."""
+    from app.workers.sticker_engine import _rectangle_vector_bleed_commands
+
+    vx0, vy0, vx1, vy1 = (float(value) for value in visible_box)
+    cx0, cy0, cx1, cy1 = (float(value) for value in content_box)
+    raw_pads = (
+        max(0.0, cx0 - vx0), max(0.0, vx1 - cx1),
+        max(0.0, cy0 - vy0), max(0.0, vy1 - cy1),
+    )
+    if not any(raw_pads):
+        return
+
+    original_contents = page.obj.get("/Contents")
+    if original_contents is None:
+        streams = []
+    elif isinstance(original_contents, pikepdf.Array):
+        streams = list(original_contents)
+    else:
+        streams = [original_contents]
+    original_bytes = b"\n".join(bytes(stream.read_bytes()) for stream in streams)
+    if not original_bytes.strip():
+        raise ValueError("Không có nội dung trang để lấy màu phủ viền.")
+
+    try:
+        original_resources = pikepdf.Dictionary(page.Resources)
+    except AttributeError:
+        original_resources = pikepdf.Dictionary()
+    # PAGEBOX (audit 2026-09-28 §WBR28.FILL): tách cả dictionary XObject con.
+    # Nếu add_resource sửa đúng dictionary đang nằm trong Form, Form sẽ chứa
+    # tham chiếu đến chính nó; snapshot bytes thôi vẫn chưa đủ để tránh đệ quy.
+    form_resources = pikepdf.Dictionary(original_resources)
+    page_resources = pikepdf.Dictionary(original_resources)
+    original_xobjects = original_resources.get("/XObject", pikepdf.Dictionary())
+    form_resources.XObject = pikepdf.Dictionary(original_xobjects)
+    page_resources.XObject = pikepdf.Dictionary(original_xobjects)
+
+    source_form = pikepdf.Stream(doc, original_bytes)
+    source_form.Type = pikepdf.Name.XObject
+    source_form.Subtype = pikepdf.Name.Form
+    source_form.BBox = pikepdf.Array([vx0, vy0, vx1, vy1])
+    source_form.Resources = doc.make_indirect(form_resources)
+    if page.get("/Group") is not None:
+        source_form.Group = pikepdf.Dictionary(page.Group)
+    # Helper dùng point vật lý để floor/format của dải mẫu không lệch theo
+    # UserUnit. Matrix nhân đúng một lần; CTM ngoài chia lại khi về trang raw.
+    # Không dùng as_form_xobject(): hàm đó tự thêm Matrix/Rotate và dùng chung stream.
+    source_form.Matrix = pikepdf.Array([user_unit, 0, 0, user_unit, 0, 0])
+    page.Resources = doc.make_indirect(page_resources)
+    form_name = page.add_resource(source_form, pikepdf.Name.XObject)
+    physical_pads = tuple(value * user_unit for value in raw_pads)
+    raw_sides = [
+        name for name, pad in zip(("left", "right", "bottom", "top"), raw_pads)
+        if pad > 0
+    ]
+    commands, *_bites = _rectangle_vector_bleed_commands(
+        form_name,
+        crop_x0=cx0 * user_unit,
+        crop_y0=cy0 * user_unit,
+        page_width=(cx1 - cx0) * user_unit,
+        page_height=(cy1 - cy0) * user_unit,
+        bleed_pts=max(physical_pads),
+        bleed_amounts_pts=physical_pads,
+        edge_bite_pts=0.0,
+        sample_depth_pts=AUTO_FILL_SAMPLE_DEPTH_PT,
+        sample_inset_pts=AUTO_FILL_SAMPLE_INSET_MM * PT_PER_MM,
+        sides=raw_sides,
+        # Chỉ trang đục qua guard mới tới đây. Chồng mí các tile đóng khe AA;
+        # clip vành bên dưới vẫn tuyệt đối không cho vẽ vào bbox nội dung.
+        join_overlap_pts=AUTO_FILL_SAMPLE_DEPTH_PT,
+    )
+    # Clip chẵn-lẻ chỉ cho phép vẽ bên NGOÀI bbox nội dung. Dải lấy mẫu sâu
+    # 0,5 mm không có nghĩa là được phủ/cắt mất dải artwork rộng 0,5 mm.
+    # PDFnumber không nhận ký pháp số mũ: origin nhỏ hoặc UserUnit lớn làm
+    # định dạng g sinh 1e-05. Fixed-point giữ đủ chính xác tới UserUnit 75000.
+    raw_per_pt = 1.0 / user_unit
+    fill_ops = [
+        "q",
+        f"{vx0:.16f} {vy0:.16f} {vx1-vx0:.16f} {vy1-vy0:.16f} re",
+        f"{cx0:.16f} {cy0:.16f} {cx1-cx0:.16f} {cy1-cy0:.16f} re W* n",
+        f"{raw_per_pt:.16f} 0 0 {raw_per_pt:.16f} {vx0:.16f} {vy0:.16f} cm",
+        *commands,
+        "Q",
+    ]
+    # q riêng ở lớp fill vẫn kế thừa cm/clip cuối stream nguồn. Bao nội dung
+    # gốc để khôi phục graphics state, nhưng giữ nguyên bytes/artwork/Annots.
+    page.Contents = pikepdf.Array([
+        pikepdf.Stream(doc, b"q\n"),
+        *streams,
+        pikepdf.Stream(doc, b"\nQ\n"),
+        pikepdf.Stream(doc, "\n".join(fill_ops).encode("ascii")),
+    ])
 
 
 def _canonicalize_rotated_page_for_mirror(doc, page) -> None:
@@ -1559,13 +1687,16 @@ class PageBoxesEngine:
         pages: list[int] | None = None,
         margin_mm: float = 0,
         trim_sides: list[str] | None = None,
+        mode: str = "trim",
     ) -> str:
         """
-        Phát hiện viền dư màu phẳng và set CropBox tự động.
+        Phát hiện viền dư màu phẳng rồi xén hoặc phủ bằng màu sát mép.
         Màu nền được đo độc lập ở chu vi từng trang; trường hợp mơ hồ giữ nguyên.
         margin_mm: lề bổ sung xung quanh nội dung (mm).
         trim_sides: cạnh bắt buộc theo hệ HIỂN THỊ. None giữ chế độ tự dò legacy;
         danh sách explicit chỉ thành công khi mọi trang xén được đủ mọi cạnh đã chọn.
+        mode: trim giữ hành vi cũ; fill giữ khổ/vị trí và chỉ nhận margin_mm=0.
+        Fill lô đầu từ chối khai báo trong suốt/Pattern để không đổi artwork ngầm.
 
         Bền với file thực tế (audit 2026-07-08):
         - Render 200 DPI (không phải 72) → biên xén chính xác ~0.13mm/px thay vì
@@ -1577,6 +1708,12 @@ class PageBoxesEngine:
         - Tôn trọng /Rotate: pdfium render ảnh ĐÃ xoay; ánh xạ pixel→CropBox qua
           _pixel_bbox_to_cropbox (đảo đúng góc quay) thay vì giả định luôn R=0.
         """
+        if mode not in {"trim", "fill"}:
+            raise ValueError("Cách xử lý viền không hợp lệ; chỉ hỗ trợ xén hoặc phủ.")
+        if mode == "fill" and margin_mm != 0:
+            raise ValueError("Chế độ phủ viền chỉ hỗ trợ lề bổ sung 0 mm.")
+        action_verb = "xén" if mode == "trim" else "phủ"
+
         import pypdfium2 as pdfium
 
         from app.core.pdfium_lock import pdfium_guard
@@ -1595,6 +1732,17 @@ class PageBoxesEngine:
                 pdf_render = pdfium.PdfDocument(file_path)
 
             target_pages = pages if pages else list(range(1, len(doc.pages) + 1))
+            transparent_pages: set[int] = set()
+            if mode == "fill":
+                # Không dựng lặp cùng trang nếu client gửi trùng chỉ số.
+                target_pages = list(dict.fromkeys(target_pages))
+                # PAGEBOX (audit 2026-09-28 §WBR28.FILL.ALPHA): dùng bộ dò
+                # resource hiện hữu. FPDFPage_HasTransparency bỏ sót SMask và
+                # alpha thật trên runtime này; không dùng nó làm bằng chứng đục.
+                # Bộ dò bảo thủ cả Group/resource chưa dùng, không tự flatten.
+                from app.core.pdf_actions_native import detect_transparent_pages
+
+                transparent_pages = set(detect_transparent_pages(file_path))
             # 200 DPI đủ nét cho tem nhỏ mà vẫn nhanh (dò lề, không phải xuất).
             DETECT_SCALE = 200.0 / 72.0
 
@@ -1607,15 +1755,24 @@ class PageBoxesEngine:
                             if side in required_sides
                         )
                         raise ValueError(
-                            f"Trang {pnum} không tồn tại nên không thể xén cạnh {side_names}"
+                            f"Trang {pnum} không tồn tại nên không thể {action_verb} cạnh {side_names}"
                         )
                     continue
 
+                if pnum in transparent_pages:
+                    raise ValueError(
+                        f"Trang {pnum}: hiện chưa thể phủ viền an toàn cho trang "
+                        "có khai báo độ trong suốt. File gốc được giữ nguyên; hãy chọn "
+                        "xóa viền hoặc tự làm phẳng một bản sao trước."
+                    )
                 page = doc.pages[pnum - 1]
+                if mode == "fill" and _page_has_pattern_resources(doc, page):
+                    raise ValueError(
+                        f"Trang {pnum}: hiện chưa thể phủ viền an toàn cho trang "
+                        "có mẫu tô lặp (Pattern). File gốc được giữ nguyên; "
+                        "hãy chọn xóa viền hoặc tự làm phẳng một bản sao trước."
+                    )
 
-                # Hệ quy chiếu là CROPBOX (chưa xoay); pdfium render đúng vùng
-                # CropBox rồi áp /Rotate. Các cạnh explicit vẫn thuộc ảnh hiển thị này.
-                cb = _get_page_box(page, "/CropBox", fallback=_get_page_box(page, "/MediaBox"))
                 rotate = int(page.get("/Rotate", 0) or 0) % 360
                 user_unit = _page_user_unit(page)
                 render_scale = DETECT_SCALE * user_unit
@@ -1628,6 +1785,21 @@ class PageBoxesEngine:
                     bitmap = None
                     try:
                         render_page = pdf_render[pnum - 1]
+                        # PAGEBOX (audit 2026-09-28 §WBR28.01): pixel chỉ thuộc
+                        # giao MediaBox/CropBox mà PDFium thực sự render. Dùng
+                        # CropBox raw có thể cắt vào artwork khi box vượt trang.
+                        # get_bbox trả hệ raw chưa xoay, có kế thừa page tree;
+                        # không nhân UserUnit thêm lần nữa vào hệ quy chiếu này.
+                        cb = render_page.get_bbox()
+                        if (
+                            not all(math.isfinite(value) for value in cb)
+                            or cb[2] <= cb[0]
+                            or cb[3] <= cb[1]
+                        ):
+                            raise ValueError(
+                                f"Trang {pnum}: vùng hiển thị rỗng hoặc không hợp lệ; "
+                                "hãy kiểm tra MediaBox và CropBox"
+                            )
                         bitmap = render_page.render(scale=render_scale)
                         arr = np.array(bitmap.to_numpy(), copy=True)
                         pix_h, pix_w = arr.shape[:2]
@@ -1671,7 +1843,7 @@ class PageBoxesEngine:
                             if side in missing_sides
                         )
                         raise ValueError(
-                            f"Trang {pnum}: không phát hiện hoặc không xén được "
+                            f"Trang {pnum}: không phát hiện hoặc không {action_verb} được "
                             f"viền dư ở cạnh {side_names}"
                         )
 
@@ -1697,6 +1869,9 @@ class PageBoxesEngine:
                     pnum,
                     [round(v, 2) for v in new_cb],
                 )
+                if mode == "fill":
+                    _append_edge_fill_preserving_page(doc, page, cb, new_cb, user_unit)
+                    continue
                 # Set cả MediaBox lẫn CropBox → triệt để: các tool downstream
                 # (resize, viewer, imposition) đọc MediaBox = vùng nội dung thực.
                 page[pikepdf.Name("/MediaBox")] = pikepdf.Array(new_cb)
@@ -1712,7 +1887,8 @@ class PageBoxesEngine:
             pdf_render = None
 
             # Chỉ tạo artifact sau khi MỌI trang/cạnh explicit đã đạt hợp đồng.
-            output_name = f"{Path(file_path).stem}_trimmed_{uuid.uuid4().hex[:6]}.pdf"
+            suffix = "trimmed" if mode == "trim" else "filled"
+            output_name = f"{Path(file_path).stem}_{suffix}_{uuid.uuid4().hex[:6]}.pdf"
             output_path = str(self.output_dir / output_name)
             try:
                 doc.save(output_path)
@@ -1727,7 +1903,7 @@ class PageBoxesEngine:
             finally:
                 doc.close()
 
-        logger.info(f"Auto-trimmed {len(target_pages)} pages → {output_path}")
+        logger.info("Auto-%s %d pages → %s", mode, len(target_pages), output_path)
         return output_path
 
     def add_bleed_from_trim(

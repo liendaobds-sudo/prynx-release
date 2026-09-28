@@ -253,13 +253,15 @@ def _run(record: _PreviewJob) -> None:
                     identity = _source_identity(record.session, record.page, record.options)
                     if (record.options["cutline_simplify_mm"] <= 0
                             or _final_cache_available(record.session, record.page, record.options)):
-                        final = _build_preview(record.session, record.options)
+                        with CutlineTimer("JOB", "BUILD_PREVIEW", f"job_id={record.job_id} page={record.page.page_number} cached={_final_cache_available(record.session, record.page, record.options)}", simplify=record.options.get("cutline_simplify_mm")):
+                            final = _build_preview(record.session, record.options)
                     elif record.options["classic_whole_page"]:
                         # PERF (audit 2026-09-11 §PREWARM.DRAFT): frontend chỉ
                         # công bố kết quả `ready`, không hiển thị `draft`. Whole-page
                         # vốn đã chạy canonical writer một lượt đầy đủ, nên dựng
                         # thêm mức 0 trước mức cuối chỉ lặp lại chi phí PDFium/PDF.
-                        final = _build_preview(record.session, record.options)
+                        with CutlineTimer("JOB", "BUILD_PREVIEW_WHOLE_PAGE", f"job_id={record.job_id} page={record.page.page_number}", simplify=record.options.get("cutline_simplify_mm")):
+                            final = _build_preview(record.session, record.options)
                     else:
                         t_draft0 = time.perf_counter()
                         log_cutline("JOB", "DRAFT_START", f"Bắt đầu dựng draft job_id={record.job_id} page={record.page.page_number}")

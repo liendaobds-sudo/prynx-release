@@ -237,6 +237,7 @@ export default function AdvancedSettingsSection({
         layoutType: state.layoutType, setLayoutType: state.setLayoutType,
         gridStrategy: state.gridStrategy, setGridStrategy: state.setGridStrategy,
         alternateRotation: state.alternateRotation, setAlternateRotation: state.setAlternateRotation,
+        alternateRotationAlignment: state.alternateRotationAlignment, setAlternateRotationAlignment: state.setAlternateRotationAlignment,
         // Grouping Strategy
         groupingStrategy: state.groupingStrategy, setGroupingStrategy: state.setGroupingStrategy,
         clusterCombineMode: state.clusterCombineMode, setClusterCombineMode: state.setClusterCombineMode,
@@ -482,11 +483,35 @@ export default function AdvancedSettingsSection({
                                     {t('imposition.advancedSettings:inking_giu_nguyen_cach_xep_mo_ta')}
                                 </p>
                                 {s.alternateRotation !== 'none' && (
-                                    <p className="text-[11px] leading-relaxed text-indigo-600 dark:text-indigo-300">
-                                        {s.alternateRotation === 'row'
-                                            ? t('imposition.advancedSettings:inking_theo_hang_mo_ta')
-                                            : t('imposition.advancedSettings:inking_theo_cot_mo_ta')}
-                                    </p>
+                                    <>
+                                        <div className="flex items-center gap-3">
+                                            <label
+                                                htmlFor="alternate-rotation-alignment"
+                                                className="text-[11px] font-bold text-slate-600 uppercase tracking-wide shrink-0 w-[95px]"
+                                            >
+                                                {t('imposition.advancedSettings:kieu_tiep_xuc')}
+                                            </label>
+                                            <select
+                                                id="alternate-rotation-alignment"
+                                                aria-label={t('imposition.advancedSettings:kieu_tiep_xuc')}
+                                                value={s.alternateRotationAlignment}
+                                                onChange={(e) => s.setAlternateRotationAlignment(e.target.value as 'foot_to_foot' | 'head_to_head')}
+                                                className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
+                                            >
+                                                <option value="foot_to_foot">{t('imposition.advancedSettings:doi_duoi')}</option>
+                                                <option value="head_to_head">{t('imposition.advancedSettings:doi_dau')}</option>
+                                            </select>
+                                        </div>
+                                        <p className="text-[11px] leading-relaxed text-indigo-600 dark:text-indigo-300">
+                                            {s.alternateRotation === 'row'
+                                                ? (s.alternateRotationAlignment === 'head_to_head'
+                                                    ? t('imposition.advancedSettings:inking_doi_dau_hang_mo_ta')
+                                                    : t('imposition.advancedSettings:inking_doi_duoi_hang_mo_ta'))
+                                                : (s.alternateRotationAlignment === 'head_to_head'
+                                                    ? t('imposition.advancedSettings:inking_doi_dau_cot_mo_ta')
+                                                    : t('imposition.advancedSettings:inking_doi_duoi_cot_mo_ta'))}
+                                        </p>
+                                    </>
                                 )}
                             </div>
                         </CollapsibleGroup>

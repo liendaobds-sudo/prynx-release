@@ -1,0 +1,269 @@
+{
+  "source_render_equal": true,
+  "cases": [
+    {
+      "case": "intersection_control_r0",
+      "input_media": [
+        0,
+        0,
+        200,
+        100
+      ],
+      "input_crop": [
+        20,
+        0,
+        200,
+        100
+      ],
+      "expected_artwork_box": [
+        40,
+        10,
+        160,
+        90
+      ],
+      "actual_media": [
+        39.8,
+        10.071942,
+        160.04,
+        90.28777
+      ],
+      "raster_size": [
+        481,
+        321
+      ],
+      "blue_marker_pixels": 5120,
+      "white_fraction": 0.005188
+    },
+    {
+      "case": "crop_outside_media_r0",
+      "input_media": [
+        0,
+        0,
+        200,
+        100
+      ],
+      "input_crop": [
+        20,
+        -10,
+        220,
+        110
+      ],
+      "expected_artwork_box": [
+        40,
+        10,
+        160,
+        90
+      ],
+      "actual_media": [
+        42.0,
+        2.086331,
+        175.6,
+        98.345324
+      ],
+      "raster_size": [
+        535,
+        386
+      ],
+      "blue_marker_pixels": 2560,
+      "white_fraction": 0.268607
+    },
+    {
+      "case": "intersection_control_r90",
+      "input_media": [
+        0,
+        0,
+        200,
+        100
+      ],
+      "input_crop": [
+        20,
+        0,
+        200,
+        100
+      ],
+      "expected_artwork_box": [
+        40,
+        10,
+        160,
+        90
+      ],
+      "actual_media": [
+        39.8,
+        9.71223,
+        160.04,
+        89.928058
+      ],
+      "raster_size": [
+        321,
+        481
+      ],
+      "blue_marker_pixels": 5120,
+      "white_fraction": 0.005188
+    },
+    {
+      "case": "crop_outside_media_r90",
+      "input_media": [
+        0,
+        0,
+        200,
+        100
+      ],
+      "input_crop": [
+        20,
+        -10,
+        220,
+        110
+      ],
+      "expected_artwork_box": [
+        40,
+        10,
+        160,
+        90
+      ],
+      "actual_media": [
+        42.0,
+        1.654676,
+        175.6,
+        97.913669
+      ],
+      "raster_size": [
+        386,
+        535
+      ],
+      "blue_marker_pixels": 2560,
+      "white_fraction": 0.268607
+    },
+    {
+      "case": "intersection_control_r180",
+      "input_media": [
+        0,
+        0,
+        200,
+        100
+      ],
+      "input_crop": [
+        20,
+        0,
+        200,
+        100
+      ],
+      "expected_artwork_box": [
+        40,
+        10,
+        160,
+        90
+      ],
+      "actual_media": [
+        39.8,
+        9.71223,
+        160.04,
+        89.928058
+      ],
+      "raster_size": [
+        481,
+        321
+      ],
+      "blue_marker_pixels": 5120,
+      "white_fraction": 0.005188
+    },
+    {
+      "case": "crop_outside_media_r180",
+      "input_media": [
+        0,
+        0,
+        200,
+        100
+      ],
+      "input_crop": [
+        20,
+        -10,
+        220,
+        110
+      ],
+      "expected_artwork_box": [
+        40,
+        10,
+        160,
+        90
+      ],
+      "actual_media": [
+        42.0,
+        1.654676,
+        175.6,
+        97.913669
+      ],
+      "raster_size": [
+        535,
+        386
+      ],
+      "blue_marker_pixels": 2880,
+      "white_fraction": 0.267057
+    },
+    {
+      "case": "intersection_control_r270",
+      "input_media": [
+        0,
+        0,
+        200,
+        100
+      ],
+      "input_crop": [
+        20,
+        0,
+        200,
+        100
+      ],
+      "expected_artwork_box": [
+        40,
+        10,
+        160,
+        90
+      ],
+      "actual_media": [
+        39.8,
+        10.071942,
+        160.04,
+        90.28777
+      ],
+      "raster_size": [
+        321,
+        481
+      ],
+      "blue_marker_pixels": 5120,
+      "white_fraction": 0.005188
+    },
+    {
+      "case": "crop_outside_media_r270",
+      "input_media": [
+        0,
+        0,
+        200,
+        100
+      ],
+      "input_crop": [
+        20,
+        -10,
+        220,
+        110
+      ],
+      "expected_artwork_box": [
+        40,
+        10,
+        160,
+        90
+      ],
+      "actual_media": [
+        42.0,
+        2.086331,
+        175.6,
+        98.345324
+      ],
+      "raster_size": [
+        386,
+        535
+      ],
+      "blue_marker_pixels": 2880,
+      "white_fraction": 0.267057
+    }
+  ]
+}

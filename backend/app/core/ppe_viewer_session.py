@@ -20,7 +20,11 @@ from typing import Any
 
 from app.core.icc_profiles import resolve_cmyk_profile_path, resolve_srgb_profile_path
 from app.core.print_engine.facade import PpeSoftproofSession, open_softproof_session
-from app.core.system_memory import read_memory_status_mb
+from app.core.system_memory import (
+    memory_tier_mb,
+    read_memory_status_mb,
+    read_memory_tier_mb,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -133,22 +137,27 @@ class ViewerSessionBudgetPolicy:
 def viewer_session_budget_policy(
     total_ram_mb: float | None,
     available_ram_mb: float | None,
+    *,
+    tier_ram_mb: float | None = None,
 ) -> ViewerSessionBudgetPolicy:
     """Pool persistent nhỏ hơn render budget; máy >=16 GB không có ceiling cố định."""
     if total_ram_mb is None or total_ram_mb <= 0:
         return ViewerSessionBudgetPolicy(256, 128, 120.0)
+    # PERF (audit 2026-09-28 §PERF28.03 B2h): installed chỉ phân hạng;
+    # pool/cache vẫn tính từ available, hoặc usable khi thiếu available.
+    tier_mb = memory_tier_mb(total_ram_mb, tier_ram_mb) or total_ram_mb
     available = (
         available_ram_mb
         if available_ram_mb is not None and available_ram_mb > 0
         else total_ram_mb
     )
-    if total_ram_mb < 8 * 1024:
+    if tier_mb < 8 * 1024:
         return ViewerSessionBudgetPolicy(
             total_pool_mb=max(128, min(256, int(available * 0.08))),
             desired_cache_mb=max(32, min(96, int(available * 0.05))),
             orphan_ttl_seconds=90.0,
         )
-    if total_ram_mb < 16 * 1024:
+    if tier_mb < 16 * 1024:
         return ViewerSessionBudgetPolicy(
             total_pool_mb=max(256, min(768, int(available * 0.10))),
             desired_cache_mb=max(96, min(256, int(available * 0.05))),
@@ -245,7 +254,8 @@ class PpeViewerSessionManager:
         self,
         *,
         open_session: Callable[..., PpeSoftproofSession] = open_softproof_session,
-        memory_status: Callable[[], tuple[float | None, float | None]] = read_memory_status_mb,
+        memory_status: Callable[[], tuple[float | None, float | None]] | None = None,
+        tier_reader: Callable[[float | None], float | None] | None = None,
         identity_is_current: Callable[
             [ViewerSessionIdentity], bool
         ] = viewer_session_identity_is_current,
@@ -254,7 +264,14 @@ class PpeViewerSessionManager:
         policy_refresh_seconds: float = 2.0,
     ) -> None:
         self._open_session = open_session
-        self._memory_status = memory_status
+        self._memory_status = read_memory_status_mb if memory_status is None else memory_status
+        # PERF (audit 2026-09-28 §PERF28.03 B2h): runtime mặc định đọc installed;
+        # callback RAM tùy biến không được trộn phần cứng host vào snapshot riêng.
+        self._tier_reader = (
+            tier_reader if tier_reader is not None
+            else read_memory_tier_mb if memory_status is None
+            else None
+        )
         self._identity_is_current = identity_is_current
         self._clock = clock
         self._session_overhead_mb = max(0, int(session_overhead_mb))
@@ -915,6 +932,14 @@ class PpeViewerSessionManager:
             else "background"
         )
 
+    def _read_budget_policy(self) -> ViewerSessionBudgetPolicy:
+        """Đọc cả snapshot và hạng máy ở worker, không chặn event loop Viewer."""
+        total_mb, available_mb = self._memory_status()
+        tier_mb = self._tier_reader(total_mb) if self._tier_reader is not None else None
+        return viewer_session_budget_policy(
+            total_mb, available_mb, tier_ram_mb=tier_mb,
+        )
+
     async def _policy(self) -> ViewerSessionBudgetPolicy:
         now = self._clock()
         with self._lock:
@@ -923,8 +948,7 @@ class PpeViewerSessionManager:
                 and now - self._policy_checked_at < self._policy_refresh_seconds
             ):
                 return self._policy_cache
-        total_mb, available_mb = await asyncio.to_thread(self._memory_status)
-        policy = viewer_session_budget_policy(total_mb, available_mb)
+        policy = await asyncio.to_thread(self._read_budget_policy)
         with self._lock:
             self._policy_cache = policy
             self._policy_checked_at = self._clock()
