@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { startVdpJobBackend, pollVdpJob, cancelVdpJobBackend, type VdpProgressInfo } from '@/lib/api'; // UIUX (audit 2026-07-27 §D-07)
 import { ProgressBar } from '../ui/ProgressBar';
 import { toast } from '../ui/Toast';
@@ -380,6 +381,39 @@ export default function NumberingTool({
     const [spawnNewTab, setSpawnNewTab] = useState(true);
     const [showHelp, setShowHelp] = useState(false);
     const [helpTab, setHelpTab] = useState<'hotkeys' | 'config' | 'cutstack'>('hotkeys');
+    const [helpModalOffset, setHelpModalOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+    const dragStartRef = useRef<{ startX: number; startY: number; initOffsetX: number; initOffsetY: number } | null>(null);
+
+    const handleHelpHeaderPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+        if ((e.target as HTMLElement).closest('button, input, select, a')) return;
+        dragStartRef.current = {
+            startX: e.clientX,
+            startY: e.clientY,
+            initOffsetX: helpModalOffset.x,
+            initOffsetY: helpModalOffset.y,
+        };
+        e.currentTarget.setPointerCapture(e.pointerId);
+    };
+
+    const handleHelpHeaderPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+        if (!dragStartRef.current) return;
+        const dx = e.clientX - dragStartRef.current.startX;
+        const dy = e.clientY - dragStartRef.current.startY;
+        setHelpModalOffset({
+            x: dragStartRef.current.initOffsetX + dx,
+            y: dragStartRef.current.initOffsetY + dy,
+        });
+    };
+
+    const handleHelpHeaderPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+        if (!dragStartRef.current) return;
+        dragStartRef.current = null;
+        try {
+            e.currentTarget.releasePointerCapture(e.pointerId);
+        } catch {
+            // ignore
+        }
+    };
 
     // Hủy polling VDP khi unmount
     const pollAbortRef = useRef<AbortController | null>(null);
@@ -402,7 +436,11 @@ export default function NumberingTool({
     useEffect(() => {
         if (!showHelp || !isActive) return;
         const onKey = (e: KeyboardEvent) => {
-            if (e.key === 'Escape') { e.stopPropagation(); setShowHelp(false); }
+            if (e.key === 'Escape') {
+                e.stopPropagation();
+                setShowHelp(false);
+                setHelpModalOffset({ x: 0, y: 0 });
+            }
         };
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
@@ -999,23 +1037,47 @@ export default function NumberingTool({
             </div>
 
             {/* Modal Trợ giúp */}
-            {showHelp && (
+            {showHelp && createPortal(
                 <div
-                    className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-xs p-4"
-                    onClick={() => setShowHelp(false)}
+                    className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/60 backdrop-blur-xs p-4"
+                    onClick={() => { setShowHelp(false); setHelpModalOffset({ x: 0, y: 0 }); }}
                 >
                     <div
                         className="max-w-2xl w-full max-h-[85vh] flex flex-col bg-white dark:bg-zinc-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-zinc-700 overflow-hidden"
+                        style={{
+                            transform: `translate(${helpModalOffset.x}px, ${helpModalOffset.y}px)`,
+                        }}
                         onClick={(e) => e.stopPropagation()}
                     >
                         {/* Header */}
-                        <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/80 shrink-0">
+                        <div
+                            className="flex items-center justify-between px-5 py-3.5 border-b border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/80 shrink-0 cursor-move select-none"
+                            onPointerDown={handleHelpHeaderPointerDown}
+                            onPointerMove={handleHelpHeaderPointerMove}
+                            onPointerUp={handleHelpHeaderPointerUp}
+                            title="Nhấn giữ và kéo để di chuyển bảng trợ giúp"
+                        >
                             <div className="flex items-center gap-2.5">
                                 <span className="text-xl">🔢</span>
                                 <div>
-                                    <h3 className="text-sm font-bold text-slate-800 dark:text-zinc-100">
-                                        {t('preprocess.numbering:huong_dan_nhay_so', 'Hướng dẫn Nhảy số tự động')}
-                                    </h3>
+                                    <div className="flex items-center gap-2">
+                                        <h3 className="text-sm font-bold text-slate-800 dark:text-zinc-100">
+                                            {t('preprocess.numbering:huong_dan_nhay_so', 'Hướng dẫn Nhảy số tự động')}
+                                        </h3>
+                                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-200/80 dark:bg-zinc-700/80 text-slate-500 dark:text-zinc-400 font-normal">
+                                            Kéo để di chuyển
+                                        </span>
+                                        {(helpModalOffset.x !== 0 || helpModalOffset.y !== 0) && (
+                                            <button
+                                                type="button"
+                                                onClick={() => setHelpModalOffset({ x: 0, y: 0 })}
+                                                className="text-[11px] text-indigo-600 dark:text-indigo-400 hover:underline px-1 py-0.5"
+                                                title="Đưa bảng về chính giữa màn hình"
+                                            >
+                                                • Về giữa
+                                            </button>
+                                        )}
+                                    </div>
                                     <p className="text-[11px] text-slate-500 dark:text-zinc-400">
                                         Cẩm nang thao tác nhanh, quy cách thành phẩm & mẹo thợ in
                                     </p>
@@ -1023,7 +1085,7 @@ export default function NumberingTool({
                             </div>
                             <button
                                 type="button"
-                                onClick={() => setShowHelp(false)}
+                                onClick={() => { setShowHelp(false); setHelpModalOffset({ x: 0, y: 0 }); }}
                                 className="text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 p-1.5 rounded-lg hover:bg-slate-200 dark:hover:bg-zinc-700 transition-colors"
                             >
                                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
@@ -1250,14 +1312,15 @@ export default function NumberingTool({
                             </span>
                             <button
                                 type="button"
-                                onClick={() => setShowHelp(false)}
+                                onClick={() => { setShowHelp(false); setHelpModalOffset({ x: 0, y: 0 }); }}
                                 className="text-[12px] px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-semibold transition-colors shadow-sm cursor-pointer"
                             >
                                 {t('preprocess.numbering:da_hieu', 'Đã hiểu')}
                             </button>
                         </div>
                     </div>
-                </div>
+                </div>,
+                document.body
             )}
 
             {/* ── BƯỚC 1: VỊ TRÍ NHẢY SỐ TRÊN TRANG ── */}

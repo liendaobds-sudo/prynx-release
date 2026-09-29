@@ -11,6 +11,7 @@
 //   - "Cả khuôn + in": mở thẳng file kết quả trên đĩa (nhiều trang → có thể qua dialog AI).
 
 import React, { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import { buildSavePlan, sanitizeFilename, type SaveTypeInfo, type SavePlanConfig } from '../../lib/printFileNaming';
 import { fetchLocalFileBuffer } from '../../lib/localFileTransport';
@@ -416,7 +417,7 @@ export default function OpenInDesignModal({
         );
     };
 
-    return (
+    return createPortal(
         <div className="fixed inset-0 z-modal flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
             <div role="dialog" aria-modal="true" aria-label={t('misc.openInDesign:mo_bang_illustrator_corel')} className="bg-white dark:bg-zinc-900 rounded-xl shadow-2xl w-[520px] max-h-[85vh] overflow-hidden flex flex-col border border-black/10 dark:border-white/10">
                 <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200 dark:border-white/10">
@@ -517,6 +518,6 @@ export default function OpenInDesignModal({
                     <button onClick={onClose} className="px-4 h-9 rounded border border-slate-300 dark:border-white/20 text-sm">{t('misc.openInDesign:dong')}</button>
                 </div>
             </div>
-        </div>
+        </div>, document.body
     );
 }

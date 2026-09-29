@@ -1,10 +1,26 @@
 // @vitest-environment jsdom
 
 import React from 'react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { render as rtlRender, screen, fireEvent } from '@testing-library/react';
 import DataMergeTool, { getFieldMappedColumns } from './DataMergeTool';
 import { createWorkspaceStore, WorkspaceContext } from '@/stores/useWorkspaceStore';
+
+// Polyfill PointerEvent cho môi trường JSDOM
+if (typeof window !== 'undefined' && !window.PointerEvent) {
+    class MockPointerEvent extends MouseEvent {
+        pointerId: number;
+        constructor(type: string, params: any = {}) {
+            super(type, params);
+            this.pointerId = params.pointerId ?? 0;
+        }
+    }
+    window.PointerEvent = MockPointerEvent as any;
+}
+if (typeof window !== 'undefined' && window.HTMLElement) {
+    window.HTMLElement.prototype.setPointerCapture = vi.fn();
+    window.HTMLElement.prototype.releasePointerCapture = vi.fn();
+}
 
 function render(ui: React.ReactElement) {
     const store = createWorkspaceStore();
@@ -173,4 +189,54 @@ describe('DataMergeTool - UI highlighting trường đã ghép', () => {
         );
         expect(screen.getByText('Chưa ghép')).toBeTruthy();
     });
+
+    it('mở modal Trợ giúp VDP qua portal, có thể kéo di chuyển và đóng bằng ESC / nút bấm', () => {
+        render(
+            <DataMergeTool
+                pdfFile={mockPdf}
+                vdpFields={initialFields}
+                selectedFieldIds={[]}
+                isActive={true}
+            />
+        );
+
+        // Ban đầu modal chưa mở
+        expect(screen.queryByText('Hướng dẫn Trộn dữ liệu biến đổi (VDP)')).toBeNull();
+
+        // Bấm nút "Trợ giúp"
+        const helpBtn = screen.getByRole('button', { name: /Trợ giúp/i });
+        fireEvent.click(helpBtn);
+
+        // Modal đã mở và render ra document.body
+        const modalTitle = screen.getByText('Hướng dẫn Trộn dữ liệu biến đổi (VDP)');
+        expect(modalTitle).toBeTruthy();
+        expect(screen.getByText('Quy trình 4 bước')).toBeTruthy();
+        expect(screen.getByText('Kéo để di chuyển')).toBeTruthy();
+
+        // Kiểm tra header có hỗ trợ kéo di chuyển
+        const dragHeader = screen.getByTitle('Kéo giữ để di chuyển');
+        expect(dragHeader).toBeTruthy();
+
+        // Thử pointer drag
+        fireEvent.pointerDown(dragHeader, { button: 0, clientX: 100, clientY: 100, pointerId: 1 });
+        fireEvent.pointerMove(dragHeader, { clientX: 150, clientY: 180, pointerId: 1 });
+        fireEvent.pointerUp(dragHeader, { clientX: 150, clientY: 180, pointerId: 1 });
+
+        // Có nút "Về giữa" khi đã kéo
+        const resetBtn = screen.getByRole('button', { name: /Về giữa/i });
+        expect(resetBtn).toBeTruthy();
+        fireEvent.click(resetBtn);
+
+        // Đóng modal bằng nút "Đã hiểu"
+        const closeBtn = screen.getByRole('button', { name: 'Đã hiểu' });
+        fireEvent.click(closeBtn);
+        expect(screen.queryByText('Hướng dẫn Trộn dữ liệu biến đổi (VDP)')).toBeNull();
+
+        // Mở lại và đóng bằng phím Escape
+        fireEvent.click(helpBtn);
+        expect(screen.getByText('Hướng dẫn Trộn dữ liệu biến đổi (VDP)')).toBeTruthy();
+        fireEvent.keyDown(window, { key: 'Escape' });
+        expect(screen.queryByText('Hướng dẫn Trộn dữ liệu biến đổi (VDP)')).toBeNull();
+    });
 });
+

@@ -5,6 +5,7 @@
 // chọn lớp cắt thủ công khi auto-dò fail.
 
 import React, { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   listCutProfiles,
   cutExport,
@@ -770,9 +771,9 @@ export default function CutExportModal(props: CutExportModalProps) {
   const selStyle =
     "h-9 px-2 rounded border border-slate-300 dark:border-white/20 bg-white dark:bg-zinc-900 text-slate-800 dark:text-zinc-100";
 
-  return (
+  return createPortal(
     <div
-      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in"
+      className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/60 backdrop-blur-sm animate-fade-in"
       role="dialog"
       aria-modal="true"
       onClick={() => { if (!busy && !sendInFlightRef.current) onClose(); }}
@@ -951,6 +952,6 @@ export default function CutExportModal(props: CutExportModalProps) {
           </button>
         </div>
       </div>
-    </div>
+    </div>, document.body
   );
 }

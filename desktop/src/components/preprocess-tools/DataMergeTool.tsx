@@ -301,9 +301,9 @@ function VdpLogicPanel({ field, csvHeaders, onChange, isActive }: {
                 </button>
             </div>
 
-            {showHelp && (
+            {showHelp && createPortal(
                 <div
-                    className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 p-4"
+                    className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/50 p-4"
                     onClick={() => setShowHelp(false)}
                 >
                     <div
@@ -361,7 +361,8 @@ function VdpLogicPanel({ field, csvHeaders, onChange, isActive }: {
                             </button>
                         </div>
                     </div>
-                </div>
+                </div>,
+                document.body
             )}
 
             {csvHeaders.length === 0 && (
@@ -563,6 +564,57 @@ export default function DataMergeTool({
     const setVdpLivePreview = useWorkspaceStore((s) => s.setVdpLivePreview);
     const [showMainHelp, setShowMainHelp] = useState(false);
     const [helpTab, setHelpTab] = useState<'workflow' | 'hotkeys' | 'fields_syntax'>('workflow');
+    const [helpModalOffset, setHelpModalOffset] = useState({ x: 0, y: 0 });
+    const helpDragRef = useRef<{ startX: number; startY: number; initX: number; initY: number; isDragging: boolean }>({
+        startX: 0,
+        startY: 0,
+        initX: 0,
+        initY: 0,
+        isDragging: false,
+    });
+
+    const handleHelpHeaderPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+        if (e.button !== 0 && e.button !== undefined) return;
+        if ((e.target as HTMLElement).closest('button')) return;
+        helpDragRef.current = {
+            startX: e.clientX || 0,
+            startY: e.clientY || 0,
+            initX: helpModalOffset.x,
+            initY: helpModalOffset.y,
+            isDragging: true,
+        };
+        if (typeof e.currentTarget?.setPointerCapture === 'function') {
+            try {
+                e.currentTarget.setPointerCapture(e.pointerId);
+            } catch {
+                // ignore
+            }
+        }
+    };
+
+    const handleHelpHeaderPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+        if (!helpDragRef.current.isDragging) return;
+        const cx = e.clientX || 0;
+        const cy = e.clientY || 0;
+        const dx = cx - helpDragRef.current.startX;
+        const dy = cy - helpDragRef.current.startY;
+        setHelpModalOffset({
+            x: Math.round(helpDragRef.current.initX + dx),
+            y: Math.round(helpDragRef.current.initY + dy),
+        });
+    };
+
+    const handleHelpHeaderPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+        if (!helpDragRef.current.isDragging) return;
+        helpDragRef.current.isDragging = false;
+        if (typeof e.currentTarget?.releasePointerCapture === 'function') {
+            try {
+                e.currentTarget.releasePointerCapture(e.pointerId);
+            } catch {
+                // ignore
+            }
+        }
+    };
 
     // Đóng modal Trợ giúp bằng phím ESC
     useEffect(() => {
@@ -1431,7 +1483,10 @@ export default function DataMergeTool({
                 </div>
                 <button
                     type="button"
-                    onClick={() => setShowMainHelp(true)}
+                    onClick={() => {
+                        setHelpModalOffset({ x: 0, y: 0 });
+                        setShowMainHelp(true);
+                    }}
                     className="shrink-0 inline-flex items-center gap-1 px-2 py-1 bg-blue-50 hover:bg-blue-100 dark:bg-blue-500/10 dark:hover:bg-blue-500/20 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 rounded-md font-medium text-xs transition-colors cursor-pointer"
                     title={t('preprocess.dataMerge:huong_dan_su_dung', 'Hướng dẫn Trộn dữ liệu VDP')}
                 >
@@ -1445,23 +1500,39 @@ export default function DataMergeTool({
             </div>
 
             {/* Modal Trợ giúp Trộn dữ liệu VDP */}
-            {showMainHelp && (
+            {showMainHelp && createPortal(
                 <div
-                    className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/60 backdrop-blur-xs p-4"
+                    className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/60 backdrop-blur-xs p-4"
                     onClick={() => setShowMainHelp(false)}
+                    role="dialog"
+                    aria-modal="true"
                 >
                     <div
                         className="max-w-2xl w-full max-h-[85vh] flex flex-col bg-white dark:bg-zinc-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-zinc-700 overflow-hidden"
+                        style={{
+                            transform: `translate3d(${helpModalOffset.x}px, ${helpModalOffset.y}px, 0)`,
+                        }}
                         onClick={(e) => e.stopPropagation()}
                     >
                         {/* Header */}
-                        <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/80 shrink-0">
+                        <div
+                            onPointerDown={handleHelpHeaderPointerDown}
+                            onPointerMove={handleHelpHeaderPointerMove}
+                            onPointerUp={handleHelpHeaderPointerUp}
+                            className="flex items-center justify-between px-5 py-3.5 border-b border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/80 shrink-0 cursor-grab active:cursor-grabbing select-none"
+                            title="Kéo giữ để di chuyển"
+                        >
                             <div className="flex items-center gap-2.5">
                                 <span className="text-xl">🔤</span>
                                 <div>
-                                    <h3 className="text-sm font-bold text-slate-800 dark:text-zinc-100">
-                                        {t('preprocess.dataMerge:huong_dan_vdp_title', 'Hướng dẫn Trộn dữ liệu biến đổi (VDP)')}
-                                    </h3>
+                                    <div className="flex items-center gap-2">
+                                        <h3 className="text-sm font-bold text-slate-800 dark:text-zinc-100">
+                                            {t('preprocess.dataMerge:huong_dan_vdp_title', 'Hướng dẫn Trộn dữ liệu biến đổi (VDP)')}
+                                        </h3>
+                                        <span className="text-[10px] font-normal px-1.5 py-0.5 rounded bg-slate-200/80 dark:bg-zinc-700 text-slate-500 dark:text-zinc-400">
+                                            Kéo để di chuyển
+                                        </span>
+                                    </div>
                                     <p className="text-[11px] text-slate-500 dark:text-zinc-400">
                                         In thiệp mời, chứng chỉ, thẻ nhân viên, mã vạch & tem biến đổi
                                     </p>
@@ -1470,7 +1541,7 @@ export default function DataMergeTool({
                             <button
                                 type="button"
                                 onClick={() => setShowMainHelp(false)}
-                                className="text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 p-1.5 rounded-lg hover:bg-slate-200 dark:hover:bg-zinc-700 transition-colors"
+                                className="text-slate-400 hover:text-slate-700 dark:hover:text-zinc-200 p-1.5 rounded-lg hover:bg-slate-200 dark:hover:bg-zinc-700 transition-colors cursor-pointer"
                             >
                                 <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
                             </button>
@@ -1705,10 +1776,21 @@ export default function DataMergeTool({
                         </div>
 
                         {/* Footer */}
-                        <div className="px-5 py-3 border-t border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/80 flex items-center justify-between shrink-0">
-                            <span className="text-[11px] text-slate-400">
-                                Nhấn <kbd className="px-1 py-0.5 text-[10px] font-mono bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded">ESC</kbd> để đóng
-                            </span>
+                        <div className="px-5 py-3 border-t border-slate-200 dark:border-zinc-700 bg-slate-50 dark:bg-zinc-800/80 flex items-center justify-between shrink-0 select-none">
+                            <div className="flex items-center gap-2">
+                                <span className="text-[11px] text-slate-400">
+                                    Nhấn <kbd className="px-1 py-0.5 text-[10px] font-mono bg-white dark:bg-zinc-800 border border-slate-300 dark:border-zinc-600 rounded">ESC</kbd> để đóng
+                                </span>
+                                {(helpModalOffset.x !== 0 || helpModalOffset.y !== 0) && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setHelpModalOffset({ x: 0, y: 0 })}
+                                        className="text-[11px] text-blue-600 dark:text-blue-400 hover:underline cursor-pointer"
+                                    >
+                                        • Về giữa
+                                    </button>
+                                )}
+                            </div>
                             <button
                                 type="button"
                                 onClick={() => setShowMainHelp(false)}
@@ -1718,7 +1800,8 @@ export default function DataMergeTool({
                             </button>
                         </div>
                     </div>
-                </div>
+                </div>,
+                document.body
             )}
 
             {/* Data Section: CSV / Excel / Google Sheets / Nhập tay */}
@@ -2311,8 +2394,8 @@ export default function DataMergeTool({
                                         </div>
                                         </>
                                         )}
-                                        {showQuickHelp && (
-                                            <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 p-4" onClick={() => setShowQuickHelp(false)}>
+                                        {showQuickHelp && createPortal(
+                                            <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/50 p-4" onClick={() => setShowQuickHelp(false)}>
                                                 <div className="max-w-lg w-full max-h-[80vh] overflow-auto bg-white dark:bg-zinc-900 rounded-xl shadow-2xl border border-slate-200 dark:border-zinc-700" onClick={(e) => e.stopPropagation()}>
                                                     <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200 dark:border-zinc-700 sticky top-0 bg-white dark:bg-zinc-900">
                                                         <span className="text-[14px] font-bold text-slate-800 dark:text-zinc-100">{t('preprocess.dataMerge:chen_them_cot_vao_cau_huong_dan')}</span>
@@ -2342,7 +2425,8 @@ export default function DataMergeTool({
                                                         <button type="button" onClick={() => setShowQuickHelp(false)} className="text-[12px] px-3 py-1.5 bg-teal-600 hover:bg-teal-700 text-white rounded font-medium transition-colors">{t('preprocess.dataMerge:da_hieu')}</button>
                                                     </div>
                                                 </div>
-                                            </div>
+                                            </div>,
+                                            document.body
                                         )}
                                     </div>
                                 )}

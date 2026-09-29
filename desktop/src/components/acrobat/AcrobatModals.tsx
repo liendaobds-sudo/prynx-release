@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useDialogLifecycle } from './dialogLifecycle';
 
@@ -6,8 +7,8 @@ import { useDialogLifecycle } from './dialogLifecycle';
 export function QuickDeleteModal({ selectedCount, onConfirm, onClose }: { selectedCount: number; onConfirm: () => void; onClose: () => void }) {
   const { t } = useTranslation();
     const dialogRef = useDialogLifecycle(onClose);
-    return (
-        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 font-sans">
+    return createPortal(
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 font-sans">
             <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="prynx-quick-delete-title" data-prynx-modal="true" tabIndex={-1} className="bg-white dark:bg-[#1e1e1e] w-[380px] rounded-xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200 border border-black/5 dark:border-white/10">
                 <div className="flex p-6">
                     <div className="w-12 h-12 rounded-full bg-red-50 dark:bg-red-500/10 flex items-center justify-center shrink-0 text-red-600 dark:text-red-400 mr-4">
@@ -25,7 +26,7 @@ export function QuickDeleteModal({ selectedCount, onConfirm, onClose }: { select
                     <button onClick={onConfirm} className="px-6 h-[38px] flex items-center justify-center rounded font-medium text-[13px] bg-red-600 hover:bg-red-700 text-white shadow-sm min-w-[120px] transition-colors outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 dark:focus:ring-offset-[#1e1e1e]">{t('misc.acrobatModals:dong_y_xoa')}</button>
                 </div>
             </div>
-        </div>
+        </div>, document.body
     );
 }
 
@@ -37,8 +38,8 @@ export function AdvancedDeleteModal({ numPages, onConfirm, onClose }: { numPages
     const [advDeleteFrom, setAdvDeleteFrom] = useState(1);
     const [advDeleteTo, setAdvDeleteTo] = useState(1);
 
-    return (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 overflow-y-auto font-sans">
+    return createPortal(
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 overflow-y-auto font-sans">
             <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="prynx-advanced-delete-title" data-prynx-modal="true" tabIndex={-1} className="bg-white dark:bg-[#1e1e1e] w-[420px] rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200 border border-black/5 dark:border-white/10">
                 <div className="flex items-center justify-between px-6 py-4 border-b border-black/5 dark:border-white/5">
                     <h3 id="prynx-advanced-delete-title" className="font-semibold text-base text-slate-800 dark:text-zinc-100 tracking-wide">{t('misc.acrobatModals:xoa_trang_delete_pages')}</h3>
@@ -80,7 +81,7 @@ export function AdvancedDeleteModal({ numPages, onConfirm, onClose }: { numPages
                     <button className="px-6 h-[38px] flex items-center justify-center rounded font-medium text-[13px] bg-red-600 hover:bg-red-700 text-white shadow-sm min-w-[120px] transition-colors outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 dark:focus:ring-offset-[#1e1e1e]" onClick={() => onConfirm(advDeleteRange, advDeleteFrom, advDeleteTo)}>{t('misc.acrobatModals:dong_y_xoa_2')}</button>
                 </div>
             </div>
-        </div>
+        </div>, document.body
     );
 }
 
@@ -91,8 +92,8 @@ export function ExtractPagesModal({ pageCount, initialPagesStr, onConfirm, onClo
     const [extractPagesStr, setExtractPagesStr] = useState(initialPagesStr);
     const [extractDeleteAfter, setExtractDeleteAfter] = useState(false);
 
-    return (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 overflow-y-auto font-sans">
+    return createPortal(
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 overflow-y-auto font-sans">
             <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="prynx-extract-pages-title" data-prynx-modal="true" tabIndex={-1} className="bg-white dark:bg-[#1e1e1e] w-[420px] rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200 border border-black/5 dark:border-white/10">
                 <div className="flex items-center justify-between px-6 py-4 border-b border-black/5 dark:border-white/5">
                     <h3 id="prynx-extract-pages-title" className="font-semibold text-base text-slate-800 dark:text-zinc-100 tracking-wide">{t('misc.acrobatModals:trich_xuat_trang')}</h3>
@@ -128,6 +129,6 @@ export function ExtractPagesModal({ pageCount, initialPagesStr, onConfirm, onClo
                     <button className="px-6 h-[38px] flex items-center justify-center rounded font-medium text-[13px] bg-blue-600 hover:bg-blue-700 text-white shadow-sm min-w-[120px] transition-colors outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-[#1e1e1e]" onClick={() => onConfirm(extractPagesStr, extractDeleteAfter)}>{t('misc.acrobatModals:trich_xuat')}</button>
                 </div>
             </div>
-        </div>
+        </div>, document.body
     );
 }

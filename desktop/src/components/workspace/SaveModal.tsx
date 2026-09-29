@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useWorkspaceStore } from '../../stores/useWorkspaceStore';
 import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsStore';
 import { useTranslation } from 'react-i18next';
@@ -24,7 +25,7 @@ export default function SaveModal({ handleSaveFile, onSavePrint }: SaveModalProp
 
     if (!showSaveAsModal) return null;
 
-    return (
+    return createPortal(
         <div className="fixed inset-0 z-modal flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
             {/* UIUX (audit 2026-07-27 §A-03): hex nền cứng + viền đen/trắng mờ → token bg-app-1 / border-app-line */}
             <div role="dialog" aria-modal="true" aria-label={t('misc.save:luu_thanh_pdf')} className="bg-app-1 rounded shadow-2xl flex flex-col w-[800px] h-[580px] overflow-hidden border border-app-line animate-in zoom-in-95 duration-200">
@@ -158,6 +159,6 @@ export default function SaveModal({ handleSaveFile, onSavePrint }: SaveModalProp
                 </div>
 
             </div>
-        </div>
+        </div>, document.body
     );
 }

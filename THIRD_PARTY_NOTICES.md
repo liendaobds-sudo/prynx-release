@@ -3,7 +3,7 @@
 PrynX sử dụng các thành phần mã nguồn mở dưới đây. Bản quyền thuộc về các
 tác giả tương ứng; mỗi thành phần được phân phối theo giấy phép của nó.
 
-*Sinh tự động ngày 2026-09-28 bằng `scripts/gen_third_party_notices.py`. Đừng sửa tay — sửa nguồn dữ liệu rồi chạy lại script.*
+*Sinh tự động ngày 2026-09-29 bằng `scripts/gen_third_party_notices.py`. Đừng sửa tay — sửa nguồn dữ liệu rồi chạy lại script.*
 
 > Đây không phải tư vấn pháp lý. Tài liệu này liệt kê thành phần và giấy
 > phép để phục vụ nghĩa vụ ghi công; việc đánh giá tuân thủ là việc riêng.
@@ -31,7 +31,7 @@ PrynX dùng nguyên bản, không sửa.
 - cssparser-macros 0.6.1 — MPL-2.0
 - dompurify 3.4.12 — (MPL-2.0 OR Apache-2.0)
 - dtoa-short 0.3.5 — MPL-2.0
-- hypothesis 6.155.3 — MPL-2.0
+- hypothesis 6.155.7 — MPL-2.0
 - lightningcss 1.32.0 — MPL-2.0
 - lightningcss-android-arm64 1.32.0 — MPL-2.0
 - lightningcss-darwin-arm64 1.32.0 — MPL-2.0
@@ -45,8 +45,7 @@ PrynX dùng nguyên bản, không sửa.
 - lightningcss-win32-arm64-msvc 1.32.0 — MPL-2.0
 - lightningcss-win32-x64-msvc 1.32.0 — MPL-2.0
 - option-ext 0.2.0 — MPL-2.0
-- pikepdf 10.12.0 — MPL-2.0
-- psycopg2-binary 2.9.9 — LGPL with exceptions
+- pikepdf 10.9.1 — MPL-2.0
 - r-efi 5.3.0 — MIT OR Apache-2.0 OR LGPL-2.1-or-later
 - r-efi 6.0.0 — MIT OR Apache-2.0 OR LGPL-2.1-or-later
 - selectors 0.36.1 — MPL-2.0
@@ -125,121 +124,177 @@ Cột *Phạm vi*: `phát hành` = khai trong `backend/requirements*.txt`;
 
 | Tên | Phiên bản | Giấy phép | Phạm vi |
 |---|---|---|---|
-| [agent-detector](https://github.com/patrick91/agent-detector) | 2.0.0 | MIT | build/test |
-| [aiofiles](https://github.com/Tinche/aiofiles) | 24.1.0 | Apache-2.0 | phát hành |
-| [alembic](https://alembic.sqlalchemy.org) | 1.13.0 | MIT | phát hành |
-| [amqp](http://github.com/celery/py-amqp) | 5.4.0 | BSD | build/test |
-| [annotated-doc](https://github.com/fastapi/annotated-doc) | 0.0.5 | MIT | build/test |
-| [annotated-types](https://github.com/annotated-types/annotated-types) | 0.8.0 | MIT | build/test |
-| anyio | 4.15.1 | MIT | build/test |
-| [billiard](https://github.com/celery/billiard) | 4.3.0 | BSD | build/test |
-| [celery](https://docs.celeryq.dev/) | 5.4.0 | BSD-3-Clause | phát hành |
-| [certifi](https://github.com/certifi/python-certifi) | 2026.7.22 | MPL-2.0 | build/test |
-| cffi | 2.1.1 | MIT-0 | build/test |
-| [chardet](https://github.com/chardet/chardet) | 7.6.0 | 0BSD | build/test |
-| charset-normalizer | 3.5.1 | MIT | build/test |
-| [click](https://github.com/pallets/click/) | 8.5.0 | BSD-3-Clause | build/test |
-| [click-didyoumean](https://github.com/click-contrib/click-didyoumean) | 0.3.1 | MIT | build/test |
-| [click-plugins](https://github.com/click-contrib/click-plugins) | 1.1.1.2 | New BSD | build/test |
-| [click-repl](https://github.com/click-contrib/click-repl) | 0.4.0 | MIT | build/test |
+| [accelerate](https://github.com/huggingface/accelerate) | 1.14.0 | Apache | build/test |
+| [altgraph](https://altgraph.readthedocs.io) | 0.17.5 | MIT | build/test |
+| [annotated-doc](https://github.com/fastapi/annotated-doc) | 0.0.4 | MIT | build/test |
+| [annotated-types](https://github.com/annotated-types/annotated-types) | 0.7.0 | MIT License | build/test |
+| [antlr4-python3-runtime](http://www.antlr.org) | 4.9.3 | BSD | build/test |
+| anyio | 4.14.1 | MIT | build/test |
+| attrs | 26.1.0 | MIT | build/test |
+| [beautifulsoup4](https://www.crummy.com/software/BeautifulSoup/bs4/) | 4.15.0 | MIT License | build/test |
+| [boolean.py](https://github.com/bastikr/boolean.py) | 5.0 | BSD-2-Clause | build/test |
+| [CacheControl](https://pypi.org/project/CacheControl/) | 0.14.4 | Apache-2.0 | build/test |
+| [certifi](https://github.com/certifi/python-certifi) | 2026.6.17 | MPL-2.0 | build/test |
+| cffi | 2.0.0 | MIT | build/test |
+| [chardet](https://github.com/chardet/chardet) | 7.4.3 | 0BSD | build/test |
+| charset-normalizer | 3.4.7 | MIT | build/test |
+| [click](https://github.com/pallets/click/) | 8.4.2 | BSD-3-Clause | build/test |
 | [colorama](https://github.com/tartley/colorama) | 0.4.6 | BSD License | build/test |
-| [cryptography](https://github.com/pyca/cryptography) | 50.0.1 | Apache-2.0 OR BSD-3-Clause | build/test |
-| detect-installer | 0.2.1 | 0BSD | build/test |
-| [dnspython](https://www.dnspython.org) | 2.8.0 | ISC | build/test |
-| [email-validator](https://github.com/JoshData/python-email-validator) | 2.3.0 | Unlicense | build/test |
+| [colorlog](https://github.com/borntyping/python-colorlog) | 6.10.1 | MIT License | build/test |
+| [comtypes](https://github.com/enthought/comtypes) | 1.4.16 | MIT | build/test |
+| [cryptography](https://github.com/pyca/cryptography) | 49.0.0 | Apache-2.0 OR BSD-3-Clause | build/test |
+| [customtkinter](https://customtkinter.tomschimansky.com) | 5.2.2 | Creative Commons Zero v1.0 Universal | build/test |
+| [cyclonedx-python-lib](https://github.com/CycloneDX/cyclonedx-python-lib/#readme) | 11.11.0 | Apache-2.0 | build/test |
+| [darkdetect](http://github.com/albertosottile/darkdetect) | 0.8.0 | BSD-3-Clause | build/test |
+| [defusedxml](https://github.com/tiran/defusedxml) | 0.7.1 | PSFL | build/test |
+| [dill](https://github.com/uqfoundation/dill) | 0.4.1 | BSD-3-Clause | build/test |
+| [doclang](https://www.doclang.ai/) | 0.7.2 | Apache-2.0 | build/test |
+| [docling](https://github.com/docling-project/docling) | 2.111.0 | MIT | build/test |
+| [docling-core](https://github.com/docling-project) | 2.86.0 | MIT | build/test |
+| [docling-ibm-models](https://github.com/docling-project/docling-ibm-models) | 3.13.3 | MIT | build/test |
+| [docling-parse](https://github.com/docling-project/docling-parse) | 7.7.0 | MIT | build/test |
+| [docling-slim](https://github.com/docling-project/docling) | 2.111.0 | MIT | build/test |
+| [easyocr](https://github.com/jaidedai/easyocr) | 1.7.2 | Apache License 2.0 | build/test |
 | [et_xmlfile](https://foss.heptapod.net/openpyxl/et_xmlfile) | 2.0.0 | MIT | build/test |
-| [fastapi](https://github.com/fastapi/fastapi) | 0.138.1 | MIT | phát hành |
-| [fastapi-cli](https://github.com/fastapi/fastapi-cli) | 0.0.32 | MIT | build/test |
-| [fastapi-cloud-cli](https://github.com/fastapilabs/fastapi-cloud-cli) | 0.26.0 | MIT | build/test |
-| [fastar](https://github.com/DoctorJohn/fastar) | 0.12.0 | MIT | build/test |
-| [flatbuffers](https://google.github.io/flatbuffers/) | 25.12.19 | Apache 2.0 | build/test |
-| [fonttools](http://github.com/fonttools/fonttools) | 4.60.2 | MIT | phát hành |
-| [greenlet](https://greenlet.readthedocs.io) | 3.5.6 | MIT AND PSF-2.0 | build/test |
+| [Faker](https://github.com/joke2k/faker) | 40.28.1 | MIT License | build/test |
+| [fastapi](https://github.com/fastapi/fastapi) | 0.139.0 | MIT | phát hành |
+| [filelock](https://github.com/tox-dev/py-filelock) | 3.29.7 | MIT | build/test |
+| [filetype](https://github.com/h2non/filetype.py) | 1.2.0 | MIT | build/test |
+| [fsspec](https://github.com/fsspec/filesystem_spec) | 2026.6.0 | BSD-3-Clause | build/test |
 | [h11](https://github.com/python-hyper/h11) | 0.16.0 | MIT | build/test |
+| [hf-xet](https://github.com/huggingface/xet-core) | 1.5.1 | Apache-2.0 | build/test |
 | [httpcore](https://www.encode.io/httpcore/) | 1.0.9 | BSD-3-Clause | build/test |
 | [httptools](https://github.com/MagicStack/httptools) | 0.8.0 | MIT | build/test |
-| [httpx](https://github.com/encode/httpx) | 0.27.0 | BSD-3-Clause | phát hành |
-| [hypothesis](https://hypothesis.works) | 6.155.3 | MPL-2.0 | phát hành |
-| [idna](https://github.com/kjd/idna) | 3.20 | BSD-3-Clause | build/test |
-| [ImageIO](https://github.com/imageio/imageio) | 2.37.4 | BSD-2-Clause | build/test |
+| [httpx](https://github.com/encode/httpx) | 0.28.1 | BSD-3-Clause | phát hành |
+| [huggingface_hub](https://github.com/huggingface/huggingface_hub) | 1.22.0 | Apache-2.0 | build/test |
+| [hypothesis](https://hypothesis.works) | 6.155.7 | MPL-2.0 | phát hành |
+| [idna](https://github.com/kjd/idna) | 3.18 | BSD-3-Clause | build/test |
+| [ImageIO](https://github.com/imageio/imageio) | 2.37.3 | BSD-2-Clause | build/test |
 | [iniconfig](https://github.com/pytest-dev/iniconfig) | 2.3.0 | MIT | build/test |
 | [Jinja2](https://github.com/pallets/jinja/) | 3.1.6 | BSD License | build/test |
-| [kombu](https://kombu.readthedocs.io) | 5.6.2 | BSD-3-Clause | build/test |
-| [lazy_loader](https://github.com/scientific-python/lazy_loader) | 0.4 | BSD License | phát hành |
-| [lxml](https://lxml.de/) | 6.1.3 | BSD-3-Clause | build/test |
-| [Mako](https://www.makotemplates.org/) | 1.4.3 | MIT | build/test |
+| [jsonlines](https://github.com/wbolster/jsonlines) | 4.0.0 | BSD | build/test |
+| [jsonref](https://github.com/gazpachoking/jsonref) | 1.1.0 | MIT | build/test |
+| [jsonschema](https://github.com/python-jsonschema/jsonschema) | 4.26.0 | MIT | build/test |
+| [jsonschema-specifications](https://github.com/python-jsonschema/jsonschema-specifications) | 2025.9.1 | MIT | build/test |
+| [latex2mathml](https://github.com/roniemartinez/latex2mathml) | 3.81.0 | MIT | build/test |
+| [lazy-loader](https://github.com/scientific-python/lazy-loader) | 0.5 | BSD-3-Clause | phát hành |
+| [license-expression](https://github.com/aboutcode-org/license-expression) | 30.4.4 | Apache-2.0 | build/test |
+| [loguru](https://github.com/Delgan/loguru) | 0.7.3 | MIT License | build/test |
+| [lxml](https://lxml.de/) | 6.1.1 | BSD-3-Clause | build/test |
+| mail-parser | 4.4.0 | Apache-2.0 | build/test |
 | [markdown-it-py](https://github.com/executablebooks/markdown-it-py) | 4.2.0 | MIT License | build/test |
+| [marko](https://github.com/frostming/marko) | 2.2.3 | MIT | build/test |
 | [MarkupSafe](https://github.com/pallets/markupsafe/) | 3.0.3 | BSD-3-Clause | build/test |
 | [maturin](https://github.com/pyo3/maturin) | 1.13.3 | MIT OR Apache-2.0 | phát hành |
 | [mdurl](https://github.com/executablebooks/mdurl) | 0.1.2 | MIT License | build/test |
+| [mpire](https://github.com/sybrenjansen/mpire) | 2.10.2 | MIT | build/test |
 | [mpmath](http://mpmath.org/) | 1.3.0 | BSD | build/test |
+| [msgpack](https://msgpack.org/) | 1.2.1 | Apache-2.0 | build/test |
+| [multiprocess](https://github.com/uqfoundation/multiprocess) | 0.70.19 | BSD-3-Clause | build/test |
 | [networkx](https://networkx.org/) | 3.6.1 | BSD-3-Clause | build/test |
-| [Nuitka](https://nuitka.net) | 4.1.2 | GNU Affero General Public License v3 | phát hành |
+| [ninja](http://ninja-build.org/) | 1.13.0 | Apache Software License; BSD License | build/test |
 | [numpy](https://numpy.org) | 1.26.4 | BSD License | build/test |
-| [onnxruntime-directml](https://onnxruntime.ai) | 1.24.4 | MIT License | phát hành |
-| [opencv-python-headless](https://github.com/opencv/opencv-python) | 4.10.0.84 | Apache 2.0 | phát hành |
+| [omegaconf](https://github.com/omry/omegaconf) | 2.3.1 | BSD License | build/test |
+| [opencv-python](https://github.com/opencv/opencv-python) | 4.11.0.86 | Apache 2.0 | build/test |
+| [opencv-python-headless](https://github.com/opencv/opencv-python) | 4.11.0.86 | Apache 2.0 | phát hành |
+| [opendataloader-pdf](https://github.com/opendataloader-project/opendataloader-pdf) | 2.4.7 | Apache-2.0 | build/test |
 | [openpyxl](https://openpyxl.readthedocs.io) | 3.1.5 | MIT | phát hành |
-| ordered-set | 4.1.0 | MIT License | phát hành |
-| [packaging](https://github.com/pypa/packaging) | 26.3 | Apache-2.0 OR BSD-2-Clause | build/test |
+| [outcome](https://github.com/python-trio/outcome) | 1.3.0.post0 | MIT OR Apache-2.0 | build/test |
+| [packageurl-python](https://github.com/package-url/packageurl-python) | 0.17.6 | MIT | build/test |
+| [packaging](https://github.com/pypa/packaging) | 26.2 | Apache-2.0 OR BSD-2-Clause | build/test |
+| [pandas](https://pandas.pydata.org) | 3.0.3 | BSD License | build/test |
 | pdfcompare_native | 0.1.0 | CHƯA XÁC ĐỊNH | build/test |
-| [pdfminer.six](https://github.com/pdfminer/pdfminer.six) | 20260107 | MIT | build/test |
-| [pdfplumber](https://github.com/jsvine/pdfplumber) | 0.11.10 | MIT License | phát hành |
-| [pikepdf](https://github.com/pikepdf/pikepdf) | 10.12.0 | MPL-2.0 | phát hành |
-| [pillow](https://python-pillow.github.io) | 12.3.0 | MIT-CMU | phát hành |
+| [pefile](https://github.com/erocarrera/pefile) | 2024.8.26 | MIT | build/test |
+| [pikepdf](https://github.com/pikepdf/pikepdf) | 10.9.1 | MPL-2.0 | phát hành |
+| [pillow](https://python-pillow.github.io) | 12.2.0 | MIT-CMU | phát hành |
 | [pip](https://pip.pypa.io/) | 24.0 | MIT | build/test |
+| [pip-api](http://github.com/di/pip-api) | 0.0.34 | Apache Software License | build/test |
+| [pip-requirements-parser](https://github.com/nexB/pip-requirements-parser) | 32.0.1 | MIT | build/test |
+| [pip_audit](https://pypi.org/project/pip-audit/) | 2.10.1 | Apache Software License | build/test |
+| [platformdirs](https://github.com/tox-dev/platformdirs) | 4.11.0 | MIT | build/test |
 | pluggy | 1.6.0 | MIT | build/test |
-| [prompt_toolkit](https://github.com/prompt-toolkit/python-prompt-toolkit) | 3.0.53 | BSD License | build/test |
-| [protobuf](https://developers.google.com/protocol-buffers/) | 7.36.2 | 3-Clause BSD License | build/test |
-| [psycopg2-binary](https://psycopg.org/) | 2.9.9 | LGPL with exceptions | phát hành |
+| [polyfactory](https://github.com/litestar-org/polyfactory) | 3.3.0 | MIT | build/test |
+| [psutil](https://github.com/giampaolo/psutil) | 7.2.2 | BSD-3-Clause | build/test |
+| [py-serializable](https://github.com/madpah/serializable#readme) | 2.1.0 | Apache-2.0 | build/test |
+| [pyclipper](https://github.com/fonttools/pyclipper) | 1.4.0 | MIT | build/test |
 | [pycparser](https://github.com/eliben/pycparser) | 3.0 | BSD-3-Clause | build/test |
-| [pydantic](https://github.com/pydantic/pydantic) | 2.13.5 | MIT | build/test |
-| [pydantic-extra-types](https://github.com/pydantic/pydantic-extra-types) | 2.11.1 | MIT | build/test |
-| [pydantic-settings](https://github.com/pydantic/pydantic-settings) | 2.5.0 | MIT | phát hành |
-| [pydantic_core](https://github.com/pydantic/pydantic) | 2.46.5 | MIT | build/test |
-| [Pygments](https://pygments.org) | 2.21.0 | BSD-2-Clause | build/test |
-| [pypdf](https://github.com/py-pdf/pypdf) | 6.14.2 | BSD-3-Clause | phát hành |
-| [pypdfium2](https://github.com/pypdfium2-team/pypdfium2) | 5.13.0 | BSD-3-Clause, Apache-2.0, dependency licenses | phát hành |
-| [pyserial](https://github.com/pyserial/pyserial) | 3.5 | BSD | phát hành |
-| [pytesseract](https://github.com/madmaze/pytesseract) | 0.3.13 | Apache License 2.0 | phát hành |
+| [pydantic](https://github.com/pydantic/pydantic) | 2.13.4 | MIT | build/test |
+| [pydantic-settings](https://github.com/pydantic/pydantic-settings) | 2.14.2 | MIT | phát hành |
+| [pydantic_core](https://github.com/pydantic/pydantic) | 2.46.4 | MIT | build/test |
+| [Pygments](https://pygments.org) | 2.20.0 | BSD-2-Clause | build/test |
+| [pyinstaller](https://pyinstaller.org) | 6.21.0 | GNU General Public License v2 (GPLv2) | build/test |
+| [pyinstaller-hooks-contrib](https://github.com/pyinstaller/pyinstaller-hooks-contrib) | 2026.6 | Apache Software License; GNU General Public License v2 (GPLv2) | build/test |
+| [pylatexenc](https://github.com/phfaist/pylatexenc) | 2.10 | MIT | build/test |
+| [pymupdf](https://github.com/pymupdf/pymupdf) | 1.28.0 | Dual Licensed - GNU AFFERO GPL 3.0 or Artifex Commercial License | build/test |
+| [pyparsing](https://github.com/pyparsing/pyparsing/) | 3.3.2 | MIT | build/test |
+| [pypdfium2](https://github.com/pypdfium2-team/pypdfium2) | 5.8.0 | BSD-3-Clause, Apache-2.0, dependency licenses | phát hành |
+| [PySocks](https://github.com/Anorov/PySocks) | 1.7.1 | BSD | build/test |
 | [pytest](https://docs.pytest.org/en/latest/) | 9.0.3 | MIT | phát hành |
 | [pytest-asyncio](https://github.com/pytest-dev/pytest-asyncio) | 1.4.0 | Apache-2.0 | phát hành |
-| [python-barcode](https://github.com/WhyNotHugo/python-barcode) | 0.16.1 | MIT | phát hành |
+| [python-bidi](https://github.com/MeirKriheli/python-bidi) | 0.6.11 | GNU Library or Lesser General Public License (LGPL) | build/test |
 | [python-dateutil](https://github.com/dateutil/dateutil) | 2.9.0.post0 | Dual License | build/test |
+| [python-docx](https://github.com/python-openxml/python-docx) | 1.2.0 | MIT | build/test |
 | [python-dotenv](https://github.com/theskumar/python-dotenv) | 1.2.2 | BSD-3-Clause | phát hành |
-| [python-multipart](https://github.com/Kludex/python-multipart) | 0.0.31 | Apache-2.0 | phát hành |
-| [pywin32](https://github.com/mhammond/pywin32) | 308 | PSF | phát hành |
+| [python-multipart](https://github.com/Kludex/python-multipart) | 0.0.32 | Apache-2.0 | phát hành |
+| [python-pptx](https://github.com/scanny/python-pptx) | 1.0.2 | MIT | build/test |
+| [pywin32](https://github.com/mhammond/pywin32) | 312 | PSF | phát hành |
+| [pywin32-ctypes](https://github.com/enthought/pywin32-ctypes) | 0.2.3 | BSD-3-Clause | build/test |
+| [pywinauto](https://github.com/pywinauto/pywinauto) | 0.6.9 | BSD 3-clause | build/test |
 | [PyYAML](https://pyyaml.org/) | 6.0.3 | MIT | build/test |
-| [redis](https://github.com/redis/redis-py) | 5.1.0 | MIT | phát hành |
+| rapidocr | 3.9.1 | Apache-2.0 | build/test |
+| [referencing](https://github.com/python-jsonschema/referencing) | 0.37.0 | MIT | build/test |
+| [regex](https://github.com/mrabarnett/mrab-regex) | 2026.6.28 | Apache-2.0 AND CNRI-Python | build/test |
 | [reportlab](https://www.reportlab.com/) | 4.2.0 | BSD License | phát hành |
+| [requests](https://github.com/psf/requests) | 2.34.2 | Apache-2.0 | build/test |
 | [rich](https://github.com/Textualize/rich) | 15.0.0 | MIT | build/test |
-| rich-toolkit | 0.20.5 | MIT | build/test |
-| rignore | 0.8.1 | MIT | build/test |
-| [scikit-image](https://scikit-image.org) | 0.24.0 | BSD License | phát hành |
+| [rpds-py](https://github.com/crate-py/rpds) | 2026.6.3 | MIT | build/test |
+| [rtree](https://github.com/Toblerity/rtree) | 1.4.1 | MIT | build/test |
+| [safetensors](https://github.com/huggingface/safetensors) | 0.8.0 | Apache Software License | build/test |
+| [scikit-image](https://scikit-image.org) | 0.26.0 | BSD License | phát hành |
 | [scipy](https://scipy.org/) | 1.12.0 | BSD License | phát hành |
 | [segno](https://github.com/heuer/segno/) | 1.6.6 | BSD License | phát hành |
-| [sentry-sdk](https://github.com/getsentry/sentry-python) | 2.70.0 | MIT | build/test |
-| [setuptools](https://github.com/pypa/setuptools) | 65.5.0 | MIT License | build/test |
-| [shapely](https://github.com/shapely/shapely) | 2.0.6 | BSD 3-Clause | phát hành |
+| [selenium](https://www.selenium.dev) | 4.45.0 | Apache-2.0 | build/test |
+| [semchunk](https://github.com/isaacus-dev/semchunk) | 3.2.5 | MIT | build/test |
+| [setuptools](https://github.com/pypa/setuptools) | 83.0.0 | MIT | build/test |
+| [shapely](https://github.com/shapely/shapely) | 2.1.2 | BSD 3-Clause | phát hành |
 | [shellingham](https://github.com/sarugaku/shellingham) | 1.5.4 | ISC License | build/test |
 | [six](https://github.com/benjaminp/six) | 1.17.0 | MIT | build/test |
 | [sniffio](https://github.com/python-trio/sniffio) | 1.3.1 | MIT OR Apache-2.0 | build/test |
 | [sortedcontainers](http://www.grantjenks.com/docs/sortedcontainers/) | 2.4.0 | Apache 2.0 | build/test |
-| [SQLAlchemy](https://www.sqlalchemy.org) | 2.0.35 | MIT | phát hành |
+| [soupsieve](https://github.com/facelessuser/soupsieve) | 2.8.4 | MIT | build/test |
 | [starlette](https://github.com/Kludex/starlette) | 1.3.1 | BSD-3-Clause | phát hành |
 | [sympy](https://sympy.org) | 1.14.0 | BSD | build/test |
+| [tabulate](https://github.com/astanin/python-tabulate) | 0.10.0 | MIT | build/test |
 | [tifffile](https://www.cgohlke.com) | 2026.3.3 | BSD-3-Clause | build/test |
-| [typer](https://github.com/fastapi/typer) | 0.27.2 | MIT | build/test |
-| [typing-inspection](https://github.com/pydantic/typing-inspection) | 0.4.4 | MIT | build/test |
-| [typing_extensions](https://github.com/python/typing_extensions) | 4.16.0 | PSF-2.0 | build/test |
-| [tzdata](https://github.com/python/tzdata) | 2026.4 | Apache-2.0 | build/test |
-| [uharfbuzz](https://github.com/trufont/uharfbuzz) | 0.55.0 | Apache License 2.0 | phát hành |
-| urllib3 | 2.8.0 | MIT | build/test |
-| [uvicorn](https://www.uvicorn.org/) | 0.30.0 | BSD-3-Clause | phát hành |
-| [vine](https://github.com/celery/vine) | 5.1.0 | BSD | build/test |
-| [watchfiles](https://github.com/samuelcolvin/watchfiles) | 1.3.0 | MIT | build/test |
-| [wcwidth](https://github.com/jquast/wcwidth) | 0.9.1 | MIT License | build/test |
-| [websockets](https://github.com/python-websockets/websockets) | 13.0 | BSD-3-Clause | phát hành |
-| [zstandard](https://github.com/indygreg/python-zstandard) | 0.25.0 | BSD-3-Clause | phát hành |
+| [tiktoken](https://github.com/openai/tiktoken) | 0.14.0 | CHƯA XÁC ĐỊNH | build/test |
+| [tkinterdnd2](https://github.com/Eliav2/tkinterdnd2) | 0.5.0 | MIT License | build/test |
+| [tokenizers](https://github.com/huggingface/tokenizers) | 0.22.2 | Apache Software License | build/test |
+| [tomli](https://github.com/hukkin/tomli) | 2.4.1 | MIT | build/test |
+| [tomli_w](https://github.com/hukkin/tomli-w) | 1.2.0 | MIT License | build/test |
+| [torch](https://pytorch.org) | 2.13.0 | CHƯA XÁC ĐỊNH | build/test |
+| [torchvision](https://github.com/pytorch/vision) | 0.28.0 | BSD | build/test |
+| [tqdm](https://tqdm.github.io) | 4.68.4 | MPL-2.0 AND MIT | build/test |
+| [transformers](https://github.com/huggingface/transformers) | 5.13.0 | Apache 2.0 License | build/test |
+| [tree-sitter](https://tree-sitter.github.io/tree-sitter/) | 0.26.0 | MIT License | build/test |
+| [tree-sitter-c](https://github.com/tree-sitter/tree-sitter-c) | 0.24.2 | MIT | build/test |
+| [tree-sitter-javascript](https://github.com/tree-sitter/tree-sitter-javascript) | 0.25.0 | MIT | build/test |
+| [tree-sitter-python](https://github.com/tree-sitter/tree-sitter-python) | 0.25.0 | MIT | build/test |
+| [tree-sitter-typescript](https://github.com/tree-sitter/tree-sitter-typescript) | 0.23.2 | MIT | build/test |
+| [trio](https://github.com/python-trio/trio) | 0.33.0 | MIT OR Apache-2.0 | build/test |
+| [trio-websocket](https://github.com/python-trio/trio-websocket) | 0.12.2 | MIT License | build/test |
+| [typer](https://github.com/fastapi/typer) | 0.24.2 | MIT | build/test |
+| [typing-inspection](https://github.com/pydantic/typing-inspection) | 0.4.2 | MIT | build/test |
+| [typing_extensions](https://github.com/python/typing_extensions) | 4.15.0 | PSF-2.0 | build/test |
+| [tzdata](https://github.com/python/tzdata) | 2026.2 | Apache-2.0 | build/test |
+| urllib3 | 2.7.0 | MIT | build/test |
+| [uvicorn](https://uvicorn.dev/) | 0.51.0 | BSD-3-Clause | phát hành |
+| [watchfiles](https://github.com/samuelcolvin/watchfiles) | 1.2.0 | MIT | build/test |
+| [webdriver-manager](https://github.com/SergeyPirogov/webdriver_manager) | 4.1.2 | Apache-2.0 | build/test |
+| [websocket-client](https://github.com/websocket-client/websocket-client) | 1.9.0 | Apache-2.0 | build/test |
+| [websockets](https://github.com/python-websockets/websockets) | 16.0 | BSD-3-Clause | phát hành |
+| [win32_setctime](https://github.com/Delgan/win32-setctime) | 1.2.0 | MIT license | build/test |
+| [wsproto](https://github.com/python-hyper/wsproto/) | 1.3.2 | MIT | build/test |
+| [xlsxwriter](https://github.com/jmcnamara/XlsxWriter) | 3.2.9 | BSD-2-Clause | build/test |
 
 ## 4. Crate Rust
 
@@ -1641,27 +1696,27 @@ thì không. Cột *Phạm vi* lấy từ cờ `dev` trong `package-lock.json`.
 ## 6. Thống kê
 
 - Nhị phân đóng gói: 6
-- Thư viện Python: 115
+- Thư viện Python: 171
 - Crate Rust: 850
 - Gói npm: 531
 
 | Giấy phép | Số thành phần |
 |---|---|
-| MIT | 630 |
-| MIT OR Apache-2.0 | 412 |
+| MIT | 652 |
+| MIT OR Apache-2.0 | 414 |
 | Apache-2.0 OR MIT | 90 |
-| Apache-2.0 | 46 |
+| Apache-2.0 | 60 |
+| BSD-3-Clause | 35 |
 | MIT/Apache-2.0 | 35 |
-| BSD-3-Clause | 32 |
-| ISC | 29 |
+| ISC | 28 |
 | Unicode-3.0 | 24 |
 | Zlib OR Apache-2.0 OR MIT | 22 |
 | MPL-2.0 | 20 |
+| BSD-2-Clause | 17 |
 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | 16 |
 | Unlicense OR MIT | 16 |
-| BSD-2-Clause | 15 |
+| MIT License | 11 |
 | BSD License | 9 |
-| Apache-2.0/MIT | 8 |
 
-4 thành phần không khai giấy phép trong metadata — cần tra thủ công trước khi phát hành.
+6 thành phần không khai giấy phép trong metadata — cần tra thủ công trước khi phát hành.
 

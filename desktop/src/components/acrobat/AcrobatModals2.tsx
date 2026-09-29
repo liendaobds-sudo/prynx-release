@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useDialogLifecycle } from './dialogLifecycle';
 
@@ -24,8 +25,8 @@ export function RotatePagesModal({ numPages, onConfirm, onClose }: {
         setIsRotating(false);
     };
 
-    return (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 overflow-y-auto font-sans">
+    return createPortal(
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 overflow-y-auto font-sans">
             <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="prynx-rotate-pages-title" data-prynx-modal="true" tabIndex={-1} className="bg-white dark:bg-[#1e1e1e] w-[420px] rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200 border border-black/5 dark:border-white/10">
                 <div className="flex items-center justify-between px-6 py-4 border-b border-black/5 dark:border-white/5">
                     <h3 id="prynx-rotate-pages-title" className="font-semibold text-base text-slate-800 dark:text-zinc-100 tracking-wide">Xoay Trang</h3>
@@ -104,7 +105,7 @@ export function RotatePagesModal({ numPages, onConfirm, onClose }: {
                     </button>
                 </div>
             </div>
-        </div>
+        </div>, document.body
     );
 }
 
@@ -120,8 +121,8 @@ export function InsertBlankPageModal({ pageCount, onConfirm, onClose }: {
     const [insertTarget, setInsertTarget] = useState<'first' | 'last' | 'page'>('page');
     const [insertTargetPage, setInsertTargetPage] = useState(1);
 
-    return (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 overflow-y-auto font-sans">
+    return createPortal(
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/40 backdrop-blur-sm p-4 overflow-y-auto font-sans">
             <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby="prynx-insert-blank-title" data-prynx-modal="true" tabIndex={-1} className="bg-white dark:bg-[#1e1e1e] w-[420px] rounded-2xl shadow-2xl flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200 border border-black/5 dark:border-white/10">
                 <div className="flex items-center justify-between px-6 py-4 border-b border-black/5 dark:border-white/5">
                     <h3 id="prynx-insert-blank-title" className="font-semibold text-base text-slate-800 dark:text-zinc-100 tracking-wide">{t('misc.acrobatModals2:chen_trang_insert_pages')}</h3>
@@ -184,6 +185,6 @@ export function InsertBlankPageModal({ pageCount, onConfirm, onClose }: {
                     <button className="px-6 h-[38px] flex items-center justify-center rounded font-medium text-[13px] bg-blue-600 hover:bg-blue-700 text-white shadow-sm min-w-[120px] transition-colors outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 dark:focus:ring-offset-[#1e1e1e]" onClick={() => onConfirm(insertLocation, insertTarget, insertTargetPage)}>{t('misc.acrobatModals2:luu_thay_doi')}</button>
                 </div>
             </div>
-        </div>
+        </div>, document.body
     );
 }

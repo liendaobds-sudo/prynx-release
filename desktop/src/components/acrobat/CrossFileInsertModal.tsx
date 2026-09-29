@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useDialogLifecycle } from './dialogLifecycle';
 
@@ -61,8 +62,8 @@ function CrossFileInsertModalContent({ pending, onConfirm, onCancel }: ContentPr
         ? t('misc.acrobatViewer:chen_di_chuyen_sang')
         : t('misc.acrobatViewer:chen_copy_sang');
 
-    return (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+    return createPortal(
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/50 backdrop-blur-sm">
             <div
                 ref={dialogRef}
                 role="dialog"
@@ -141,7 +142,7 @@ function CrossFileInsertModalContent({ pending, onConfirm, onCancel }: ContentPr
                     </button>
                 </div>
             </div>
-        </div>
+        </div>, document.body
     );
 }
 

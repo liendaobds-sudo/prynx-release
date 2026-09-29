@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { AlertTriangle, CheckCircle, RefreshCw, X, SlidersHorizontal, Sparkles } from 'lucide-react';
 import type { ImageHeaderInfo } from '../../lib/imageHeaderInspector';
 import { useTranslation } from 'react-i18next';
@@ -65,8 +66,8 @@ export default function GiantImageOptimizationModal({
   const safeCustomDpi = Math.max(50, Math.min(customDpi || 150, Math.max(currentDpi, 600)));
   const customStats = calculateDpiStats(safeCustomDpi);
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+  return createPortal(
+    <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
       <div
         className="w-full max-w-lg max-h-[92vh] overflow-y-auto rounded-xl border border-amber-300 bg-white p-5 shadow-2xl dark:border-amber-700/60 dark:bg-zinc-900"
         role="dialog"
@@ -306,6 +307,6 @@ export default function GiantImageOptimizationModal({
           </div>
         </div>
       </div>
-    </div>
+    </div>, document.body
   );
 }

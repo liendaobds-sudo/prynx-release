@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { ChevronDown } from 'lucide-react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf, type WorkingPdfRevisionSnapshot } from '../../hooks/useWorkingPdf';
@@ -510,8 +511,8 @@ export default function SavePdfxTool({ tabId, pdfFile, onFileFixed }: Props) {
       )}
 
       {/* ═══ MODAL GIẢI THÍCH MỤC KIỂM TRA ═══ */}
-      {helpFor && CHECK_HELP[helpFor.id] && (
-        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50 p-4"
+      {helpFor && CHECK_HELP[helpFor.id] && createPortal(
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/50 p-4"
           onClick={() => setHelpFor(null)}>
           <div className="bg-white dark:bg-zinc-800 rounded-xl shadow-2xl max-w-md w-full max-h-[85vh] overflow-y-auto"
             onClick={(e) => e.stopPropagation()}>
@@ -538,7 +539,7 @@ export default function SavePdfxTool({ tabId, pdfFile, onFileFixed }: Props) {
             </div>
           </div>
         </div>
-      )}
+      , document.body)}
     </div>
   );
 }

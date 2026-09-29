@@ -10,6 +10,7 @@
  * khi busy, hiện progress "trang X/N".
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import { exportImagesBatch, uploadPDF } from '../../lib/api';
 import { toast } from '../ui/Toast';
@@ -310,7 +311,7 @@ export default function ExportImageModal({ open, onClose, initialTab = 'export',
 
     const radioRow = 'flex items-center gap-1.5 cursor-pointer text-sm';
 
-    return (
+    return createPortal(
         <div className="fixed inset-0 z-modal flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200" onMouseDown={handleBackdropClick}>
             <div
                 role="dialog" aria-modal="true" aria-label={t('misc.exportImage:xuat_anh')}
@@ -608,6 +609,6 @@ export default function ExportImageModal({ open, onClose, initialTab = 'export',
                     </div>
                 </div>
             </div>
-        </div>
+        </div>, document.body
     );
 }

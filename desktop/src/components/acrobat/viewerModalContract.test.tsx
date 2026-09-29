@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import type { PropsWithChildren } from 'react';
-import { fireEvent, render, renderHook, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, renderHook, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createWorkspaceStore, WorkspaceContext } from '../../stores/useWorkspaceStore';
@@ -60,6 +60,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+    cleanup();
     document.body.innerHTML = '';
 });
 

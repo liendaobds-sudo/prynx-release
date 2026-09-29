@@ -162,7 +162,7 @@ export default function PresetSelector({ isOpen, onClose, onLoadPreset, onGetCur
   const labelCls = "block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1.5";
 
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={onClose} />
       <div className="relative bg-white dark:bg-zinc-800 rounded-xl shadow-2xl w-full max-w-md p-6 flex flex-col gap-5 animate-in fade-in zoom-in-95 duration-200 max-h-[85vh] overflow-hidden">
         

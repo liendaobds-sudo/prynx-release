@@ -103,7 +103,7 @@ function PontSettingsDialogContent({ onClose, config, onSave }: Omit<PontSetting
     const sectionTitleCls = "text-sm font-bold text-slate-800 dark:text-zinc-200 flex items-center gap-2 mb-3";
 
     return createPortal(
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6">
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center p-4 sm:p-6">
             <div className="absolute inset-0 bg-slate-900/40 dark:bg-zinc-900/60 backdrop-blur-md transition-opacity duration-300" onClick={onClose} />
             
             <div className="relative bg-white dark:bg-zinc-800 rounded-2xl shadow-2xl w-full max-w-3xl p-6 flex flex-col gap-5 animate-in fade-in zoom-in-95 duration-200">

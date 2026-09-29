@@ -170,8 +170,8 @@ function SaveRecipeDialog({ steps, sourcePageCount, onClose }: {
         }
     };
 
-    return (
-        <div className="fixed inset-0 z-modal flex items-center justify-center bg-black/40" onClick={requestClose}>
+    return createPortal(
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/40 backdrop-blur-xs" onClick={requestClose}>
             <div
                 className="w-[440px] max-w-[92vw] bg-white dark:bg-zinc-900 rounded-xl shadow-2xl ring-1 ring-black/10 dark:ring-white/10 overflow-hidden"
                 onClick={e => e.stopPropagation()}
@@ -241,6 +241,6 @@ function SaveRecipeDialog({ steps, sourcePageCount, onClose }: {
                     </button>
                 </div>
             </div>
-        </div>
+        </div>, document.body
     );
 }

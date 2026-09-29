@@ -6,6 +6,7 @@
  * - Preview cây thư mục/tên file (WYSIWYG) trước khi ghi.
  */
 import React, { useState, useMemo, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { X } from 'lucide-react';
 import { useImposerSettingsStore } from '../imposition-tools/useImposerSettingsStore';
 import { buildSavePlan, type SaveTypeInfo, type SavePlanConfig } from '../../lib/printFileNaming';
@@ -148,7 +149,7 @@ export default function SavePrintFilesModal({ open, onClose, resultBlob, types: 
     }
     const totalSheets = types.reduce((s, t) => s + (t.sheetCount || 0), 0);
 
-    return (
+    return createPortal(
         <div className="fixed inset-0 z-modal flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
             <div role="dialog" aria-modal="true" aria-label={t('misc.savePrintFiles:luu_file_in')} className="bg-white dark:bg-zinc-900 rounded-xl shadow-2xl w-[560px] max-h-[85vh] overflow-hidden flex flex-col border border-black/10 dark:border-white/10">
                 <div className="flex items-center justify-between px-5 py-3 border-b border-slate-200 dark:border-white/10">
@@ -221,6 +222,6 @@ export default function SavePrintFilesModal({ open, onClose, resultBlob, types: 
                     </button>
                 </div>
             </div>
-        </div>
+        </div>, document.body
     );
 }
