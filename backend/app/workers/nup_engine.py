@@ -319,7 +319,10 @@ def _handle_sticker_grid_order(source_path, settings, page_count, trim_w, trim_h
     )
     is_manual_repeat = uses_sticker_manual_repeat(settings)
     is_grid = uses_sticker_single_order(settings, page_count) or uses_sticker_simple_grid(settings)
+    from app.core.workflow_debug_log import dbg_log
+    dbg_log("STICKER_GRID_CHECK", f"Kiểm tra xử lý grid/repeat cho {page_count} trang", is_manual_repeat=is_manual_repeat, is_grid=is_grid, gridStrategy=settings.get("gridStrategy"), taskMode=settings.get("taskMode"), layoutType=settings.get("layoutType"))
     if not (is_manual_repeat or is_grid):
+        dbg_log("STICKER_GRID_SKIP", "Không thỏa mãn manual_repeat hoặc simple/single grid -> chuyển sang interlocking/zone", page_count=page_count, gridStrategy=settings.get("gridStrategy"))
         return None
     _doc_grid = pdf_lib.open(source_path)
     try:
@@ -1040,12 +1043,9 @@ def _run_nup_engine_impl(
                 cur_trim_w, cur_trim_h = _one_dao_trim
 
             elif largest_path:
-
                 r = largest_path['rect']
-
-                cur_trim_w = r.width
-
-                cur_trim_h = r.height
+                cur_trim_w = min(r.width, src_page.rect.width)
+                cur_trim_h = min(r.height, src_page.rect.height)
 
             else:
 
@@ -1068,6 +1068,8 @@ def _run_nup_engine_impl(
             page_infos.append((p_idx, qty, cur_trim_w, cur_trim_h))
 
             trim_by_page[p_idx] = (cur_trim_w, cur_trim_h)
+            from app.core.workflow_debug_log import dbg_log
+            dbg_log("NUP_PAGE_TRIM", f"Trang {p_idx + 1}/{page_count}: khổ bế nhận diện {cur_trim_w * 25.4 / 72.0:.1f}x{cur_trim_h * 25.4 / 72.0:.1f}mm", qty=qty, has_die=has_die_by_page[p_idx], genuine_die=genuine_die_by_page[p_idx], largest_spot=largest_path.get('spot_name') if largest_path else None)
 
             logger.debug(f"   [ZONE] Page {p_idx}: qty={qty} trim={cur_trim_w:.1f}x{cur_trim_h:.1f}")
 
@@ -1114,6 +1116,7 @@ def _run_nup_engine_impl(
         # strict_ratio  → chia đều số lượng: mỗi loại được không gian tỉ lệ với qty của nó
 
         n_types = len(page_infos)
+        dbg_log("ZONE_STRIP_ALLOC_START", f"BẮT ĐẦU CHIA VÙNG: n_types={n_types} loại tem trên tờ, usable_h={usable_h * 25.4 / 72.0:.1f}mm", strategy=grouping_strategy)
 
         total_qty_all = sum(qty for _, qty, _, _ in page_infos)
 
@@ -1154,6 +1157,7 @@ def _run_nup_engine_impl(
             alloc_h = min(alloc_h, remaining_h)
 
             strip_allocations.append((p_idx, qty, tw, th, alloc_h))
+            dbg_log("ZONE_STRIP_PAGE", f"Trang {p_idx + 1}: phân bổ alloc_h={alloc_h * 25.4 / 72.0:.1f}mm", item_h_mm=th * 25.4 / 72.0, item_w_mm=tw * 25.4 / 72.0, qty=qty)
 
             remaining_h -= alloc_h
 
@@ -2222,6 +2226,7 @@ def _run_nup_engine_impl(
                     logger.warning(f"[REPORT] homogeneous seq dựng report lỗi: {_e_rh}")
 
         elif layout_type == 'repeat':
+            dbg_log("NUP_REPEAT_BRANCH", f"Chế độ BÌNH TRANG (layout_type=repeat): xử lý từng trang độc lập, {len(page_infos)} trang")
             logger.debug(f"   [ZONE] STICKER IMPOSER -> processing pages independently without mixing")
             sheet_idx = 0
 
@@ -2305,6 +2310,7 @@ def _run_nup_engine_impl(
                         _reports_by_sheet[sheet_idx] = _type_report_str
                     sheet_idx += 1
             total_items_placed = sum(len(p) for p in precalculated_placements.values())
+            dbg_log("NUP_REPEAT_DONE", f"Hoàn tất bình trang độc lập: {len(precalculated_placements)} tờ in, tổng {total_items_placed} con tem", sheets_count=len(precalculated_placements), items_count=total_items_placed)
 
         elif is_auto_fill and len(page_infos) == 1 and grouping_strategy != 'cluster_tile':
             # ── AUTO-FILL 1 LOẠI TEM (single template) ──────────────────────────────

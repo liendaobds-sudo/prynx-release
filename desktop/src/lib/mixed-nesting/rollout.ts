@@ -36,5 +36,8 @@ export function isMixedNestingEnabled(isDevelopment: boolean, releaseEnabled = f
 
 const RELEASE_ENABLED = import.meta.env.VITE_MIXED_NESTING_ENABLED === 'true';
 
-/** Giá trị dùng thật trong registry. */
-export const MIXED_NESTING_ENABLED = isMixedNestingEnabled(import.meta.env.DEV, RELEASE_ENABLED);
+/**
+ * Giá trị dùng thật trong registry.
+ * Ngừng phát triển: mặc định tắt cả trong dev lẫn release (chỉ bật khi có cờ tường minh VITE_MIXED_NESTING_ENABLED=true).
+ */
+export const MIXED_NESTING_ENABLED = RELEASE_ENABLED;

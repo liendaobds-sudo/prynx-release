@@ -1918,6 +1918,8 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
                 os.path.basename(job_source_path),
                 cut_mode, offset_mm, bleed_mm, do_cut_first_page_only, do_rectangle_mode, shape_mode,
             )
+            from app.core.workflow_debug_log import dbg_log
+            dbg_log("STICKER_JOB_START", f"Bắt đầu xử lý file='{os.path.basename(job_source_path)}'", cut_mode=cut_mode, offset_mm=offset_mm, bleed_mm=bleed_mm, crop_to_sticker=do_crop_to_sticker, rect_mode=do_rectangle_mode, shape_mode=shape_mode)
             success, meta = engine.process_pdf(
                 input_path=job_source_path,
                 output_path=output_path,
@@ -1995,7 +1997,10 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
                     expansion_pts=page_expansion_pts,
                 )
             elif do_crop_to_sticker and selected_objects_by_page is None and not do_rectangle_mode:
+                from app.core.workflow_debug_log import dbg_log
+                dbg_log("STICKER_SPLIT", "Bắt đầu tách/chuẩn hóa trang tem", file=output_path)
                 split_or_normalize_sticker_tight_crop(output_path, meta)
+                dbg_log("STICKER_SPLIT", "Đã tách/chuẩn hóa xong", file=output_path)
             # Giữ tạo output trong một lượt admission, không xếp hàng lại cho watermark.
             _safe_watermark(output_path, license_info)
             return meta, engine_seconds

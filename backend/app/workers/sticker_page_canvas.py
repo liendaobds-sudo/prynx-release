@@ -327,6 +327,8 @@ def split_or_normalize_sticker_tight_crop(
         isinstance(p, dict) and len(p.get("sticker_boxes") or []) > 1
         for p in pages_meta
     )
+    from app.core.workflow_debug_log import dbg_log
+    dbg_log("SPLIT_PAGES", f"Kiểm tra tách trang cho file '{os.path.basename(path_str)}'", has_multi=has_multi, pages_meta_count=len(pages_meta))
     if not has_multi:
         return normalize_sticker_tight_crop_origin(pdf_path)
 
@@ -340,18 +342,51 @@ def split_or_normalize_sticker_tight_crop(
                 p_meta = pages_meta[page_idx] if page_idx < len(pages_meta) and isinstance(pages_meta[page_idx], dict) else {}
                 sticker_boxes = p_meta.get("sticker_boxes") or []
 
+                dbg_log("SPLIT_PAGE_SCAN", f"Trang gốc {page_idx + 1}/{len(pdf.pages)}", sticker_boxes_count=len(sticker_boxes))
                 if len(sticker_boxes) <= 1:
                     new_pdf.pages.append(page)
                     continue
 
                 page_obj = page.obj
+                streams = []
                 if "/Contents" in page_obj and page_obj.Contents is not None:
                     if isinstance(page_obj.Contents, pikepdf.Array):
-                        raw_stream = b"\n".join(s.read_bytes() for s in page_obj.Contents)
+                        streams = [s.read_bytes() for s in page_obj.Contents]
                     else:
-                        raw_stream = page_obj.Contents.read_bytes()
-                else:
-                    raw_stream = b""
+                        streams = [page_obj.Contents.read_bytes()]
+
+                # Kiểm tra xem stream có chứa CutContour không
+                # Nếu có 2 stream trở lên và stream cuối chứa /CutContour,
+                # thì stream cuối là cut stream chung của cả tờ, các stream trước là artwork.
+                artwork_bytes = b""
+                has_cut_stream = False
+                if len(streams) >= 2 and b"/CutContour" in streams[-1]:
+                    artwork_bytes = b"\n".join(streams[:-1])
+                    has_cut_stream = True
+                elif streams:
+                    raw_full = b"\n".join(streams)
+                    # Nếu chỉ có 1 stream gộp nhưng có /CutContour và box có cut_stream riêng
+                    if b"/CutContour" in raw_full and any(b.get("cut_stream") for b in sticker_boxes):
+                        cut_idx = raw_full.find(b"/CutContour")
+                        if cut_idx > 0:
+                            q_start = raw_full.rfind(b"\nq\n", 0, cut_idx)
+                            if q_start == -1 and raw_full.startswith(b"q\n"):
+                                q_start = 0
+                            elif q_start != -1:
+                                q_start += 1
+                            Q_end = raw_full.find(b"\nQ", cut_idx)
+                            if q_start != -1 and Q_end != -1:
+                                Q_end = raw_full.find(b"\n", Q_end + 1)
+                                if Q_end == -1:
+                                    Q_end = len(raw_full)
+                                artwork_bytes = raw_full[:q_start] + raw_full[Q_end:]
+                                has_cut_stream = True
+                            else:
+                                artwork_bytes = raw_full
+                        else:
+                            artwork_bytes = raw_full
+                    else:
+                        artwork_bytes = raw_full
 
                 for box in sticker_boxes:
                     crop = box["crop_box"]
@@ -379,18 +414,48 @@ def split_or_normalize_sticker_tight_crop(
                     )
                     new_obj["/TrimBox"] = _as_array(trim_rel)
                     new_obj["/ArtBox"] = _as_array(trim_rel)
+                    dbg_log("SPLIT_PAGE_BOX", f"Tạo trang tem riêng {len(new_pdf.pages)}", norm_w_mm=norm_w * 25.4 / 72.0, norm_h_mm=norm_h * 25.4 / 72.0, shift_x=shift_x, shift_y=shift_y, trim_w_mm=(trim_rel[2]-trim_rel[0])*25.4/72.0, trim_h_mm=(trim_rel[3]-trim_rel[1])*25.4/72.0)
 
-                    if raw_stream:
-                        shifted_stream = (
+                    if artwork_bytes:
+                        shifted_art = (
                             f"q 0 0 {norm_w:.4f} {norm_h:.4f} re W n 1 0 0 1 {-shift_x:.4f} {-shift_y:.4f} cm\n".encode("ascii")
-                            + raw_stream
+                            + artwork_bytes
                             + b"\nQ\n"
                         )
-                        new_obj.Contents = new_pdf.make_stream(shifted_stream)
+                        box_cut = box.get("cut_stream")
+                        if box_cut:
+                            if isinstance(box_cut, str):
+                                box_cut_bytes = box_cut.encode("ascii")
+                            else:
+                                box_cut_bytes = box_cut
+                            shifted_cut = (
+                                f"q 1 0 0 1 {-shift_x:.4f} {-shift_y:.4f} cm\n".encode("ascii")
+                                + box_cut_bytes
+                                + b"\nQ\n"
+                            )
+                            new_obj.Contents = pikepdf.Array([
+                                new_pdf.make_stream(shifted_art),
+                                new_pdf.make_stream(shifted_cut),
+                            ])
+                        elif has_cut_stream and len(streams) >= 2:
+                            # QUALITY (audit 2026-09-29): Nếu box_cut không có sẵn nhưng trang gốc CÓ stream khuôn bế riêng,
+                            # giữ lại stream đó và tịnh tiến theo khung tem để khuôn bế KHÔNG BAO GIỜ bị biến mất!
+                            shifted_cut = (
+                                f"q 1 0 0 1 {-shift_x:.4f} {-shift_y:.4f} cm\n".encode("ascii")
+                                + streams[-1]
+                                + b"\nQ\n"
+                            )
+                            new_obj.Contents = pikepdf.Array([
+                                new_pdf.make_stream(shifted_art),
+                                new_pdf.make_stream(shifted_cut),
+                            ])
+                        else:
+                            new_obj.Contents = new_pdf.make_stream(shifted_art)
 
             fd, temp_path = tempfile.mkstemp(suffix=".pdf", dir=output_dir)
             os.close(fd)
             new_pdf.save(temp_path)
+            dbg_log("SPLIT_PAGES_DONE", f"Đã tách xong: tổng trang output={len(new_pdf.pages)}")
 
         normalize_sticker_tight_crop_origin(temp_path)
         os.replace(temp_path, path_str)

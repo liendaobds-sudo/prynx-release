@@ -12169,44 +12169,102 @@ class StickerEngine:
                                     polyline_reduction = None
                         simplify_seconds = time.perf_counter() - _t0_simp
                     
-                    page_content_stream.append("q")
+                    artwork_ops = list(page_content_stream)
+                    cut_ops = [
+                        "q",
+                    ]
                     cut_origin_x = crop_x0 if selection_page_mode else exp_left
                     cut_origin_y = crop_y0 if selection_page_mode else exp_bottom
-                    page_content_stream.append(f"1 0 0 1 {cut_origin_x:.4f} {cut_origin_y:.4f} cm")
-                    
-                    page_content_stream.append("/CutContour CS")
-                    page_content_stream.append("1.0 SCN")
-                    page_content_stream.append("1.0 w")
+                    cut_ops.append(f"1 0 0 1 {cut_origin_x:.4f} {cut_origin_y:.4f} cm")
+                    cut_ops.append("/CutContour CS")
+                    cut_ops.append("1.0 SCN")
+                    cut_ops.append("1.0 w")
+
+                    # Lưu danh sách lệnh vẽ từng tem riêng lẻ để phục vụ split_or_normalize_sticker_tight_crop
+                    individual_cut_ops_by_geom = []
+
+                    # cut_poly có thể là Polygon, MultiPolygon, hoặc (khi buffer âm lớn teo
+                    # tách shape) GeometryCollection/LineString KHÔNG có .exterior. Gom chỉ
+                    # các thành viên là Polygon → tránh AttributeError crash.
+                    if isinstance(cut_poly, MultiPolygon):
+                        raw_geoms = list(cut_poly.geoms)
+                    elif hasattr(cut_poly, 'geoms'):  # GeometryCollection
+                        raw_geoms = list(cut_poly.geoms)
+                    else:
+                        raw_geoms = [cut_poly]
+                    geoms = [
+                        g for g in raw_geoms
+                        if g.geom_type == 'Polygon' and not g.is_empty
+                    ]
 
                     if polyline_reduction is not None:
-                        for path in polyline_reduction.paths:
-                            page_content_stream.extend(reduction_path_stream(path, page_in_height))
-                    elif cut_fitted_paths is not None:
-                        for segments in cut_fitted_paths:
-                            page_content_stream.extend(
-                                build_bezier_segments_path_stream(
-                                    segments,
-                                    page_in_height,
-                                )
-                            )
-                    else:
-                        # cut_poly có thể là Polygon, MultiPolygon, hoặc (khi buffer âm lớn teo
-                        # tách shape) GeometryCollection/LineString KHÔNG có .exterior. Gom chỉ
-                        # các thành viên là Polygon → tránh AttributeError crash.
-                        if isinstance(cut_poly, MultiPolygon):
-                            raw_geoms = list(cut_poly.geoms)
-                        elif hasattr(cut_poly, 'geoms'):  # GeometryCollection
-                            raw_geoms = list(cut_poly.geoms)
+                        total_expected_rings = sum(1 + len(p.interiors) for p in geoms)
+                        if len(polyline_reduction.paths) == total_expected_rings:
+                            ring_cursor = 0
+                            for p in geoms:
+                                num_rings = 1 + len(p.interiors)
+                                part_paths = polyline_reduction.paths[ring_cursor : ring_cursor + num_rings]
+                                ring_cursor += num_rings
+                                single_p_ops = []
+                                for path in part_paths:
+                                    single_p_ops.extend(reduction_path_stream(path, page_in_height))
+                                single_p_ops.append("S")
+                                cut_ops.extend(single_p_ops)
+
+                                single_isolated = [
+                                    "q",
+                                    f"1 0 0 1 {cut_origin_x:.4f} {cut_origin_y:.4f} cm",
+                                    "/CutContour CS",
+                                    "1.0 SCN",
+                                    "1.0 w",
+                                ] + single_p_ops + ["Q"]
+                                individual_cut_ops_by_geom.append("\n".join(single_isolated))
                         else:
-                            raw_geoms = [cut_poly]
-                        geoms = [
-                            g for g in raw_geoms
-                            if g.geom_type == 'Polygon' and not g.is_empty
-                        ]
+                            for path in polyline_reduction.paths:
+                                cut_ops.extend(reduction_path_stream(path, page_in_height))
+                            cut_ops.append("S")
+                    elif cut_fitted_paths is not None:
+                        total_expected_rings = sum(1 + len(p.interiors) for p in geoms)
+                        if len(cut_fitted_paths) == total_expected_rings:
+                            ring_cursor = 0
+                            for p in geoms:
+                                num_rings = 1 + len(p.interiors)
+                                part_paths = cut_fitted_paths[ring_cursor : ring_cursor + num_rings]
+                                ring_cursor += num_rings
+                                single_p_ops = []
+                                for segments in part_paths:
+                                    single_p_ops.extend(
+                                        build_bezier_segments_path_stream(
+                                            segments,
+                                            page_in_height,
+                                        )
+                                    )
+                                single_p_ops.append("S")
+                                cut_ops.extend(single_p_ops)
+
+                                single_isolated = [
+                                    "q",
+                                    f"1 0 0 1 {cut_origin_x:.4f} {cut_origin_y:.4f} cm",
+                                    "/CutContour CS",
+                                    "1.0 SCN",
+                                    "1.0 w",
+                                ] + single_p_ops + ["Q"]
+                                individual_cut_ops_by_geom.append("\n".join(single_isolated))
+                        else:
+                            for segments in cut_fitted_paths:
+                                cut_ops.extend(
+                                    build_bezier_segments_path_stream(
+                                        segments,
+                                        page_in_height,
+                                    )
+                                )
+                            cut_ops.append("S")
+                    else:
                         for p in geoms:
+                            single_p_ops = []
                             coords = list(p.exterior.coords)
                             if coords:
-                                page_content_stream.extend(
+                                single_p_ops.extend(
                                     build_contour_path_stream(
                                         coords,
                                         page_in_height,
@@ -12217,7 +12275,7 @@ class StickerEngine:
                             for inter in p.interiors:
                                 icoords = list(inter.coords)
                                 if icoords:
-                                    page_content_stream.extend(
+                                    single_p_ops.extend(
                                         build_contour_path_stream(
                                             icoords,
                                             page_in_height,
@@ -12225,9 +12283,24 @@ class StickerEngine:
                                             tension=cut_draw_tension,
                                         )
                                     )
+                            single_p_ops.append("S")
+                            cut_ops.extend(single_p_ops)
 
-                    page_content_stream.append("S")
-                    page_content_stream.append("Q")
+                            # Stream vẽ riêng cho con tem này (kèm thiết lập màu/stroke)
+                            single_isolated = [
+                                "q",
+                                f"1 0 0 1 {cut_origin_x:.4f} {cut_origin_y:.4f} cm",
+                                "/CutContour CS",
+                                "1.0 SCN",
+                                "1.0 w",
+                            ] + single_p_ops + ["Q"]
+                            individual_cut_ops_by_geom.append("\n".join(single_isolated))
+
+                    cut_ops.append("Q")
+                else:
+                    artwork_ops = list(page_content_stream)
+                    cut_ops = []
+                    individual_cut_ops_by_geom = []
 
                 _t0_cnt = time.perf_counter()
                 if selection_page_mode:
@@ -12240,12 +12313,19 @@ class StickerEngine:
                         page_out.contents_add(
                             pikepdf.Stream(doc_out, bleed_content),
                         )
-                    if page_content_stream:
-                        cut_content = "\n".join(page_content_stream).encode("ascii")
+                    if artwork_ops:
+                        art_content = "\n".join(artwork_ops).encode("ascii")
+                        page_out.contents_add(pikepdf.Stream(doc_out, art_content))
+                    if cut_ops:
+                        cut_content = "\n".join(cut_ops).encode("ascii")
                         page_out.contents_add(pikepdf.Stream(doc_out, cut_content))
                 else:
-                    full_content = "\n".join(page_content_stream).encode("ascii")
-                    page_out.contents_add(pikepdf.Stream(doc_out, full_content))
+                    if artwork_ops:
+                        art_content = "\n".join(artwork_ops).encode("ascii")
+                        page_out.contents_add(pikepdf.Stream(doc_out, art_content))
+                    if cut_ops:
+                        cut_content = "\n".join(cut_ops).encode("ascii")
+                        page_out.contents_add(pikepdf.Stream(doc_out, cut_content))
                 content_add_seconds = time.perf_counter() - _t0_cnt
                 
                 if _cut_page_ok and draw_cut_contour and cut_mode != "none":
@@ -12349,6 +12429,8 @@ class StickerEngine:
                     sticker_boxes = []
                     _meta_poly = cut_poly if cut_poly is not None else dieline_poly
                     geoms = _meta_poly.geoms if isinstance(_meta_poly, MultiPolygon) else [_meta_poly]
+                    from app.core.workflow_debug_log import dbg_log
+                    dbg_log("STICKER_CONTOURS", f"Trang {page_idx + 1}: dò thấy {len(geoms)} contour", page=page_idx + 1, total_contours=len(geoms))
                     all_trims = []
                     for p in geoms:
                         p_minx, p_miny, p_maxx, p_maxy = p.bounds
@@ -12392,10 +12474,50 @@ class StickerEngine:
                         c_y0 = max(0.0, t_y0 - b_b - crop_guard)
                         c_x1 = min(new_width, t_x1 + b_r + crop_guard)
                         c_y1 = min(new_height, t_y1 + b_t + crop_guard)
-                        sticker_boxes.append({
+                        box_data = {
                             "crop_box": [round(c_x0, 4), round(c_y0, 4), round(c_x1, 4), round(c_y1, 4)],
                             "trim_box": [round(t_x0, 4), round(t_y0, 4), round(t_x1, 4), round(t_y1, 4)],
-                        })
+                        }
+                        if idx < len(individual_cut_ops_by_geom):
+                            box_data["cut_stream"] = individual_cut_ops_by_geom[idx]
+                        elif _cut_page_ok and draw_cut_contour and cut_mode != "none" and idx < len(geoms):
+                            # QUALITY (audit 2026-09-29): Fallback nếu individual_cut_ops_by_geom chưa kịp có
+                            # tự tạo cut_stream riêng từ geometry để từng tem luôn có đường bế chuẩn
+                            p = geoms[idx]
+                            single_p_ops = []
+                            coords = list(p.exterior.coords)
+                            if coords:
+                                single_p_ops.extend(
+                                    build_contour_path_stream(
+                                        coords,
+                                        page_in_height,
+                                        cut_draw_style,
+                                        tension=cut_draw_tension,
+                                    )
+                                )
+                            for inter in p.interiors:
+                                icoords = list(inter.coords)
+                                if icoords:
+                                    single_p_ops.extend(
+                                        build_contour_path_stream(
+                                            icoords,
+                                            page_in_height,
+                                            cut_draw_style,
+                                            tension=cut_draw_tension,
+                                        )
+                                    )
+                            single_p_ops.append("S")
+                            _cut_ox = crop_x0 if selection_page_mode else exp_left
+                            _cut_oy = crop_y0 if selection_page_mode else exp_bottom
+                            box_data["cut_stream"] = "\n".join([
+                                "q",
+                                f"1 0 0 1 {_cut_ox:.4f} {_cut_oy:.4f} cm",
+                                "/CutContour CS",
+                                "1.0 SCN",
+                                "1.0 w",
+                            ] + single_p_ops + ["Q"])
+                        sticker_boxes.append(box_data)
+                        dbg_log("STICKER_BOX", f"Tem {idx + 1}/{len(all_trims)} (trang {page_idx + 1})", trim_w_mm=(t_x1 - t_x0) * 25.4 / 72.0, trim_h_mm=(t_y1 - t_y0) * 25.4 / 72.0, crop_w_mm=(c_x1 - c_x0) * 25.4 / 72.0, crop_h_mm=(c_y1 - c_y0) * 25.4 / 72.0)
                     
                     # Hình học đường cắt đã reconstruct (auto_safe): kind + độ tin cậy.
                     # kind None / reconstructed=False → giữ contour (die phức tạp).

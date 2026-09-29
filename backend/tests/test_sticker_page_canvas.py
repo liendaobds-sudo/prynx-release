@@ -425,3 +425,107 @@ def test_split_or_normalize_sticker_tight_crop_multibox(tmp_path):
         p2_contents = p2.Contents.read_bytes()
         assert b"q 0 0 160.0000 160.0000 re W n 1 0 0 1 -245.0000 -245.0000 cm" in p2_contents
 
+
+def test_split_or_normalize_sticker_tight_crop_isolates_cut_streams(tmp_path):
+    """Mỗi trang tem sau khi tách CHỈ mang đường bế của chính nó, không rò rỉ đường bế tem lân cận."""
+    target = tmp_path / "multi_sticker_sheet.pdf"
+    with pikepdf.Pdf.new() as pdf:
+        page = pdf.add_blank_page(page_size=(500.0, 500.0))
+        # 2 stream: Stream 0 là artwork, Stream 1 là CutContour chung
+        s0 = pdf.make_stream(b"q /Im1 Do Q\n")
+        s1 = pdf.make_stream(b"q /CutContour CS 1.0 SCN 1.0 w 50 50 100 100 re S 250 250 150 150 re S Q\n")
+        page.obj[pikepdf.Name("/Contents")] = pikepdf.Array([s0, s1])
+        pdf.save(target)
+
+    cut1 = "q /CutContour CS 1.0 SCN 1.0 w 50 50 100 100 re S Q"
+    cut2 = "q /CutContour CS 1.0 SCN 1.0 w 250 250 150 150 re S Q"
+
+    meta = {
+        "pages": [
+            {
+                "page": 1,
+                "sticker_boxes": [
+                    {
+                        "crop_box": [45.0, 45.0, 155.0, 155.0],
+                        "trim_box": [50.0, 50.0, 150.0, 150.0],
+                        "cut_stream": cut1,
+                    },
+                    {
+                        "crop_box": [245.0, 245.0, 405.0, 405.0],
+                        "trim_box": [250.0, 250.0, 400.0, 400.0],
+                        "cut_stream": cut2,
+                    },
+                ],
+            }
+        ]
+    }
+
+    splat = split_or_normalize_sticker_tight_crop(target, meta=meta)
+    assert splat is True
+
+    with pikepdf.Pdf.open(target) as pdf:
+        assert len(pdf.pages) == 2
+
+        # Trang 1: Phải có cut1 và KHÔNG có cut2
+        p1 = pdf.pages[0]
+        assert isinstance(p1.obj.Contents, pikepdf.Array)
+        assert len(p1.obj.Contents) == 2
+        p1_art = p1.obj.Contents[0].read_bytes()
+        p1_cut = p1.obj.Contents[1].read_bytes()
+        assert b"q 0 0 110.0000 110.0000 re W n 1 0 0 1 -45.0000 -45.0000 cm\nq /Im1 Do Q\n\nQ" in p1_art
+        assert b"50 50 100 100 re S" in p1_cut
+        assert b"250 250 150 150 re S" not in p1_cut
+
+        # Trang 2: Phải có cut2 và KHÔNG có cut1
+        p2 = pdf.pages[1]
+        assert isinstance(p2.obj.Contents, pikepdf.Array)
+        assert len(p2.obj.Contents) == 2
+        p2_art = p2.obj.Contents[0].read_bytes()
+        p2_cut = p2.obj.Contents[1].read_bytes()
+        assert b"q 0 0 160.0000 160.0000 re W n 1 0 0 1 -245.0000 -245.0000 cm\nq /Im1 Do Q\n\nQ" in p2_art
+        assert b"250 250 150 150 re S" in p2_cut
+        assert b"50 50 100 100 re S" not in p2_cut
+
+
+def test_split_or_normalize_sticker_tight_crop_fallback_when_cut_stream_missing(tmp_path):
+    """Khi sticker_boxes chưa có cut_stream riêng nhưng sheet có /CutContour, khuôn bế KHÔNG BAO GIỜ bị mất."""
+    target = tmp_path / "multi_sticker_fallback.pdf"
+    with pikepdf.Pdf.new() as pdf:
+        page = pdf.add_blank_page(page_size=(500.0, 500.0))
+        s0 = pdf.make_stream(b"q /Im1 Do Q\n")
+        s1 = pdf.make_stream(b"q /CutContour CS 1.0 SCN 1.0 w 50 50 100 100 re S Q\n")
+        page.obj[pikepdf.Name("/Contents")] = pikepdf.Array([s0, s1])
+        pdf.save(target)
+
+    # Metadata không có trường cut_stream
+    meta = {
+        "pages": [
+            {
+                "page": 1,
+                "sticker_boxes": [
+                    {
+                        "crop_box": [45.0, 45.0, 155.0, 155.0],
+                        "trim_box": [50.0, 50.0, 150.0, 150.0],
+                    },
+                    {
+                        "crop_box": [245.0, 245.0, 405.0, 405.0],
+                        "trim_box": [250.0, 250.0, 400.0, 400.0],
+                    },
+                ],
+            }
+        ]
+    }
+
+    splat = split_or_normalize_sticker_tight_crop(target, meta=meta)
+    assert splat is True
+
+    with pikepdf.Pdf.open(target) as pdf:
+        assert len(pdf.pages) == 2
+        for p in pdf.pages:
+            assert isinstance(p.obj.Contents, pikepdf.Array)
+            assert len(p.obj.Contents) == 2
+            # Stream thứ 2 vẫn bảo toàn CutContour
+            cut_bytes = p.obj.Contents[1].read_bytes()
+            assert b"/CutContour" in cut_bytes
+
+

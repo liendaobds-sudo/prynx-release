@@ -140,10 +140,13 @@ def build_sticker_grid_order(doc, settings, *, logical_page_count=None, repeat_t
         from app.workers.nup_sticker import compute_sticker_layout_for_page
         shape = settings.get("detectedShapesByPage") or {}
         props = settings.get("detectedShapeParamsByPage") or {}
+        p_num = str(getattr(doc[0], "number", 0))
+        p_idx = int(p_num) if p_num.isdigit() else 0
+        opt_strat = settings.get("gridStrategy", "optimal_auto")
         optimized = compute_sticker_layout_for_page(
-            doc[0], usable_w, usable_h, gap_x, gap_y, strategy="optimal_auto",
-            shape_type_override=shape.get("0",shape.get(0)),
-            shape_props_override=props.get("0",props.get(0)),
+            doc[0], usable_w, usable_h, gap_x, gap_y, strategy=opt_strat,
+            shape_type_override=shape.get(p_num, shape.get(p_idx, shape.get("0", shape.get(0)))),
+            shape_props_override=props.get(p_num, props.get(p_idx, props.get("0", props.get(0)))),
             bleed_pt=float(settings.get("bleed",0) or 0)*MM,
             cut_type=cut_type, die_size_mode=settings.get("dieSizeMode","die"),
             die_offset_mm=settings.get("dieOffsetMm",0),
@@ -275,7 +278,7 @@ def build_sticker_grid_order(doc, settings, *, logical_page_count=None, repeat_t
 def uses_sticker_manual_repeat(settings) -> bool:
     return (
         bool(settings.get("isDieCutMode")) and settings.get("imposerMode") != "cnc"
-        and not settings.get("page_sheet_mode") and settings.get("gridStrategy") == "manual"
+        and not settings.get("page_sheet_mode")
         and (settings.get("layoutType") == "repeat" or settings.get("taskMode") in ("step_repeat", "sr"))
     )
 
@@ -343,12 +346,12 @@ def build_sticker_manual_repeat_order(doc, settings, *, logical_page_count=None)
     physical = sum(runs_by_sheet.values())
     produced = {int(s["cells"][0]["pageIdx"]):len(s["cells"])*int(s["runCount"]) for s in templates}
     preview = {
-        "success":True,"strategyUsed":"manual","absPlacement":True,"isMixedPreview":True,
+        "success":True,"strategyUsed":settings.get("gridStrategy", "manual"),"absPlacement":True,"isMixedPreview":True,
         **{key:templates[0][key] for key in ("cells","totalItems","overallWidth","overallHeight")},
         "sheets":templates,"sheetsNeeded":physical,"placedByPage":{str(k):v for k,v in produced.items()},
         "orderSummary":{"templateCount":len(templates),"physicalSheetCount":physical,
                         "requestedCount":sum(requested.values()),"placedCount":sum(produced.values())},
     }
-    return StickerGridOrder({"cells":[],"totalItems":capacity,"strategyUsed":"manual",
+    return StickerGridOrder({"cells":[],"totalItems":capacity,"strategyUsed":settings.get("gridStrategy", "manual"),
                              "overallWidth":overall_w,"overallHeight":overall_h},
                             placements,preview,master,run_counts=runs_by_sheet,requested_by_page=requested)

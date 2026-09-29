@@ -5,7 +5,7 @@ from pathlib import Path
 import pikepdf
 import pytest
 
-from app.workers.sticker_classic_page_preview import _pdf_cut_svg, _render_classic_page
+from app.workers.sticker_classic_page_preview import _pdf_cut_path_groups, _pdf_cut_svg, _render_classic_page
 from app.workers.sticker_sheet_export import StickerSheetExportError
 
 
@@ -16,6 +16,29 @@ def test_svg_uses_source_crop_coordinates_not_expanded_output_translation():
         svg, count = _pdf_cut_svg(page, 100, 80, 200, 160)
     assert count == 2
     assert svg == "M 20.00000000 120.00000000 C 40.00000000 120.00000000 60.00000000 80.00000000 80.00000000 80.00000000 L 20.00000000 120.00000000 Z"
+
+
+def test_svg_and_path_groups_parse_all_stickers_on_multi_sticker_sheet():
+    with pikepdf.Pdf.new() as pdf:
+        page = pdf.add_blank_page(page_size=(200, 200))
+        # 3 tem trên cùng 1 tờ: /CutContour CS mở ở đầu block q ... Q,
+        # mỗi tem có chuỗi m ... h S riêng biệt.
+        page.Contents = pdf.make_stream(
+            b"q 1 0 0 1 0 0 cm /CutContour CS 1 SCN 1 w "
+            b"10 20 m 20 20 30 40 40 40 c 10 20 l h S "
+            b"50 60 m 70 80 l 50 60 l h S "
+            b"100 110 m 120 130 l 100 110 l h S Q"
+        )
+        svg, count = _pdf_cut_svg(page, 200, 200, 200, 200)
+        groups = _pdf_cut_path_groups(page)
+
+    # 3 tem: 2 đoạn (c, l) + 2 đoạn (l, l) + 2 đoạn (l, l) = 6 đoạn
+    assert count == 6
+    assert svg.count("M ") == 3
+    assert svg.count(" Z") == 3
+    assert len(groups) == 3
+    for group in groups:
+        assert len(group["exterior"]) >= 2
 
 
 def test_unexpected_cut_transform_or_open_path_is_rejected():

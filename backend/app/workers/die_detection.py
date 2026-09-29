@@ -848,7 +848,15 @@ def _select_from_paths(paths, page_rect, die_channel_names=(),
     if not paths:
         return None, False, False
 
-    valid = [p for p in paths if p["rect"].width > 5 and p["rect"].height > 5]
+    # Bỏ qua các path nằm hoàn toàn ngoài trang (do clip/dời gốc bị sót)
+    valid = [
+        p for p in paths
+        if p["rect"].width > 5 and p["rect"].height > 5
+        and (getattr(p["rect"], "x1", 1.0) > 0.01)
+        and (getattr(p["rect"], "y1", 1.0) > 0.01)
+        and (getattr(p["rect"], "x0", 0.0) < page_rect.width - 0.01)
+        and (getattr(p["rect"], "y0", 0.0) < page_rect.height - 0.01)
+    ]
     if not valid:
         return None, False, False
 
@@ -1248,6 +1256,9 @@ def _detect_one_page_vector(page, page_idx: int, die_channel_names=(),
     lên cơ chế cô lập lỗi theo trang ở detect_die_shapes (R4.2, R5.4).
     """
     paths = page.extract_vector_paths()
+    from app.core.workflow_debug_log import dbg_log
+    _out_c = sum(1 for p in paths if p['rect'].x1 < 0 or p['rect'].y1 < 0 or p['rect'].x0 > page.rect.width or p['rect'].y0 > page.rect.height) if paths else 0
+    dbg_log("DETECT_PAGE_PATHS", f"Trang {page_idx + 1}: khổ {page.rect.width * 25.4 / 72.0:.1f}x{page.rect.height * 25.4 / 72.0:.1f}mm, trích xuất được {len(paths)} vector paths", page=page_idx + 1, total_paths=len(paths), paths_outside_page=_out_c)
     largest, matched_by_spot, is_fallback = _select_from_paths(
         paths, page.rect, die_channel_names, die_colors, die_color_tol
     )
@@ -1276,15 +1287,24 @@ def _detect_one_page_vector(page, page_idx: int, die_channel_names=(),
         try:
             samples = _sample_bezier_contour(items)
             if samples:
-                min_x, max_x, min_y, max_y = _bounding_box(samples)
+                in_samples = [
+                    (sx, sy) for (sx, sy) in samples
+                    if -1.0 <= sx <= page.rect.width + 1.0 and -1.0 <= sy <= page.rect.height + 1.0
+                ]
+                use_samples = in_samples if in_samples else samples
+                min_x, max_x, min_y, max_y = _bounding_box(use_samples)
                 visual_w = max_x - min_x
                 visual_h = max_y - min_y
             else:
-                visual_w = largest["rect"].width
-                visual_h = largest["rect"].height
+                visual_w = min(largest["rect"].width, page.rect.width)
+                visual_h = min(largest["rect"].height, page.rect.height)
         except Exception:
-            visual_w = largest["rect"].width
-            visual_h = largest["rect"].height
+            visual_w = min(largest["rect"].width, page.rect.width)
+            visual_h = min(largest["rect"].height, page.rect.height)
+
+    # Đảm bảo kích thước nhận diện không vượt quá khổ trang thực tế
+    visual_w = min(visual_w, page.rect.width)
+    visual_h = min(visual_h, page.rect.height)
 
     try:
         rot = page.rotation
@@ -1292,6 +1312,7 @@ def _detect_one_page_vector(page, page_idx: int, die_channel_names=(),
         rot = 0
     if rot in (90, 270):
         visual_w, visual_h = visual_h, visual_w
+    dbg_log("DETECT_PAGE_DIE", f"Trang {page_idx + 1}: nhận diện hình bế {shape_type.name}", visual_w_mm=visual_w * 25.4 / 72.0, visual_h_mm=visual_h * 25.4 / 72.0, spot_name=largest.get("spot_name"), raw_rect_w_mm=largest["rect"].width * 25.4 / 72.0, raw_rect_h_mm=largest["rect"].height * 25.4 / 72.0, rot=rot)
 
     # poly: ưu tiên union TOÀN BỘ các đường bế trong nhóm khuôn đã chọn (largest.get("groups")),
     # đảm bảo mọi đường bế trong cùng 1 group (vd ThruCut + KissCut) là 1 thực thể thống nhất.

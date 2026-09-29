@@ -102,13 +102,17 @@ def _pdf_cut_path_groups(page):
                             (float(operands[2]), float(operands[3])),
                             following))
             cursor = following
-        elif active and op == "h" and current:
+        elif active and op in {"h", "s", "S"} and current:
             if cursor != start:
                 current.append((cursor, cursor, start, start))
             rings.append(current)
             current = []
             cursor = None
-        elif active and op in {"S", "s", "Q"}:
+        elif active and op == "Q":
+            if current:
+                rings.append(current)
+                current = []
+                cursor = None
             active = False
     if current:
         rings.append(current)
@@ -233,10 +237,17 @@ def _pdf_cut_operations(page):
             elif op == "h":
                 commands.append(("Z", ()))
                 closed = True
-            elif op in {"S", "s", "Q"}:
-                if op == "s":
+            elif op in {"S", "s"}:
+                if op == "s" and not closed:
                     commands.append(("Z", ()))
                     closed = True
+                if not closed:
+                    raise StickerSheetExportError("Đường bế toàn trang có vòng chưa kín.")
+                # PERF/QUALITY (audit 2026-09-29): Giữ active=True trên S/s.
+                # Khi một tờ in có nhiều tem, /CutContour CS chỉ khai báo một lần
+                # ở đầu block q ... Q; mỗi tem vẽ xong được stroke bằng S.
+                # Nếu ngắt active ở đây, các tem từ thứ 2 trở đi sẽ bị bỏ qua.
+            elif op == "Q":
                 if not closed:
                     raise StickerSheetExportError("Đường bế toàn trang có vòng chưa kín.")
                 active = False

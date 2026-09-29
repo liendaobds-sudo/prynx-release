@@ -234,6 +234,11 @@ def _polygon_to_canonical_mm(
     geometry_type = getattr(polygon, "geom_type", None)
     if geometry_type != "Polygon":
         if geometry_type == "MultiPolygon":
+            from app.core.workflow_debug_log import dbg_log
+            _p_idx = getattr(metadata, 'source_page_index', '?')
+            dbg_log("NESTING_MULTI_ERROR", f"LỖI NESTING: Trang {_p_idx} có nhiều contour rời ({len(polygon.geoms)} mảnh)!", page=_p_idx, parts=len(polygon.geoms), bounds=tuple(round(x, 1) for x in polygon.bounds))
+            for _pi, _part in enumerate(polygon.geoms):
+                dbg_log("NESTING_MULTI_PART", f"  Trang {_p_idx} mảnh {_pi + 1}: bounds={tuple(round(x, 1) for x in _part.bounds)}", w_mm=(_part.bounds[2]-_part.bounds[0])*25.4/72.0, h_mm=(_part.bounds[3]-_part.bounds[1])*25.4/72.0)
             raise _error("Trang có nhiều contour rời nên part nguồn bị nhập nhằng.")
         raise _error("Contour nguồn không phải một Polygon semantic duy nhất.")
     if bool(getattr(polygon, "is_empty", True)):

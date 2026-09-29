@@ -502,6 +502,33 @@ def extract_page_die_cut_polygon(src_page, *, keep_holes=False):
 
             return None
 
+        from app.core.workflow_debug_log import dbg_log
+        _p_num = getattr(src_page, 'number', '?')
+        if poly.geom_type == 'MultiPolygon':
+            # DEFENSIVE: Lọc bỏ các mảnh nằm ngoài khổ trang (do clip/tách tem còn sót subpath lân cận)
+            from shapely.geometry import box as _sbox
+            page_box = _sbox(0, 0, src_page.rect.width, src_page.rect.height)
+            in_page_geoms = []
+            for _part in poly.geoms:
+                if _part.bounds[2] <= 0.1 or _part.bounds[3] <= 0.1 or _part.bounds[0] >= src_page.rect.width - 0.1 or _part.bounds[1] >= src_page.rect.height - 0.1:
+                    continue
+                inter = _part.intersection(page_box)
+                if inter.is_valid and not inter.is_empty and inter.area > 0.1 * _part.area:
+                    in_page_geoms.append(_part)
+
+            if len(in_page_geoms) == 1:
+                poly = in_page_geoms[0]
+                dbg_log("DIECUT_POLYGON_OK", f"Trang {_p_num}: Đã lọc MultiPolygon về 1 Polygon duy nhất trong trang", geom_type=poly.geom_type, w_mm=(poly.bounds[2]-poly.bounds[0])*25.4/72.0, h_mm=(poly.bounds[3]-poly.bounds[1])*25.4/72.0)
+            elif len(in_page_geoms) > 1:
+                poly = unary_union(in_page_geoms)
+                dbg_log("DIECUT_POLYGON_MULTI", f"Trang {_p_num}: CẢNH BÁO MultiPolygon còn {len(poly.geoms)} mảnh trong trang!", geom_type=poly.geom_type, parts=len(poly.geoms), bounds=tuple(round(x, 1) for x in poly.bounds))
+                for _pi, _part in enumerate(poly.geoms):
+                    dbg_log("DIECUT_POLYGON_PART", f"  Trang {_p_num} mảnh {_pi + 1}: bounds={tuple(round(x, 1) for x in _part.bounds)}", w_mm=(_part.bounds[2]-_part.bounds[0])*25.4/72.0, h_mm=(_part.bounds[3]-_part.bounds[1])*25.4/72.0)
+            else:
+                dbg_log("DIECUT_POLYGON_MULTI", f"Trang {_p_num}: Tất cả mảnh đều nằm ngoài trang!", geom_type=poly.geom_type, parts=len(poly.geoms))
+        else:
+            dbg_log("DIECUT_POLYGON_OK", f"Trang {_p_num}: Polygon duy nhất", geom_type=poly.geom_type, w_mm=(poly.bounds[2]-poly.bounds[0])*25.4/72.0, h_mm=(poly.bounds[3]-poly.bounds[1])*25.4/72.0)
+
         try:
             if not isinstance(getattr(src_page, '_cached_die_cut_poly', None), dict):
                 src_page._cached_die_cut_poly = {}
@@ -1188,6 +1215,12 @@ def _find_largest_die_path(page):
 
         res = max(target, key=lambda p: p['rect'].width * p['rect'].height) if target else None
 
+    if res is not None:
+        from app.core.workflow_debug_log import dbg_log
+        _r = res.get('rect')
+        _p_num = getattr(page, 'number', '?')
+        if _r:
+            dbg_log("FIND_LARGEST_DIE", f"Trang {_p_num}: path lớn nhất tìm thấy", rect_w_mm=_r.width * 25.4 / 72.0, rect_h_mm=_r.height * 25.4 / 72.0, spot_name=res.get('spot_name'), x0=_r.x0, y0=_r.y0, x1=_r.x1, y1=_r.y1)
     try:
         page._cached_largest_die = res
     except Exception:
