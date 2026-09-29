@@ -2556,8 +2556,22 @@ if (-not $SkipTauri) {
             $signerLocationPushed = $true
             # Chi process Node da ky + bo Tauri CLI exact-path dang lease moi
             # nhan passphrase. Khong qua npx/npm shim hay PATH.
-            & $script:PrynXNodePath $tauriCliPath @tauriSignerArgs
-            $signerExit = $LASTEXITCODE
+            # Dung ProcessStartInfo de giu bien moi truong TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+            # ke ca khi rong (""), tranh viec Win32 SetEnvironmentVariable xoa bien lam
+            # Tauri CLI signer bi treo console CONIN$ cho nhap password.
+            $signerPsi = New-Object System.Diagnostics.ProcessStartInfo
+            $signerPsi.FileName = $script:PrynXNodePath
+            $signerEscapedArgs = @($tauriCliPath) + @($tauriSignerArgs) | ForEach-Object {
+                if ($_ -match '[\s"]') { '"{0}"' -f ($_ -replace '(\\*)(")', '$1$1\"' -replace '(\\+)$', '$1$1') } else { $_ }
+            }
+            $signerPsi.Arguments = $signerEscapedArgs -join ' '
+            $signerPsi.WorkingDirectory = "$ROOT\desktop"
+            $signerPsi.UseShellExecute = $false
+            $signerPsi.EnvironmentVariables["TAURI_SIGNING_PRIVATE_KEY_PASSWORD"] = [string]$script:CapturedTauriSigningPrivateKeyPassword
+            $signerProc = [System.Diagnostics.Process]::Start($signerPsi)
+            $signerProc.WaitForExit()
+            $signerExit = $signerProc.ExitCode
+            # & $script:PrynXNodePath $tauriCliPath @tauriSignerArgs
         } finally {
             Close-PrynXPayloadLease -Lease $script:TauriSigningKeyLease
             $script:TauriSigningKeyLease = $null
