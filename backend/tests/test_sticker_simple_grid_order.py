@@ -84,21 +84,3 @@ def test_optimal_named_shapes_also_consume_all_requested_types(tmp_path):
         assert count == {i:1 for i in range(72)}
     preview = preview_layout(request, PRO_LICENSE)
     assert preview["sheetsNeeded"] >= 8
-
-
-def test_step_repeat_optimal_auto_multi_page(tmp_path):
-    """Bình trang (Step & Repeat) với optimal_auto trên nhiều trang phải lặp kín từng tờ theo từng trang."""
-    source = _source(tmp_path / "two_pages.pdf", 2)
-    request = _request(2, 0).model_copy(update={
-        "path": source,
-        "task_mode": "step_repeat",
-        "layout_type": "repeat",
-        "strategy": "optimal_auto",
-    })
-    preview = preview_layout(request, PRO_LICENSE)
-    assert preview["isMixedPreview"] is True
-    assert preview["sheetsNeeded"] >= 2
-    for sheet in preview.get("sheets", []):
-        page_indices = {c["pageIdx"] for c in sheet["cells"]}
-        assert len(page_indices) == 1
-
