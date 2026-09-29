@@ -36,18 +36,18 @@ interface Props {
     ) => void | boolean | Promise<void | boolean>;
 }
 
-// UIUX (feedback 2026-08-15): gọi tên theo việc người dùng cần làm và giải thích
-// ngay trên từng chế độ; không đưa thuật ngữ AI vào tên tab.
+// UIUX (feedback 2026-09-29): dùng ngôn ngữ tự nhiên để người dùng nhận diện ngay
+// tình trạng file phù hợp (file sạch nền làm nhanh vs file có bóng đổ cần cọ sửa).
 const MODES: Array<{ id: StickerSourceMode; label: string; description: string }> = [
     {
         id: 'existing',
-        label: 'PDF/PNG đã có biên',
-        description: 'Dùng khi file đã có biên tem rõ (mép trang, nền trong suốt hoặc đối tượng có thể chọn). Không cần file có sẵn CutContour; bạn vẫn bù xén và tạo đường cắt bằng giao diện cũ.',
+        label: 'File sạch nền (Làm nhanh)',
+        description: 'Dùng cho file nền trong suốt (PNG) hoặc nền trắng sạch. Bấm một cái là máy tự tạo đường cắt và bù tràn lề ngay lập tức, làm được cho cả 1 con tem, cả tờ nhiều tem lẫn card/hộp vuông vắn.',
     },
     {
         id: 'ai-sheet',
-        label: 'Tách nhiều tem',
-        description: 'Dùng khi một trang chứa nhiều tem nhưng chưa có biên riêng rõ ràng. Hệ thống sẽ tách thành từng tem riêng, hiển thị đường cắt màu tím để bạn kiểm tra và chỉnh sửa trước khi xuất.',
+        label: 'File có bóng đổ (Có cọ sửa)',
+        description: 'Dùng khi ảnh chụp hoặc file bị dính bóng đổ, nền lem nhem. Có sẵn cọ để bạn tự quét xóa bóng thừa, lấy lại nét bị lẹm và gộp các chi tiết rời rạc lại trước khi xuất.',
     },
 ];
 

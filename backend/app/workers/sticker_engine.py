@@ -7287,7 +7287,14 @@ def _inpaint_color_fill(sub_img, sub_csm, sub_bleed, max_dim: int = 4000):
         s_filled = s_img[fi[0], fi[1]]
     # Chỉ inpaint vùng ring (bleed NGOÀI csm) → NS diffuse màu từ biên csm ra, mượt.
     mask_for_inpaint = cv2.subtract(s_bleed, s_csm)
-    out = cv2.inpaint(s_filled, mask_for_inpaint, 3, cv2.INPAINT_NS)
+    if s_filled.ndim == 3 and s_filled.shape[2] == 4:
+        channels = [
+            cv2.inpaint(s_filled[:, :, c], mask_for_inpaint, 3, cv2.INPAINT_NS)
+            for c in range(4)
+        ]
+        out = np.dstack(channels)
+    else:
+        out = cv2.inpaint(s_filled, mask_for_inpaint, 3, cv2.INPAINT_NS)
     if f > 1:
         out = cv2.resize(out, (sw, sh), interpolation=cv2.INTER_NEAREST)
     return out
@@ -7570,7 +7577,7 @@ def _fit_fan_slopes_from_edge_segments(
     band = np.ascontiguousarray(img[row_start:row_end, -lookback:])
     edge_maps = [
         cv2.Canny(band[:, :, channel], 25, 70)
-        for channel in range(min(3, band.shape[2]))
+        for channel in range(band.shape[2])
     ]
     edges = edge_maps[0]
     for channel_edges in edge_maps[1:]:
@@ -8357,6 +8364,148 @@ def _make_srgb_colorspace(pdf: pikepdf.Pdf):
     except Exception:
         logger.warning("Không thể nhúng ICC sRGB; dùng không gian màu dự phòng.")
         return pikepdf.Name.DeviceRGB
+
+
+def _is_cmyk_document(doc_in_pike: pikepdf.Pdf, provenance: dict) -> bool:
+    """Xác định liệu tài liệu nguồn có sử dụng hệ màu CMYK hay không."""
+    if provenance.get("has_device_cmyk"):
+        return True
+    if provenance.get("has_embedded_cmyk_profile"):
+        return True
+    if provenance.get("has_devicen"):
+        return True
+    if provenance.get("profile_state") in {"tagged", "untagged-device-cmyk"}:
+        return True
+    try:
+        import re
+
+        cmyk_op_pattern = re.compile(rb"(?:\s|^)(?:[0-9.]+\s+){4}[kK](?:\s|$)")
+        for page in doc_in_pike.pages:
+            res = page.get("/Resources")
+            if res is not None:
+                cs = res.get("/ColorSpace")
+                if cs is not None:
+                    for _k, v in dict(cs).items():
+                        if str(v) in {"/DeviceCMYK", "/CMYK"}:
+                            return True
+            contents = page.get("/Contents")
+            if contents is not None:
+                streams = contents if isinstance(contents, pikepdf.Array) else [contents]
+                for s in streams:
+                    if isinstance(s, pikepdf.Stream):
+                        raw = s.read_bytes()
+                        if cmyk_op_pattern.search(raw):
+                            return True
+    except Exception:
+        pass
+    return False
+
+
+def _rgb_to_pure_cmyk_fallback(rgb: np.ndarray) -> np.ndarray:
+    """Fallback chuyển đổi RGB sang CMYK khi PPE không khả dụng.
+
+    Đảm bảo các màu đơn sắc (Cyan, Magenta, Yellow, Black, Trắng, Xám)
+    khôi phục chuẩn xác 100% không bị nhiễm tạp chất sang các kẽm in khác.
+    """
+    rgb_norm = rgb.astype(np.float32) / 255.0
+    r, g, b = rgb_norm[..., 0], rgb_norm[..., 1], rgb_norm[..., 2]
+    k = 1.0 - np.maximum(np.maximum(r, g), b)
+    one_minus_k = 1.0 - k
+    denom = np.where(one_minus_k > 1e-6, one_minus_k, 1.0)
+    c = np.where(one_minus_k > 1e-6, (1.0 - r - k) / denom, 0.0)
+    m = np.where(one_minus_k > 1e-6, (1.0 - g - k) / denom, 0.0)
+    y = np.where(one_minus_k > 1e-6, (1.0 - b - k) / denom, 0.0)
+
+    c = np.clip(c * 255.0 + 0.5, 0, 255).astype(np.uint8)
+    m = np.clip(m * 255.0 + 0.5, 0, 255).astype(np.uint8)
+    y = np.clip(y * 255.0 + 0.5, 0, 255).astype(np.uint8)
+    k = np.clip(k * 255.0 + 0.5, 0, 255).astype(np.uint8)
+    return np.dstack([c, m, y, k])
+
+
+def _render_cmyk_page(
+    input_path: str,
+    page_idx: int,
+    dpi: int,
+    target_shape: tuple[int, int],
+    rgb_fallback: np.ndarray | None = None,
+) -> np.ndarray:
+    """Kết xuất trang PDF ra mảng 4 kênh DeviceCMYK (C, M, Y, K) uint8 [0..255].
+
+    Ưu tiên 1: Dùng PrynX Print Engine (PPE export_cmyk hoặc separations) để đọc trực tiếp
+    các kênh mực in gốc mà không làm méo hay nhiễm tạp chất.
+    Ưu tiên 2: Nếu PPE không khả dụng hoặc lỗi, chuyển đổi từ rgb_fallback (PDFium render)
+    bằng công thức nghịch đảo thuần túy khôi phục chính xác 100% các màu đơn sắc/trắng/đen.
+    """
+    target_h, target_w = target_shape[:2]
+
+    # Ưu tiên 1: Thử PPE export_cmyk
+    try:
+        from app.core.print_engine import facade as ppe_facade
+
+        if ppe_facade.is_available():
+            res = ppe_facade.export_cmyk(
+                input_path,
+                page_idx + 1,
+                dpi=int(round(dpi)),
+                page_box="crop",
+            )
+            raw_cmyk = res.get("cmyk")
+            w = int(res.get("width", 0))
+            h = int(res.get("height", 0))
+            if raw_cmyk and w > 0 and h > 0 and len(raw_cmyk) == w * h * 4:
+                cmyk_arr = np.frombuffer(raw_cmyk, dtype=np.uint8).reshape((h, w, 4))
+                if (h, w) != (target_h, target_w):
+                    cmyk_arr = cv2.resize(
+                        cmyk_arr,
+                        (target_w, target_h),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+                return cmyk_arr
+    except Exception as exc:
+        logger.debug("[STICKER] PPE export_cmyk không khả dụng cho trang %d: %s", page_idx + 1, exc)
+
+    # Thử PPE separations nếu export_cmyk bị từ chối
+    try:
+        from app.core.print_engine import facade as ppe_facade
+
+        if ppe_facade.is_available():
+            sep_res = ppe_facade.separations(
+                input_path,
+                page_idx + 1,
+                dpi=int(round(dpi)),
+                ink_accurate=True,
+            )
+            plates = sep_res.get("plates", [])
+            w = int(sep_res.get("width", 0))
+            h = int(sep_res.get("height", 0))
+            plate_dict = {p.get("name"): p for p in plates if "name" in p}
+            if all(k in plate_dict for k in ("Cyan", "Magenta", "Yellow", "Black")):
+                c_bytes = zlib.decompress(base64.b64decode(plate_dict["Cyan"]["alpha_data"]))
+                m_bytes = zlib.decompress(base64.b64decode(plate_dict["Magenta"]["alpha_data"]))
+                y_bytes = zlib.decompress(base64.b64decode(plate_dict["Yellow"]["alpha_data"]))
+                k_bytes = zlib.decompress(base64.b64decode(plate_dict["Black"]["alpha_data"]))
+                c_ch = np.frombuffer(c_bytes, dtype=np.uint8).reshape((h, w))
+                m_ch = np.frombuffer(m_bytes, dtype=np.uint8).reshape((h, w))
+                y_ch = np.frombuffer(y_bytes, dtype=np.uint8).reshape((h, w))
+                k_ch = np.frombuffer(k_bytes, dtype=np.uint8).reshape((h, w))
+                cmyk_arr = np.dstack([c_ch, m_ch, y_ch, k_ch])
+                if (h, w) != (target_h, target_w):
+                    cmyk_arr = cv2.resize(
+                        cmyk_arr,
+                        (target_w, target_h),
+                        interpolation=cv2.INTER_NEAREST,
+                    )
+                return cmyk_arr
+    except Exception as exc:
+        logger.debug("[STICKER] PPE separations fallback không khả dụng cho trang %d: %s", page_idx + 1, exc)
+
+    # Ưu tiên 2: Fallback giải tích từ PDFium RGB
+    if rgb_fallback is not None:
+        return _rgb_to_pure_cmyk_fallback(rgb_fallback)
+
+    return np.zeros((target_h, target_w, 4), dtype=np.uint8)
+
 
 
 from app.core.pdf_resource_dedup import (
@@ -9163,6 +9312,12 @@ class StickerEngine:
             # dùng render PDFium RGB chung cho artwork và bleed để tránh mixed-space seam.
             if not (_cutline_only and _cached_page_dielines):
                 source_color_provenance = describe_pdf_color_provenance(doc_in_pike)
+                source_is_cmyk = _is_cmyk_document(doc_in_pike, source_color_provenance)
+                if source_is_cmyk:
+                    logger.info(
+                        "[STICKER] Nhận diện tài liệu CMYK (profile_state: %s) -> sinh dải bù xén chuẩn DeviceCMYK 4 kênh",
+                        source_color_provenance.get("profile_state", "unknown"),
+                    )
                 unprofiled_process_color_fallback = (
                     source_color_provenance.get("profile_state")
                     in {"untagged-device-cmyk", "malformed"}
@@ -9202,6 +9357,7 @@ class StickerEngine:
                     color_warning_codes.append(COLOR_DEVICEN_FALLBACK_WARNING)
             else:
                 source_color_provenance = {}
+                source_is_cmyk = False
                 unprofiled_process_color_fallback = False
                 color_warning_codes = []
             invalid_pages = sorted(page for page in selection_targets if page >= pdfium_page_count)
@@ -9386,6 +9542,7 @@ class StickerEngine:
                 and rectangle_mode
                 and bleed_color_type in {"trajectory", "inpaint"}
                 and not use_vector_rectangle_bleed
+                and not source_is_cmyk
             )
             srgb_colorspace = None
             srgb_output_intent_embedded = False
@@ -10437,7 +10594,7 @@ class StickerEngine:
                 img_pil = None
                 bleed_ring = None
                 sticker_footprint = None
-                is_bleed_cmyk = False
+                is_bleed_cmyk = bool(source_is_cmyk)
                 flattened_page_rgb = None
                 flattened_img_name = None
                 flattened_img_w_pt = 0.0
@@ -11132,6 +11289,29 @@ class StickerEngine:
                         padded_raw_mask = np.pad(raw_mask_bin, pad_width=(pad_rows, pad_cols), mode='constant', constant_values=0)
                         
                         padded_img = np.pad(img_native, pad_width=(pad_rows, pad_cols, (0, 0)), mode='constant', constant_values=255)
+                        if source_is_cmyk:
+                            img_cmyk = _render_cmyk_page(
+                                input_path,
+                                page_idx,
+                                dpi=self.dpi,
+                                target_shape=(img_native.shape[0], img_native.shape[1]),
+                                rgb_fallback=img_native,
+                            )
+                            padded_cmyk = np.pad(
+                                img_cmyk,
+                                pad_width=(pad_rows, pad_cols, (0, 0)),
+                                mode='constant',
+                                constant_values=0,
+                            )
+                            color_source_img = padded_cmyk
+                            color_source_native = img_cmyk
+                            is_bleed_cmyk = True
+                        else:
+                            img_cmyk = None
+                            padded_cmyk = None
+                            color_source_img = padded_img
+                            color_source_native = img_native
+                            is_bleed_cmyk = False
                         
                         # Nguồn màu tách khỏi mask hình học đường cắt. Với mode image,
                         # shell cao tần được dò sâu dần để bỏ halo AA/JPEG; các mảng
@@ -11505,7 +11685,6 @@ class StickerEngine:
                             band_r = 0
                             band = None
 
-                        is_bleed_cmyk = False
                         if (
                             bleed_color_type == "trajectory"
                             and not rectangle_mode
@@ -11515,15 +11694,15 @@ class StickerEngine:
                             x0, y0, x1, y1 = trajectory_rect_bbox
                             roi_x0 = max(0, x0 - pad_b)
                             roi_y0 = max(0, y0 - pad_b)
-                            roi_x1 = min(padded_img.shape[1], x1 + pad_b)
-                            roi_y1 = min(padded_img.shape[0], y1 + pad_b)
+                            roi_x1 = min(color_source_img.shape[1], x1 + pad_b)
+                            roi_y1 = min(color_source_img.shape[0], y1 + pad_b)
                             rect_pads = (
                                 x0 - roi_x0,
                                 roi_x1 - x1,
                                 roi_y1 - y1,
                                 y0 - roi_y0,
                             )
-                            rect_core_source = padded_img[y0:y1, x0:x1]
+                            rect_core_source = color_source_img[y0:y1, x0:x1]
                             rect_core_mask = padded_original_mask[y0:y1, x0:x1]
                             # Lấp góc trong suốt trước khi ngoại suy quỹ đạo. Mask
                             # hình học thô có thể chứa pixel AA pha nền ở cung bo;
@@ -11567,25 +11746,25 @@ class StickerEngine:
                                 px_per_mm,
                                 pads=rect_pads,
                             )
-                            bleed_colors = np.zeros_like(padded_img)
+                            bleed_colors = np.zeros_like(color_source_img)
                             bleed_colors[roi_y0:roi_y1, roi_x0:roi_x1] = rect_fill
                             smooth_seconds = time.perf_counter() - smooth_started
                         elif bleed_color_type == "image" or (
                             bleed_color_type == "trajectory" and not rectangle_mode
                         ):
                             # 'Kéo giãn mép ảnh' — nearest-color giới hạn theo band (tile + bỏ ô ruột).
-                            bleed_colors = np.zeros_like(padded_img)
-                            if not _banded_nearest_fill(color_source_mask, padded_img, bleed_ring, band, band_r, out=bleed_colors):
+                            bleed_colors = np.zeros_like(color_source_img)
+                            if not _banded_nearest_fill(color_source_mask, color_source_img, bleed_ring, band, band_r, out=bleed_colors):
                                 # Guard tripped (artwork mảnh / nguồn ngoài halo) → full-ROI (không tệ hơn).
                                 roi = _bleed_roi_bbox(bleed_mask, margin=8)
-                                bleed_colors = np.zeros_like(padded_img)
+                                bleed_colors = np.zeros_like(color_source_img)
                                 if roi is not None:
                                     y0, y1, x0, x1 = roi
                                     bleed_colors[y0:y1, x0:x1] = _nearest_color_fill(
-                                        color_source_mask[y0:y1, x0:x1], padded_img[y0:y1, x0:x1]
+                                        color_source_mask[y0:y1, x0:x1], color_source_img[y0:y1, x0:x1]
                                     )
                                 else:
-                                    bleed_colors = _nearest_color_fill(color_source_mask, padded_img)
+                                    bleed_colors = _nearest_color_fill(color_source_mask, color_source_img)
                         elif bleed_color_type in ("inpaint", "trajectory") and rectangle_mode:
                             smooth_started = time.perf_counter()
                             fill_rectangle = (
@@ -11599,14 +11778,15 @@ class StickerEngine:
                             # không dịch texture khỏi lưới flatten; pixel neo ở
                             # helper bên dưới vẫn khớp đúng ranh trim.
                             fill_edge_bite_px = (
-                                0 if unprofiled_process_color_fallback
+                                0 if (unprofiled_process_color_fallback and not is_bleed_cmyk)
                                 else edge_color_inset_px
                             )
+                            bleed_source = color_source_native
                             bleed_colors = fill_rectangle(
-                                img_native, pad_b, fill_edge_bite_px, px_per_mm,
+                                bleed_source, pad_b, fill_edge_bite_px, px_per_mm,
                                 pads=(pad_left, pad_right, pad_bottom, pad_top),
                             )
-                            if unprofiled_process_color_fallback:
+                            if unprofiled_process_color_fallback and not is_bleed_cmyk:
                                 # COLOR (audit 2026-08-24 §BCOLOR.05): nguồn DeviceN
                                 # thiếu ICC ưu tiên điểm nối liên tục trên PDFium/RIP;
                                 # giữ texture quỹ đạo, không làm phẳng màu ở mép.
@@ -11620,25 +11800,29 @@ class StickerEngine:
                             smooth_seconds = time.perf_counter() - smooth_started
                         elif bleed_color_type == "inpaint":
                             # 'Làm mượt thông minh' — inpaint giới hạn theo band (tile + bỏ ô ruột).
-                            bleed_colors = np.zeros_like(padded_img)
-                            if not _banded_inpaint_fill(padded_img, color_source_mask, bleed_mask, bleed_ring, band, band_r, out=bleed_colors):
+                            bleed_colors = np.zeros_like(color_source_img)
+                            if not _banded_inpaint_fill(color_source_img, color_source_mask, bleed_mask, bleed_ring, band, band_r, out=bleed_colors):
                                 roi = _bleed_roi_bbox(bleed_mask, margin=8)
-                                bleed_colors = np.zeros_like(padded_img)
+                                bleed_colors = np.zeros_like(color_source_img)
                                 if roi is not None:
                                     y0, y1, x0, x1 = roi
                                     bleed_colors[y0:y1, x0:x1] = _inpaint_color_fill(
-                                        padded_img[y0:y1, x0:x1],
+                                        color_source_img[y0:y1, x0:x1],
                                         color_source_mask[y0:y1, x0:x1], bleed_mask[y0:y1, x0:x1],
                                     )
                                 else:
-                                    bleed_colors = _inpaint_color_fill(padded_img, color_source_mask, bleed_mask)
+                                    bleed_colors = _inpaint_color_fill(color_source_img, color_source_mask, bleed_mask)
                         else:
                             if len(solid_bleed_color) == 4:
                                 is_bleed_cmyk = True
-                                bg_canvas = np.zeros((padded_img.shape[0], padded_img.shape[1], 4), dtype=np.uint8)
+                                bg_canvas = np.zeros((color_source_img.shape[0], color_source_img.shape[1], 4), dtype=np.uint8)
                                 bg_canvas[:] = solid_bleed_color
+                            elif is_bleed_cmyk:
+                                cmyk_solid = _rgb_to_pure_cmyk_fallback(np.array([[solid_bleed_color]], dtype=np.uint8))[0, 0]
+                                bg_canvas = np.zeros((color_source_img.shape[0], color_source_img.shape[1], 4), dtype=np.uint8)
+                                bg_canvas[:] = cmyk_solid
                             else:
-                                bg_canvas = np.zeros_like(padded_img)
+                                bg_canvas = np.zeros_like(color_source_img)
                                 bg_canvas[:] = solid_bleed_color
                             bleed_colors = bg_canvas
 
@@ -11650,10 +11834,10 @@ class StickerEngine:
                         # (nearest/inpaint/solid fill) → dùng trực tiếp, cạnh chỉ còn màu↔màu.
                         bleed_rgb = bleed_colors
 
-                        # Sampled bleed giữ ICCBased sRGB vì đó là bytes PDFium đã
-                        # render từ chính artwork. Không tự đổi ngược RGB→CMYK khi
-                        # nguồn thiếu ICC: phép nghịch không biết black generation/
-                        # TAC/profile nên tạo seam màu rõ hơn bản gốc.
+                        # Với nguồn CMYK, bleed_colors mang 4 kênh DeviceCMYK (C, M, Y, K)
+                        # trích xuất từ PPE hoặc công thức nghịch đảo chuẩn mực; khi xuất PDF
+                        # sẽ ghi ColorSpace = /DeviceCMYK để khớp tuyệt đối kẽm in trong Illustrator.
+                        # Với nguồn RGB, bleed giữ ICCBased sRGB theo render PDFium.
 
                         # LOSSLESS (zlib/FlateDecode) cho CẢ RGB lẫn CMYK. TRƯỚC đây RGB
                         # lưu JPEG q90 → ringing (Gibbs) ở mọi ranh giới tương phản cao:

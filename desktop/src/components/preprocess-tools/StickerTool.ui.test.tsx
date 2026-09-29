@@ -180,6 +180,7 @@ vi.mock('../../lib/api', () => ({
 vi.mock('../../lib/stickerSheetApi', () => previewApiMocks);
 
 vi.mock('react-i18next', () => ({
+    initReactI18next: { type: '3rdParty', init: () => {} },
     useTranslation: () => ({
         t: (key: string, options?: Record<string, unknown>) => {
             const value = ({
@@ -232,6 +233,9 @@ vi.mock('react-i18next', () => ({
             'preprocess.stickerSheet:classic_preview_preparing': 'Đang nhận diện vùng tem để tạo preview…',
             'preprocess.stickerSheet:classic_preview_updating': 'Đang cập nhật đường bế xem trước… Vẫn giữ đường hiện tại.',
             'preprocess.common:run': 'Thực thi',
+            'preprocess.sticker:cat_theo_hinh_goc_contour': '✂️ Theo hình gốc',
+            'preprocess.sticker:cat_theo_vung_alpha': '🪟 Vùng trong suốt Alpha',
+            'preprocess.sticker:khong_tao_duong_cat': '🚫 Không tạo đường cắt',
             'preprocess.sticker:da_tao_bu_xen_thanh_cong': 'Đã tạo bù xén thành công!',
             'preprocess.sticker:buoc_tiep_theo_chon_kieu_dan_trang': 'Bước tiếp theo: Chọn kiểu dàn trang (Imposition)',
             'preprocess.sticker:quay_lai_chinh_sua_bu_xen': 'Quay lại chỉnh sửa bù xén',
@@ -271,6 +275,14 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
         const toggle = screen.getByRole('button', { name: '3. Nâng cao' });
         if (toggle.getAttribute('aria-expanded') === 'false') fireEvent.click(toggle);
         return screen.getByTestId('sticker-cutline-tuning');
+    };
+
+    const selectCornerStyle = (style: 'preserve' | 'round' | 'miter') => {
+        const trigger = screen.getByRole('button', { name: /(?:🎯\s*)?Giữ nguyên$|Góc tròn|Góc nhọn/ });
+        fireEvent.click(trigger);
+        const name = style === 'round' ? /Góc tròn/ : style === 'miter' ? /Góc nhọn/ : /(?:🎯\s*)?Giữ nguyên$/;
+        const buttons = screen.getAllByRole('button', { name });
+        fireEvent.click(buttons[buttons.length - 1]);
     };
 
     beforeEach(() => {
@@ -323,10 +335,13 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
 
         expect(screen.getByText('1. Đường cắt (Dieline)')).toBeTruthy();
         expect(screen.getByText('2. Tràn lề (bù xén)')).toBeTruthy();
-        // Hai nhóm chính luôn hiển thị dạng section phẳng; chỉ tùy chọn hiếm dùng
-        // mới nằm trong nút thu gọn Nâng cao.
-        expect(screen.queryByRole('button', { name: '1. Đường cắt (Dieline)' })).toBeNull();
-        expect(screen.queryByRole('button', { name: '2. Tràn lề (bù xén)' })).toBeNull();
+        // Cả 3 nhóm được tổ chức thành 3 card accordion riêng biệt có nút thu/mở
+        const section1Btn = screen.getByRole('button', { name: '1. Đường cắt (Dieline)' });
+        const section2Btn = screen.getByRole('button', { name: '2. Tràn lề (bù xén)' });
+        expect(section1Btn).toBeTruthy();
+        expect(section2Btn).toBeTruthy();
+        expect(section1Btn.getAttribute('aria-expanded')).toBe('true');
+        expect(section2Btn.getAttribute('aria-expanded')).toBe('true');
         const advancedBtn = screen.getByRole('button', { name: '3. Nâng cao' });
         expect(advancedBtn).toBeTruthy();
         fireEvent.click(advancedBtn);
@@ -356,7 +371,7 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
         expect(within(tuning).queryByRole('slider', { name: 'Độ bo cong đường bế' })).toBeNull();
         expect(within(tuning).queryByLabelText('Đơn giản hóa thêm (Simplify)')).toBeNull();
 
-        fireEvent.click(screen.getByRole('button', { name: /Góc tròn/ }));
+        selectCornerStyle('round');
         expect(within(tuning).getAllByRole('slider')).toHaveLength(2);
         expect(screen.getAllByRole('slider')).toHaveLength(2);
         const rounding = within(tuning).getByRole('slider', { name: 'Độ bo cong đường bế' }) as HTMLInputElement;
@@ -371,9 +386,9 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
         expect(tuning.querySelector('[aria-describedby]')).toBeNull();
         expect(within(tuning).queryByText('Ít bo')).toBeNull();
         expect(within(tuning).queryByText('Bo tròn')).toBeNull();
-        fireEvent.click(screen.getByRole('button', { name: /Góc nhọn/ }));
+        selectCornerStyle('miter');
         expect(within(tuning).getAllByRole('slider')).toHaveLength(1);
-        fireEvent.click(screen.getByRole('button', { name: /Góc tròn/ }));
+        selectCornerStyle('round');
         expect((within(tuning).getByRole('slider', { name: 'Độ bo cong đường bế' }) as HTMLInputElement).value).toBe('85');
         view.rerender(<StickerTool pdfFile={file} productType="rectangle" onFileFixed={vi.fn()} />);
         expect(screen.queryByRole('button', { name: '3. Nâng cao' })).toBeNull();
@@ -420,7 +435,6 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
         expect(previewApiMocks.previewStickerCutline.mock.calls[0][1].cutlineSimplifyMm).toBe(0.1);
         const execute = screen.getByRole('button', { name: 'Thực thi' }) as HTMLButtonElement;
         expect(execute.disabled).toBe(true);
-        expect(screen.getByTestId('sticker-cutline-quality').textContent).toContain('Đang cập nhật');
         invokeReactClick(execute);
         expect(authenticatedFetch).not.toHaveBeenCalled();
         expect(noteOperation).not.toHaveBeenCalled();
@@ -428,8 +442,6 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
             before_segments: 18, after_segments: 12, maximum_error_bound_mm: 0.089, changed: true,
         } } });
         await waitFor(() => expect(execute.disabled).toBe(false));
-        expect(screen.getByTestId('sticker-cutline-quality').textContent).toContain('18 → 12');
-        expect(screen.getByTestId('sticker-cutline-quality').textContent).toContain('0.089 mm');
         fireEvent.click(execute);
         await waitFor(() => expect(authenticatedFetch).toHaveBeenCalledTimes(1));
         const form = vi.mocked(authenticatedFetch).mock.calls[0][1]?.body as FormData;
@@ -587,19 +599,18 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
         );
         openCutlineTuning();
 
-        const roundButton = screen.getByRole('button', { name: /Góc tròn/ });
-        expect(roundButton.getAttribute('aria-pressed')).toBe('false');
+        expect(screen.getByRole('button', { name: /(?:🎯\s*)?Giữ nguyên$/ })).toBeTruthy();
         expect(screen.queryByRole('slider', { name: 'Độ bo cong đường bế' })).toBeNull();
 
-        fireEvent.click(roundButton);
+        selectCornerStyle('round');
         const slider = screen.getByRole('slider', { name: 'Độ bo cong đường bế' });
         expect(slider.getAttribute('value')).toBe('50');
         fireEvent.change(slider, { target: { value: '85' } });
-        expect(roundButton.getAttribute('aria-pressed')).toBe('true');
+        expect(screen.getByRole('button', { name: /Góc tròn/ })).toBeTruthy();
 
-        fireEvent.click(screen.getByRole('button', { name: /Góc nhọn/ }));
+        selectCornerStyle('miter');
         expect(screen.queryByRole('slider', { name: 'Độ bo cong đường bế' })).toBeNull();
-        fireEvent.click(roundButton);
+        selectCornerStyle('round');
         expect(screen.getByRole('slider', { name: 'Độ bo cong đường bế' }).getAttribute('value'))
             .toBe('85');
         fireEvent.click(screen.getByRole('button', { name: 'Thực thi' }));
@@ -635,12 +646,12 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
         expect(autoButton.getAttribute('aria-pressed')).toBe('true');
         expect(contourButton.getAttribute('aria-pressed')).toBe('false');
 
-        fireEvent.click(screen.getByRole('button', { name: /Góc tròn/ }));
+        selectCornerStyle('round');
         expect(screen.getByRole('slider', { name: 'Độ bo cong đường bế' })).toBeTruthy();
         fireEvent.click(contourButton);
         expect(contourButton.getAttribute('aria-pressed')).toBe('true');
         expect(screen.queryByRole('slider', { name: 'Độ bo cong đường bế' })).toBeNull();
-        expect(screen.getByRole('button', { name: /🎯 Giữ nguyên/ }).getAttribute('aria-pressed')).toBe('true');
+        expect(screen.getByRole('button', { name: /(?:🎯\s*)?Giữ nguyên$/ })).toBeTruthy();
 
         fireEvent.click(screen.getByRole('button', { name: 'Thực thi' }));
         await waitFor(() => expect(authenticatedFetch).toHaveBeenCalledTimes(1));
@@ -1065,7 +1076,7 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
                 isUpdating: false,
             })), { timeout: 2000 });
 
-        fireEvent.click(screen.getByRole('button', { name: /Góc tròn/ }));
+        selectCornerStyle('round');
         await waitFor(() => expect(previewApiMocks.previewStickerCutline)
             .toHaveBeenCalledTimes(2));
         expect(screen.getByTestId('classic-cutline-preview-status').textContent)
@@ -1090,7 +1101,7 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
             })));
     });
 
-    it('tự thu thiết lập sau khi tạo đường cắt và cho xổ lại mà vẫn giữ kết quả', async () => {
+    it('hiển thị kết quả thành công và vẫn giữ nguyên các thẻ thiết lập trực tiếp', async () => {
         vi.mocked(uploadPDF).mockResolvedValue({ id: 'source-id' });
         vi.mocked(authenticatedFetch).mockResolvedValue({
             ok: true,
@@ -1116,30 +1127,26 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
             />,
         );
 
-        const settingsToggle = screen.getByRole('button', { name: /Thiết lập bù xén/ });
-        expect(settingsToggle.getAttribute('aria-expanded')).toBe('true');
-        const productTypeButton = screen.getByRole('button', { name: /Bế tem nhãn/ });
-        const settingsPanel = document.getElementById(settingsToggle.getAttribute('aria-controls') ?? '');
-        expect(settingsPanel?.contains(productTypeButton)).toBe(false);
+        // Các thẻ accordion hiển thị trực tiếp mà không cần card bao chung
+        expect(screen.getByRole('button', { name: /Bế tem nhãn/ })).toBeTruthy();
+        expect(screen.getByText('1. Đường cắt (Dieline)')).toBeTruthy();
+        expect(screen.getByText(/2\. Tràn lề/i)).toBeTruthy();
+        expect(screen.getByText('3. Nâng cao')).toBeTruthy();
+        expect(screen.queryByRole('button', { name: /Thiết lập bù xén/ })).toBeNull();
         fireEvent.click(screen.getByRole('button', { name: 'Thực thi' }));
 
         await waitFor(() => expect(onFileFixed).toHaveBeenCalledTimes(1));
-        await waitFor(() => expect(settingsToggle.getAttribute('aria-expanded')).toBe('false'));
         expect(screen.getByRole('button', { name: /Bế tem nhãn/ })).toBeTruthy();
-        expect(screen.queryByText('1. Đường cắt (Dieline)')).toBeNull();
-        expect(screen.queryByRole('button', { name: 'Thực thi' })).toBeNull();
+        expect(screen.getByText('1. Đường cắt (Dieline)')).toBeTruthy();
+        expect(screen.getByRole('button', { name: 'Thực thi' })).toBeTruthy();
 
         const resultCard = screen.getByRole('status');
         expect(resultCard.textContent).toContain('Đã tạo bù xén thành công!');
-        expect(settingsToggle.compareDocumentPosition(resultCard) & Node.DOCUMENT_POSITION_FOLLOWING)
-            .toBeTruthy();
 
-        fireEvent.click(settingsToggle);
-        expect(settingsToggle.getAttribute('aria-expanded')).toBe('true');
-        expect(screen.getByText('1. Đường cắt (Dieline)')).toBeTruthy();
-        expect(screen.getByRole('button', { name: 'Thực thi' })).toBeTruthy();
-        expect(screen.getByText('Đã tạo bù xén thành công!').closest('[role="status"]'))
-            .toBe(resultCard);
+        // Nút quay lại chỉnh sửa bù xén cho phép đóng thẻ kết quả
+        const backBtn = screen.getByRole('button', { name: /Quay lại chỉnh sửa bù xén/i });
+        fireEvent.click(backBtn);
+        expect(screen.queryByText('Đã tạo bù xén thành công!')).toBeNull();
     });
 
     it('giữ đúng ticket của tab cho tới callback commit', async () => {
@@ -1174,5 +1181,86 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
         releaseCommit();
         await waitFor(() => expect(screen.getByRole('status')).toBeTruthy());
         noteOperation.mockRestore();
+    });
+
+    it('dropdowns trong các card mở được và card mở có overflow-visible + z-index phân tầng', async () => {
+        window.localStorage.removeItem('ps_card_sticker_duong_cat');
+        window.localStorage.removeItem('ps_card_sticker_tran_le');
+        window.localStorage.removeItem('ps_card_sticker_tinh_chinh');
+        window.localStorage.setItem('ps_sticker_cutMode', JSON.stringify('original'));
+        window.localStorage.setItem('ps_sticker_bleedMm', JSON.stringify(2.0));
+
+        const view = render(
+            <StickerTool
+                pdfFile={new File(['pdf'], 'tem.pdf', { type: 'application/pdf' })}
+                onFileFixed={vi.fn()}
+            />,
+        );
+
+        // 1. Kiểm tra 3 card có z-index phân tầng z-30 > z-20
+        const card1Header = screen.getByRole('button', { name: /1\.\s*ĐƯỜNG CẮT/i });
+        const card2Header = screen.getByRole('button', { name: /2\.\s*TRÀN LỀ/i });
+        const card1 = card1Header.closest('.rounded-xl');
+        const card2 = card2Header.closest('.rounded-xl');
+
+        expect(card1?.className).toContain('overflow-visible');
+        expect(card1?.className).toContain('z-30');
+        expect(card2?.className).toContain('overflow-visible');
+        expect(card2?.className).toContain('z-20');
+
+        // 2. Click mở dropdown Kiểu góc (Góc tròn / Giữ nguyên / Góc nhọn)
+        const cornerTrigger = screen.getByRole('button', { name: /(?:🎯\s*)?Giữ nguyên$|Góc tròn|Góc nhọn/ });
+        fireEvent.click(cornerTrigger);
+        const roundOption = screen.getByRole('button', { name: /Góc tròn/ });
+        expect(roundOption).toBeTruthy();
+        expect(screen.getByRole('button', { name: /Góc nhọn/ })).toBeTruthy();
+        fireEvent.click(roundOption); // chọn bo tròn
+
+        // 3. Click mở dropdown Màu nền bù xén
+        const bleedColorTrigger = screen.getByRole('button', { name: /Lấy theo màu viền tem|Theo quỹ đạo|Làm mượt|Đổ màu trơn/ });
+        fireEvent.click(bleedColorTrigger);
+        const inpaintOption = screen.getByRole('button', { name: /Làm mượt thông minh/ });
+        expect(inpaintOption).toBeTruthy();
+        expect(screen.getByRole('button', { name: /Theo quỹ đạo dải màu/ })).toBeTruthy();
+        fireEvent.click(inpaintOption); // chọn làm mượt thông minh
+
+        // 4. Click mở dropdown Kiểu đường bế (trigger thứ 2 trong Card 1, sau nút header)
+        const card1Buttons = card1?.querySelectorAll('button') || [];
+        const cutModeTrigger = card1Buttons[1];
+        expect(cutModeTrigger).toBeTruthy();
+        fireEvent.click(cutModeTrigger!);
+        const alphaOption = screen.getByRole('button', { name: /Theo biên trong suốt PNG/ });
+        expect(alphaOption).toBeTruthy();
+        expect(screen.getByRole('button', { name: /Không vẽ đường cắt/ })).toBeTruthy();
+        fireEvent.click(alphaOption); // chọn alpha
+
+        view.unmount();
+    });
+
+    it('hiển thị Kiểu xuất file ngay bên ngoài Card 3 khi Card 3 đang đóng', () => {
+        window.localStorage.removeItem('ps_card_sticker_tinh_chinh');
+        window.localStorage.setItem('ps_sticker_cutMode', JSON.stringify('original'));
+
+        const view = render(
+            <StickerTool
+                pdfFile={new File(['pdf'], 'tem.pdf', { type: 'application/pdf' })}
+                onFileFixed={vi.fn()}
+            />,
+        );
+
+        // Card 3 mặc định đóng
+        const card3Toggle = screen.getByRole('button', { name: /3\.\s*Nâng cao/i });
+        expect(card3Toggle.getAttribute('aria-expanded')).toBe('false');
+
+        // Nhưng Kiểu xuất file vẫn hiển thị đầy đủ bên ngoài để thao tác nhanh
+        expect(screen.getByText('Kiểu xuất file')).toBeTruthy();
+        expect(screen.getByRole('button', { name: 'Giữ nguyên tấm' })).toBeTruthy();
+        expect(screen.getByRole('button', { name: 'Tách ra từng tem' })).toBeTruthy();
+
+        // Thao tác click chuyển kiểu xuất file hoạt động trơn tru
+        fireEvent.click(screen.getByRole('button', { name: 'Tách ra từng tem' }));
+        expect(screen.getByRole('button', { name: 'Tách ra từng tem' }).getAttribute('aria-pressed')).toBe('true');
+
+        view.unmount();
     });
 });

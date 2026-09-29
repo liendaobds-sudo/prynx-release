@@ -80,7 +80,7 @@ async function mountSource(rotation = 0) {
             <StickerCutlineTool tabId="revision-test" pdfFile={file} onFileFixed={vi.fn()} />
         </WorkspaceContext.Provider>,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Tách nhiều tem' }));
+    fireEvent.click(screen.getByRole('button', { name: 'File có bóng đổ (Có cọ sửa)' }));
     return { file, workspace, setActive: (isActive: boolean) => view.rerender(
         <WorkspaceContext.Provider value={workspace}>
             <StickerCutlineTool tabId="revision-test" pdfFile={file} isActive={isActive} onFileFixed={vi.fn()} />

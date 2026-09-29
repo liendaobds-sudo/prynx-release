@@ -161,7 +161,7 @@ def test_embedded_cmyk_profile_is_not_treated_as_bare_device_cmyk(
 
 
 @pytest.mark.parametrize("bleed_color_type", ["trajectory", "solid"])
-def test_engine_keeps_rendered_rgb_bleed_for_untagged_source(
+def test_engine_creates_device_cmyk_bleed_for_cmyk_source(
     tmp_path: Path,
     bleed_color_type: str,
 ) -> None:
@@ -175,21 +175,18 @@ def test_engine_keeps_rendered_rgb_bleed_for_untagged_source(
         cut_mode="none",
         bleed_mm=2.0,
         bleed_color_type=bleed_color_type,
-       draw_cut_contour=False,
-       rectangle_mode=True,
+        draw_cut_contour=False,
+        rectangle_mode=True,
         edge_bite_mm=0.5,
-   )
+    )
 
     assert success is True
     assert meta["color_provenance"]["profile_state"] == "untagged-device-cmyk"
     assert "COLOR_PROFILE_MISSING" in meta["color_warnings"]
     assert "COLOR_DEVICE_CMYK_FALLBACK" in meta["color_warnings"]
-    if bleed_color_type == "trajectory":
-        # Nguồn CMYK không có ICC không được ghép Form CMYK cạnh dải RGB:
-        # engine phải flatten trên cùng lưới sRGB để PDFium/RIP không tạo seam.
-        assert meta["color_render_strategy"] == "flattened-rgb"
-    else:
-        assert meta["color_render_strategy"] == "vector-original"
+    # Với nguồn CMYK: Form XObject nguyên bản luôn được bảo tồn (vector-original),
+    # không bao giờ ép flatten sang sRGB làm hỏng kẽm in!
+    assert meta["color_render_strategy"] == "vector-original"
     with pikepdf.Pdf.open(output) as document:
         xobjects = document.pages[0].Resources.get("/XObject", {})
         images = [
@@ -203,23 +200,20 @@ def test_engine_keeps_rendered_rgb_bleed_for_untagged_source(
         bleed_images = [
             obj
             for obj in images
-            if isinstance(obj.get("/ColorSpace"), pikepdf.Array)
-            and str(obj.get("/ColorSpace")[0]) == "/ICCBased"
+            if str(obj.get("/ColorSpace")) in {"/DeviceCMYK", "/CMYK"}
         ]
         assert bleed_images, (
-            "Bleed lấy mẫu phải giữ ICCBased sRGB để seam khớp render artwork."
+            "Bleed của tài liệu CMYK phải là DeviceCMYK để khớp kẽm in Illustrator."
         )
-        if bleed_color_type == "trajectory":
-            assert all(obj.get("/SMask") is None for obj in bleed_images)
-            assert len(bleed_images) == 1
-            intents = document.Root.get("/OutputIntents")
-            assert intents and intents[0].get("/OutputConditionIdentifier") == "sRGB"
-            assert not any(
-                str(obj.get("/Subtype")) == "/Form"
-                for _, obj in xobjects.items()
-            )
-        else:
-            assert any(obj.get("/SMask") is not None for obj in bleed_images)
+        assert any(obj.get("/SMask") is not None for obj in bleed_images)
+        # Form XObject của artwork gốc được bảo toàn
+        assert any(
+            str(obj.get("/Subtype")) == "/Form"
+            for _, obj in xobjects.items()
+        )
+        # Không được nhúng sRGB OutputIntent đè lên tài liệu CMYK
+        intents = document.Root.get("/OutputIntents")
+        assert not intents or intents[0].get("/OutputConditionIdentifier") != "sRGB"
 
 
 @pytest.mark.parametrize("bleed_color_type", ["trajectory", "inpaint"])

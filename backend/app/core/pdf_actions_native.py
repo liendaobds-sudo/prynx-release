@@ -3538,7 +3538,7 @@ def _convert_image_to_cmyk(obj: pikepdf.Stream, tf: _CmykTransform | None) -> bo
         return False
     # COLOR (audit 2026-08-20 §COLOR.01): pikepdf không tự nén khi truyền
     # `/FlateDecode`; byte thô làm consumer giải mã thất bại và render trắng.
-    obj.write(zlib.compress(raw), filter=pikepdf.Name("/FlateDecode"))
+    obj.write(zlib.compress(raw, level=1), filter=pikepdf.Name("/FlateDecode"))
     obj["/ColorSpace"] = pikepdf.Name("/DeviceCMYK")
     obj["/BitsPerComponent"] = 8
     obj["/Width"] = cmyk.width
@@ -3844,7 +3844,7 @@ def _image_to_grayscale(obj: pikepdf.Stream) -> bool:
         return False
     # COLOR (audit 2026-08-20 §COLOR.01): dữ liệu phải khớp filter đã khai;
     # nếu ghi byte thô, ảnh xám đầu ra trở thành stream không giải mã được.
-    obj.write(zlib.compress(raw), filter=pikepdf.Name("/FlateDecode"))
+    obj.write(zlib.compress(raw, level=1), filter=pikepdf.Name("/FlateDecode"))
     obj["/ColorSpace"] = pikepdf.Name("/DeviceGray")
     obj["/BitsPerComponent"] = 8
     obj["/Width"] = gray.width

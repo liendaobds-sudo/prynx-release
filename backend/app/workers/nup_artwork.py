@@ -1307,12 +1307,13 @@ def place_one_artwork(
                 if geometry_doc is not None
                 else src_page
             )
-            largest_path = find_largest_die_path(geometry_page)
+            # [PAGE-SHEET-DIE 2026-09-29] Lấy toàn bộ đường bế của tất cả các tem trên tấm
+            from app.workers.nup_diecut import _find_all_page_sheet_die_paths, resolve_default_page_die
+            largest_path = _find_all_page_sheet_die_paths(geometry_page)
             if largest_path is None:
                 # [PAGE-SHEET FIX 2026-08-13] Nguyên tấm decal không bắt buộc
                 # file nguồn phải có CutContour. Khi thiếu, trang logic mà người
                 # dùng đang thấy chính là khuôn chữ nhật của tấm.
-                from app.workers.nup_diecut import resolve_default_page_die
                 largest_path = resolve_default_page_die(geometry_page)
             if largest_path:
                 die_items_cache[cache_key] = {

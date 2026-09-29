@@ -1671,7 +1671,7 @@
     "thong_so_boong_marks": "Marks settings",
     "toa_do_canh_le_margins": "Margin coordinates",
     "vd_oc_leta_nua_chu_t": "e.g. Leta half-T screw...",
-    "vo_hieu_hoa_canh_bao_va_cham": "Disable collision warnings",
+    "vo_hieu_hoa_canh_bao_va_cham": "Disable collision handling (allow overlap with marks)",
     "vui_long_nhap_ten_mau_truoc_khi_luu": "Please enter a preset name before saving!"
   },
   "imposition.preprocessingRouter": {
@@ -6316,7 +6316,7 @@
     "trang": "pages"
   },
   "preprocess.stickerSheet": {
-    "ai_sheet": "Separate multiple stickers",
+    "ai_sheet": "With shadows (Brush edit)",
     "analyzing": "Detecting individual stickers…",
     "analyzing_shadow": "Detecting stickers and removing shadows…",
     "cutline_fidelity": "Follow original shape",
@@ -6345,7 +6345,7 @@
     "classic_preview_error": "Could not build the cutline preview.",
     "classic_preview_no_boundary": "This page does not have a clear enough boundary for quick preview. You can still process it with Run.",
     "classic_preview_no_file": "No file is available for the cutline preview.",
-    "classic_preview_single_only": "A single continuous sticker boundary could not be inferred. If the sticker fills the page, turn off “Remove white background”; if the page really has multiple stickers, use “Separate multiple stickers”.",
+    "classic_preview_single_only": "A single continuous sticker boundary could not be inferred. If the sticker fills the page, turn off “Remove white background”; if the page has multiple stickers or shadows, use “With shadows (Brush edit)”.",
     "classic_preview_direct_simplify": "This page has multiple separate alpha regions. Additional simplification (Simplify) is applied when you click Execute; a combined preview is not available yet. A per-region preview is not used to approve this cutline.",
     "classic_preview_low_confidence": "Boundary confidence is only {{confidence}}%. Zoom in and inspect the purple line before export; if the shape was normalized incorrectly, choose “Keep image edge”.",
     "classic_preview_rough_fallback": "The image edge is noisy. Preview raised edge smoothing instead of making you wait for a heavy model; zoom in and inspect the purple line before export.",
@@ -6360,9 +6360,9 @@
     "erase_shadow": "Erase shadow",
     "erase_shadow_hint": "Brush over leftover shadows or background.",
     "existing_desc": "Add bleed or create cutlines from the current page or alpha channel.",
-    "mode_help_existing": "Use this when the file has clear sticker boundaries (page edge, transparency, or selectable objects). The file does not need existing CutContour paths; you can add bleed and create cutlines with the existing interface.",
-    "mode_help_ai": "Use this when one page contains multiple stickers without clear individual boundaries. The system separates them into individual stickers and shows purple cutlines for review and adjustment before export.",
-    "existing_mode": "PDF/PNG with boundary",
+    "mode_help_existing": "Use for files with transparent background (PNG) or clean white background. Automatically creates cutlines and bleed instantly, works for single stickers, multi-sticker sheets, or rectangular cards/boxes.",
+    "mode_help_ai": "Use when photos or files have drop shadows or dirty background. Provides interactive brushes to erase shadows, restore fine details, and merge separate parts before export.",
+    "existing_mode": "Clean background (Fast)",
     "exporting": "Creating file…",
     "full_sheet_size": "Full image size",
     "original_image": "Original image",

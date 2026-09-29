@@ -45,3 +45,21 @@ def test_page_sheet_keeps_every_type_around_ponts(tmp_path, monkeypatch, strateg
         assert len(pdf.pages)==4
         assert [sum(str(op.operator)=="Do" for op in pikepdf.parse_content_stream(p))
                 for p in list(pdf.pages)[::2]] == [len(s["cells"]) for s in sheets]
+
+
+def test_page_sheet_pont_order_with_disable_collision_keeps_all_grid_cells(tmp_path):
+    source = _source(tmp_path / "source.pdf", 9)
+    req = _request(9, 1).model_copy(update={
+        "path": source, "total_pages": 9, "strategy": "simple_auto", "cols": 3, "rows": 3,
+        "layout_type": "sequential", "is_die_cut": False, "page_sheet_mode": True,
+        "pont_type": "5mm", "pont_config": {
+            "shape": "circle", "size": 5, "thickness": .5, "disableCollision": True,
+            "marginTop": 7, "marginBottom": 7, "marginLeft": 7, "marginRight": 7,
+        },
+    })
+    preview = preview_layout(req, PRO_LICENSE)
+    sheets = preview["sheets"]
+    # Khi disableCollision=True: toàn bộ 9 ô trên lưới 3x3 đều được giữ (không bị loại 4 góc chạm ốc)
+    assert len(sheets) == 1
+    assert len(sheets[0]["cells"]) == 9
+

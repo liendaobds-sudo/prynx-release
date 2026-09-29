@@ -4125,7 +4125,7 @@ def test_rectangle_trajectory_keeps_requested_mode_for_direct_cmyk(
         image = xobjects[image_names[0]]
         source_form = xobjects[form_names[0]]
         assert image.get("/SMask") is not None
-        assert str(image.get("/ColorSpace")[0]) == "/ICCBased"
+        assert str(image.get("/ColorSpace")) in {"/DeviceCMYK", "/CMYK"}
         assert b"0.8 0.2 0 0.1 k" in source_form.read_bytes()
         content = _read_all_content(page_out)
         assert content.find(f"{image_names[0]} Do".encode()) < content.rfind(

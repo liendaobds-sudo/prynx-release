@@ -1193,3 +1193,31 @@ def _find_largest_die_path(page):
     except Exception:
         pass
     return res
+
+
+def _find_all_page_sheet_die_paths(page):
+    """[PAGE-SHEET-DIE 2026-09-29] Trích xuất TOÀN BỘ đường khuôn bế trên trang nguyên tấm decal.
+
+    Ủy quyền sang die_detection.select_all_page_sheet_die_paths.
+    Nếu không tìm thấy hoặc lỗi, fallback về _find_largest_die_path.
+    """
+    cached = getattr(page, '_cached_page_sheet_die', None)
+    if isinstance(cached, dict):
+        return cached
+
+    res = None
+    try:
+        from app.workers.die_detection import select_all_page_sheet_die_paths, DetectionConfig
+        res = select_all_page_sheet_die_paths(page, DetectionConfig().die_channel_names)
+    except Exception:
+        res = None
+
+    if res is None:
+        res = _find_largest_die_path(page)
+
+    try:
+        page._cached_page_sheet_die = res
+    except Exception:
+        pass
+    return res
+

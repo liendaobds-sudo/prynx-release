@@ -8,6 +8,7 @@ import logging
 import datetime
 import tempfile
 import ctypes
+import functools
 from xml.sax.saxutils import escape as xml_escape
 
 import pypdfium2.raw as c_pdfium
@@ -81,6 +82,48 @@ _FONT_VARIANT_RULES = {
     'bolditalic': [('regular', 'bolditalic'), ('-regular', '-bolditalic'), ('', 'bi'),
                    ('', '-bolditalic'), ('regular', 'boldoblique'), ('', 'z')],
 }
+
+
+@functools.lru_cache(maxsize=512)
+def _is_font_already_bold(font_path: str | None) -> bool:
+    """Kiểm tra xem file font bản thân đã là biến thể Bold/Black/Heavy hay chưa.
+    Nếu font đã là bold thì không bao giờ bật faux bold (tránh nhân đôi text object)."""
+    if not font_path or not os.path.exists(font_path):
+        return False
+    fn_lower = os.path.basename(font_path).lower()
+    stem = os.path.splitext(fn_lower)[0]
+    bold_keywords = ('bold', 'black', 'heavy', 'extrabold', 'semibold', 'demibold')
+    if any(k in stem for k in bold_keywords) or stem.endswith('bd') or stem.endswith('b'):
+        return True
+    try:
+        from fontTools.ttLib import TTFont as FTFont
+        with FTFont(font_path, fontNumber=0, lazy=True) as tt:
+            if 'OS/2' in tt and getattr(tt['OS/2'], 'usWeightClass', 0) >= 600:
+                return True
+            if 'head' in tt and (getattr(tt['head'], 'macStyle', 0) & 1):
+                return True
+    except Exception:
+        pass
+    return False
+
+
+@functools.lru_cache(maxsize=512)
+def _is_font_already_italic(font_path: str | None) -> bool:
+    """Kiểm tra xem file font bản thân đã là biến thể Italic/Oblique hay chưa."""
+    if not font_path or not os.path.exists(font_path):
+        return False
+    fn_lower = os.path.basename(font_path).lower()
+    stem = os.path.splitext(fn_lower)[0]
+    if any(k in stem for k in ('italic', 'oblique')) or stem.endswith('it') or stem.endswith('i'):
+        return True
+    try:
+        from fontTools.ttLib import TTFont as FTFont
+        with FTFont(font_path, fontNumber=0, lazy=True) as tt:
+            if 'head' in tt and (getattr(tt['head'], 'macStyle', 0) & 2):
+                return True
+    except Exception:
+        pass
+    return False
 
 
 def _find_variant_file(regular_path: str, variant: str):
@@ -169,6 +212,10 @@ def _register_font_family(regular_path: str, base_name: str) -> dict:
                     pass
             pdfmetrics.registerFont(ttf)
         variants['regular'] = real_name
+        if _is_font_already_bold(regular_path):
+            variants['bold'] = real_name
+        if _is_font_already_italic(regular_path):
+            variants['italic'] = real_name
     except Exception as e:
         logger.warning(f"Lỗi đăng ký font regular {regular_path}: {e}")
         return variants
@@ -377,40 +424,23 @@ class PdfiumVdpTextRenderer:
                     c_pdfium.FPDFPage_InsertObject(self.page, t_stroke)
 
                 c_pdfium.FPDFPageObj_SetFillColor(tobj, r, g, b, a)
-                c_pdfium.FPDFTextObj_SetTextRenderMode(tobj, 0)  # FPDF_TEXTRENDERMODE_FILL
+                if need_faux_bold and not (stroke_color and stroke_width and float(stroke_width) > 0.05):
+                    # Faux bold chuẩn vector: dùng TextRenderMode 2 (FILL_STROKE) trên CÙNG một text object.
+                    # TUYỆT ĐỐI KHÔNG chèn text object thứ 2 gây nhân bản/đè chữ trong Illustrator/Corel.
+                    bold_stroke_w = max(0.15, float(fontsize) * 0.02)
+                    c_pdfium.FPDFPageObj_SetStrokeColor(tobj, r, g, b, a)
+                    c_pdfium.FPDFPageObj_SetStrokeWidth(tobj, bold_stroke_w)
+                    c_pdfium.FPDFTextObj_SetTextRenderMode(tobj, 2)  # FPDF_TEXTRENDERMODE_FILL_STROKE
+                    logger.info(
+                        "[VDP-SINGLE-OBJ-BOLD] Áp dụng faux bold qua TextRenderMode=FILL_STROKE (stroke=%.2fpt) trên duy nhất 1 text object: '%s'",
+                        bold_stroke_w, line,
+                    )
+                else:
+                    c_pdfium.FPDFTextObj_SetTextRenderMode(tobj, 0)  # FPDF_TEXTRENDERMODE_FILL
+
                 c_pdfium.FPDFPageObj_Transform(tobj, a_mat, b_mat, c_mat, d_mat, e_mat, f_mat)
                 c_pdfium.FPDFPage_InsertObject(self.page, tobj)
                 self.has_text = True
-
-                if need_faux_bold:
-                    dx = max(0.3, float(fontsize) * 0.03)
-                    e_bold = e_mat + dx * cos_a
-                    f_bold = f_mat + dx * sin_a
-
-                    if stroke_color and stroke_width and float(stroke_width) > 0.05:
-                        strk_r, strk_g, strk_b, strk_a = self._hex_or_cmyk_to_rgba(stroke_color)
-                        t_bold_st = c_pdfium.FPDFPageObj_CreateTextObj(self.doc, fh, float(fontsize))
-                        u16_st = (line + '\0').encode('utf-16-le')
-                        u16_st_buf = ctypes.cast(ctypes.create_string_buffer(u16_st), ctypes.POINTER(ctypes.c_ushort))
-                        c_pdfium.FPDFText_SetText(t_bold_st, u16_st_buf)
-                        c_pdfium.FPDFPageObj_SetStrokeColor(t_bold_st, strk_r, strk_g, strk_b, strk_a)
-                        c_pdfium.FPDFPageObj_SetStrokeWidth(t_bold_st, float(stroke_width) * 2.0)
-                        join_code = 1 if (stroke_line_join or 'round').lower() == 'round' else (2 if stroke_line_join == 'bevel' else 0)
-                        cap_code = 1 if (stroke_line_cap or 'round').lower() == 'round' else (2 if stroke_line_cap == 'square' else 0)
-                        c_pdfium.FPDFPageObj_SetLineJoin(t_bold_st, join_code)
-                        c_pdfium.FPDFPageObj_SetLineCap(t_bold_st, cap_code)
-                        c_pdfium.FPDFTextObj_SetTextRenderMode(t_bold_st, 1)
-                        c_pdfium.FPDFPageObj_Transform(t_bold_st, a_mat, b_mat, c_mat, d_mat, e_bold, f_bold)
-                        c_pdfium.FPDFPage_InsertObject(self.page, t_bold_st)
-
-                    t_bold = c_pdfium.FPDFPageObj_CreateTextObj(self.doc, fh, float(fontsize))
-                    u16 = (line + '\0').encode('utf-16-le')
-                    u16_buf = ctypes.cast(ctypes.create_string_buffer(u16), ctypes.POINTER(ctypes.c_ushort))
-                    c_pdfium.FPDFText_SetText(t_bold, u16_buf)
-                    c_pdfium.FPDFPageObj_SetFillColor(t_bold, r, g, b, a)
-                    c_pdfium.FPDFTextObj_SetTextRenderMode(t_bold, 0)
-                    c_pdfium.FPDFPageObj_Transform(t_bold, a_mat, b_mat, c_mat, d_mat, e_bold, f_bold)
-                    c_pdfium.FPDFPage_InsertObject(self.page, t_bold)
 
         return True
 
@@ -1345,6 +1375,11 @@ def render_one_record(c, fields, row, field_rects, pw, ph, field_font_variants, 
                 font_name = variants.get('regular') or "Helvetica"
                 need_faux_bold = want_bold
                 need_faux_italic = want_italic
+                if font_file:
+                    if _is_font_already_bold(font_file):
+                        need_faux_bold = False
+                    if _is_font_already_italic(font_file):
+                        need_faux_italic = False
                 if want_bold and want_italic and variants.get('bolditalic'):
                     font_name = variants['bolditalic']; need_faux_bold = need_faux_italic = False
                 elif want_bold and want_italic and variants.get('bold'):
@@ -1411,7 +1446,6 @@ def render_one_record(c, fields, row, field_rects, pw, ph, field_font_variants, 
                         c.transform(1, 0, 0.21, 1, 0, 0)  # nghiêng ~12°
                     p.drawOn(c, 0, 0)
                     if need_faux_bold:
-                        # vẽ lại lệch ~3% cỡ chữ → dày nét (giả bold)
                         p.drawOn(c, max(0.3, float(style.fontSize) * 0.03), 0)
                     c.restoreState()
         except Exception as e:
@@ -1595,22 +1629,27 @@ def process_chunk(args) -> str:
                     need_faux_bold = want_bold
                     need_faux_italic = want_italic
                     if font_file:
+                        if _is_font_already_bold(font_file):
+                            need_faux_bold = False
+                        if _is_font_already_italic(font_file):
+                            need_faux_italic = False
+
                         if want_bold and want_italic:
                             vp = _find_variant_file(font_file, 'bolditalic')
                             if vp:
                                 font_file = vp
                                 need_faux_bold = need_faux_italic = False
-                            else:
+                            elif not _is_font_already_bold(font_file):
                                 vp_b = _find_variant_file(font_file, 'bold')
                                 if vp_b:
                                     font_file = vp_b
                                     need_faux_bold = False
-                        elif want_bold:
+                        elif want_bold and not _is_font_already_bold(font_file):
                             vp = _find_variant_file(font_file, 'bold')
                             if vp:
                                 font_file = vp
                                 need_faux_bold = False
-                        elif want_italic:
+                        elif want_italic and not _is_font_already_italic(font_file):
                             vp = _find_variant_file(font_file, 'italic')
                             if vp:
                                 font_file = vp

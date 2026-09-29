@@ -377,7 +377,10 @@ export default function ConvertColorsTool({ tabId, pdfFile, onFileFixed }: Props
   const [mode, setMode] = useState<'cmyk' | 'grayscale'>('cmyk');
   const [includeSpot, setIncludeSpot] = useState(false);
   const [preserveBlack, setPreserveBlack] = useState(true);
-  const [gamutMapping, setGamutMapping] = useState<ColorGamutMapping>('adaptive_vivid');
+  // PERF (audit 2026-09-29): mặc định dùng chuẩn ICC (Relative+BPC) của ngành in
+  // để đạt tốc độ tức thì (~170ms thay vì ~2950ms của adaptive_vivid). Nút ưu tiên
+  // rực màu vẫn có sẵn khi người dùng chủ động chọn.
+  const [gamutMapping, setGamutMapping] = useState<ColorGamutMapping>('icc');
   const [brightnessLstar, setBrightnessLstar] = useState(0);
   const [contrastPercent, setContrastPercent] = useState(0);
   const [vibrancePercent, setVibrancePercent] = useState(0);

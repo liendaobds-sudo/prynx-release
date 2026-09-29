@@ -1096,6 +1096,126 @@ def select_die_path(page, die_channel_names=(), die_colors=None, die_color_tol=0
     return _merge_die_paths(members)
 
 
+def select_all_page_sheet_die_paths(page, die_channel_names=(), die_colors=None, die_color_tol=0.06):
+    """[PAGE-SHEET-DIE 2026-09-29] Thu thập TOÀN BỘ đường khuôn bế trên trang nguyên tấm decal.
+
+    Khác với `select_die_path` (chỉ chọn 1 anchor và gom lân cận <= 5pt để cô lập 1 con tem),
+    chế độ nguyên tấm (page_sheet_mode) xem cả trang là đơn vị bình, trên đó chứa nhiều con tem
+    riêng biệt. Hàm này thu thập đầy đủ mọi đường bế trên tấm để khi xuất trang bế riêng, tất cả
+    các tem đều có đường cắt tương ứng.
+    """
+    if die_colors is None:
+        die_colors = DetectionConfig().die_colors
+    if die_channel_names:
+        names_lower = frozenset(n.strip().lower() for n in die_channel_names if n)
+    else:
+        names_lower = frozenset(n.strip().lower() for n in DetectionConfig().die_channel_names if n)
+
+    try:
+        paths = page.extract_vector_paths()
+    except Exception:
+        return None
+    if not isinstance(paths, (list, tuple)) or not paths:
+        return None
+
+    page_rect = page.rect
+    valid = [p for p in paths if max(p["rect"].width, p["rect"].height) > 5]
+    if not valid:
+        return None
+
+    stroke_only = [p for p in valid if _is_stroke_only_path(p)]
+    if not stroke_only:
+        return None
+
+    # Lọc bỏ khung viền trang (background box) nếu không mang tên kênh khuôn hay spot thật
+    filtered = [
+        p for p in stroke_only
+        if not (
+            abs(p["rect"].width - page_rect.width) <= 2
+            and abs(p["rect"].height - page_rect.height) <= 2
+            and not _match_die_channel(p.get("spot_name"), names_lower)
+            and not _is_genuine_spot(p.get("spot_name"))
+        )
+    ]
+    candidates = [
+        p for p in (filtered if filtered else stroke_only)
+        if not _is_non_die_spot(p.get("spot_name"))
+    ]
+    if not candidates:
+        return None
+
+    order = _paint_order_map(paths)
+    scored = []  # (strong, weak, area, paint_order, by_spot, path)
+    for p in candidates:
+        strong, weak, by_spot = _score_die_candidate(
+            p, page_rect, names_lower, die_colors, die_color_tol
+        )
+        if strong <= 0:
+            continue
+        area = p["rect"].width * p["rect"].height
+        scored.append((strong, weak, area, order[id(p)], by_spot, p))
+
+    if not scored:
+        return None
+
+    # Ưu tiên 1: Tên kênh khuôn bế cấu hình (CutContour, KissCut, ThruCut, Crease...)
+    named = [c for c in scored if c[0] >= _NAME_MATCH_SCORE]
+    if named:
+        pool_paths = [c[5] for c in named]
+    else:
+        # Ưu tiên 2: Kênh spot bế dành riêng
+        spots = [c for c in scored if c[0] >= _ANON_SPOT_SCORE]
+        if spots:
+            pool_paths = [c[5] for c in spots]
+        else:
+            # Ưu tiên 3: Lớp màu bế trên cùng theo paint order
+            layer_top: dict = {}
+            for c in scored:
+                key = _die_layer_key(c[5], die_colors, die_color_tol)
+                if key not in layer_top or c[3] > layer_top[key]:
+                    layer_top[key] = c[3]
+            best_layer = max(layer_top, key=lambda k: layer_top[k])
+            pool_paths = [
+                c[5] for c in scored
+                if _die_layer_key(c[5], die_colors, die_color_tol) == best_layer
+            ]
+
+    if not pool_paths:
+        return None
+
+    # Gom thêm các nét phụ (crease, cấn, rãnh) tiếp xúc hoặc nằm trong các khuôn đã chọn
+    selected_ids = {id(p) for p in pool_paths}
+    all_selected = list(pool_paths)
+    remaining = [p for p in candidates if id(p) not in selected_ids]
+
+    def _rects_touch(a, b, pad=5.0):
+        return not (a.x1 + pad < b.x0 or b.x1 + pad < a.x0 or
+                    a.y1 + pad < b.y0 or b.y1 + pad < a.y0)
+
+    changed = True
+    while changed and remaining:
+        changed = False
+        still = []
+        for p in remaining:
+            if any(_rects_touch(p["rect"], sel["rect"], pad=5.0) for sel in all_selected):
+                p_spot = p.get("spot_name")
+                p_col = p.get("color")
+                if (
+                    (p_spot and _match_die_channel(p_spot, names_lower))
+                    or _is_genuine_spot(p_spot)
+                    or _color_matches_die(p_col, die_colors, die_color_tol)
+                ):
+                    all_selected.append(p)
+                    changed = True
+                else:
+                    still.append(p)
+            else:
+                still.append(p)
+        remaining = still
+
+    return _merge_die_paths(all_selected)
+
+
 def _same_color_group_poly(page, target_color, paths=None, *, keep_holes=False):
     """Hợp nhất (union) các subpath cùng màu thành 1 đa giác (R3.5).
 

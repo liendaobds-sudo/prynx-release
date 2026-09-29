@@ -61,12 +61,12 @@ export const RichSelect = ({ value, onChange, options, compact = false }: { valu
     };
 
     return (
-        <div className="relative" ref={wrapperRef} onKeyDown={handleKeyDown}>
+        <div className={`relative ${isOpen ? 'z-50' : ''}`} ref={wrapperRef} onKeyDown={handleKeyDown}>
             <button
                 type="button"
                 ref={triggerRef}
                 onClick={() => openWithHighlight(!isOpen)}
-                className={`w-full text-left border transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500/20 ${compact ? 'px-2.5 h-8 rounded-md flex items-center' : 'p-3 rounded-lg'} ${isOpen ? 'border-indigo-500 bg-indigo-50/50 dark:bg-indigo-500/10' : 'border-slate-300 dark:border-white/20 bg-white dark:bg-zinc-900 hover:border-slate-400 dark:hover:border-white/30'}`}
+                className={`w-full text-left border transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500/20 ${compact ? 'px-2.5 h-9 rounded-md flex items-center' : 'p-3 rounded-lg'} ${isOpen ? 'border-indigo-500 bg-indigo-50/50 dark:bg-indigo-500/10' : 'border-slate-300 dark:border-white/20 bg-white dark:bg-zinc-900 hover:border-slate-400 dark:hover:border-white/30'}`}
             >
                 <div className={`flex justify-between items-center gap-2 ${compact ? 'w-full' : ''}`}>
                     <div className={`font-semibold text-slate-900 dark:text-white min-w-0 ${compact ? 'text-[12px]' : 'text-[13px]'}`}>{tv(selected.title)}</div>
@@ -99,7 +99,7 @@ export const RichSelect = ({ value, onChange, options, compact = false }: { valu
             </button>
             
             {isOpen && (
-                <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-white/10 rounded-lg shadow-[0_4px_20px_-4px_rgba(0,0,0,0.1)] dark:shadow-[0_4px_20px_-4px_rgba(0,0,0,0.5)] overflow-hidden flex flex-col">
+                <div className="absolute z-50 top-full left-0 right-0 mt-1 bg-white dark:bg-zinc-900 border border-slate-200 dark:border-white/10 rounded-lg shadow-xl overflow-hidden flex flex-col">
                     {options.map((opt, idx) => (
                         <button
                             key={opt.value}
@@ -107,13 +107,13 @@ export const RichSelect = ({ value, onChange, options, compact = false }: { valu
                             onClick={() => { onChange(opt.value); setIsOpen(false); }}
                             // UIUX (audit 2026-07-27 §B-19): mục đang highlight bằng bàn phím
                             data-highlight={idx === highlightIdx || undefined}
-                            className={`group/opt text-left p-3 transition-colors hover:bg-slate-50 dark:hover:bg-zinc-800 focus:outline-none border-b border-slate-100 dark:border-white/5 last:border-0 ${opt.value === value ? 'bg-indigo-50/50 dark:bg-indigo-500/10' : ''} ${idx === highlightIdx ? 'bg-app-accent-soft' : ''}`}
+                            className={`group/opt text-left ${compact ? 'px-2.5 py-2' : 'p-3'} transition-colors hover:bg-slate-50 dark:hover:bg-zinc-800 focus:outline-none border-b border-slate-100 dark:border-white/5 last:border-0 ${opt.value === value ? 'bg-indigo-50/50 dark:bg-indigo-500/10' : ''} ${idx === highlightIdx ? 'bg-app-accent-soft' : ''}`}
                         >
                             <div className="flex items-center gap-2">
                                 <div className={`shrink-0 flex items-center justify-center w-3 h-3 rounded-full border ${opt.value === value ? 'border-indigo-500 bg-indigo-500' : 'border-slate-300 dark:border-zinc-500 bg-white dark:bg-zinc-800'}`}>
                                     {opt.value === value && <div className="w-1 h-1 rounded-full bg-white" />}
                                 </div>
-                                <div className={`font-semibold text-[13px] ${opt.value === value ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-800 dark:text-zinc-200'}`}>{tv(opt.title)}</div>
+                                <div className={`font-semibold ${compact ? 'text-[12px]' : 'text-[13px]'} ${opt.value === value ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-800 dark:text-zinc-200'}`}>{tv(opt.title)}</div>
                             </div>
                             {/* UIUX (2026-09-10 §COMPACT.DESC): desc ẩn, hover mới mở ra */}
                             {opt.desc && (

@@ -1671,7 +1671,7 @@
     "thong_so_boong_marks": "Thông số Boong (Marks)",
     "toa_do_canh_le_margins": "Toạ độ canh lề (Margins)",
     "vd_oc_leta_nua_chu_t": "VD: Ốc Leta Nửa Chữ T...",
-    "vo_hieu_hoa_canh_bao_va_cham": "Vô hiệu hóa cảnh báo va chạm",
+    "vo_hieu_hoa_canh_bao_va_cham": "Bỏ xử lý va chạm (cho phép tem đè lên ốc)",
     "vui_long_nhap_ten_mau_truoc_khi_luu": "Vui lòng nhập tên mẫu trước khi lưu!"
   },
   "imposition.preprocessingRouter": {
@@ -6316,7 +6316,7 @@
     "trang": "trang"
   },
   "preprocess.stickerSheet": {
-    "ai_sheet": "Tách nhiều tem",
+    "ai_sheet": "File có bóng đổ (Có cọ sửa)",
     "analyzing": "Đang nhận diện từng tem…",
     "analyzing_shadow": "Đang nhận diện từng tem và loại bóng…",
     "cutline_fidelity": "Bám sát hình gốc",
@@ -6345,7 +6345,7 @@
     "classic_preview_error": "Không dựng được đường bế xem trước.",
     "classic_preview_no_boundary": "Trang này chưa có biên đủ rõ để xem nhanh. File vẫn có thể được xử lý khi bấm Thực thi.",
     "classic_preview_no_file": "Không có file để dựng đường bế xem trước.",
-    "classic_preview_single_only": "Không suy ra được một biên tem liền mạch. Nếu tem phủ kín trang, hãy tắt “Bỏ nền trắng”; nếu trang thật sự có nhiều tem, hãy dùng “Tách nhiều tem”.",
+    "classic_preview_single_only": "Không suy ra được một biên tem liền mạch. Nếu tem phủ kín trang, hãy tắt “Bỏ nền trắng”; nếu trang thật sự có nhiều tem hoặc có bóng đổ, hãy dùng “File có bóng đổ (Có cọ sửa)”.",
     "classic_preview_direct_simplify": "Trang có nhiều mảng Alpha rời. Đơn giản hóa thêm (Simplify) sẽ áp dụng khi bấm Thực thi; hiện chưa có đường xem trước chung. Không dùng bản xem trước tách từng mảng để duyệt đường bế.",
     "classic_preview_low_confidence": "Nhận diện biên hiện chỉ đạt {{confidence}}%. Hãy phóng to kiểm tra đường tím trước khi xuất; nếu hình bị chuẩn hóa sai, chọn “Giữ mép ảnh”.",
     "classic_preview_rough_fallback": "Biên ảnh có nhiễu. Preview đã tự tăng Khử răng cưa thay vì bắt bạn chờ mô hình nặng; hãy phóng to kiểm tra đường tím trước khi xuất.",
@@ -6360,9 +6360,9 @@
     "erase_shadow": "Xóa bóng",
     "erase_shadow_hint": "Quét lên phần bóng hoặc nền còn thừa.",
     "existing_desc": "Bù xén hoặc tạo đường cắt từ trang và kênh trong suốt hiện có.",
-    "mode_help_existing": "Dùng khi file đã có biên tem rõ (mép trang, nền trong suốt hoặc đối tượng có thể chọn). Không cần file có sẵn CutContour; bạn vẫn bù xén và tạo đường cắt bằng giao diện cũ.",
-    "mode_help_ai": "Dùng khi một trang chứa nhiều tem nhưng chưa có biên riêng rõ ràng. Hệ thống sẽ tách thành từng tem riêng, hiển thị đường cắt màu tím để bạn kiểm tra và chỉnh sửa trước khi xuất.",
-    "existing_mode": "PDF/PNG đã có biên",
+    "mode_help_existing": "Dùng cho file nền trong suốt (PNG) hoặc nền trắng sạch. Bấm một cái là máy tự tạo đường cắt và bù tràn lề ngay lập tức, làm được cho cả 1 con tem, cả tờ nhiều tem lẫn card/hộp vuông vắn.",
+    "mode_help_ai": "Dùng khi ảnh chụp hoặc file bị dính bóng đổ, nền lem nhem. Có sẵn cọ để bạn tự quét xóa bóng thừa, lấy lại nét bị lẹm và gộp các chi tiết rời rạc lại trước khi xuất.",
+    "existing_mode": "File sạch nền (Làm nhanh)",
     "exporting": "Đang tạo file…",
     "full_sheet_size": "Khổ toàn ảnh",
     "original_image": "Ảnh gốc",

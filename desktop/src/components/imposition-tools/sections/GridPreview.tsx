@@ -2312,11 +2312,16 @@ export default function GridPreview(props: GridPreviewProps) {
       return;
     }
 
-    // Multi-sheet: không require itemW/itemH trang view (có thể 0 lúc scroll chưa detect).
+    // Không gửi preview nếu vùng giấy khả dụng hoặc kích thước con tem chưa hợp lệ.
     if (usableW <= 0 || usableH <= 0) {
       return;
     }
-    if (!_layoutIgnoresViewPage && (itemW <= 0 || itemH <= 0)) {
+    const effectiveItemWPt = (typeof itemWPt === "number" && itemWPt > 0) ? itemWPt : itemW * MM_TO_PT;
+    const effectiveItemHPt = (typeof itemHPt === "number" && itemHPt > 0) ? itemHPt : itemH * MM_TO_PT;
+    if (effectiveItemWPt <= 0 || effectiveItemHPt <= 0) {
+      return;
+    }
+    if (gridStrategy === "manual" && (!columns || columns <= 0 || !rows || rows <= 0)) {
       return;
     }
 

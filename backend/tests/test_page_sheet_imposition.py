@@ -240,8 +240,8 @@ def _matching_path_count(paths, width, height, *, tolerance=1.0):
     )
 
 
-def _count_circle_ponts(paths):
-    pont_size = PONT_CONFIG["size"] * MM_TO_PT
+def _count_circle_ponts(paths, size_mm: float = PONT_CONFIG["size"]):
+    pont_size = size_mm * MM_TO_PT
     return sum(
         path.get("fill") is not None
         and abs(path["rect"].width - pont_size) <= 1.0
@@ -847,3 +847,165 @@ def test_multi_sample_rejects_different_media_sizes_even_with_cluster(tmp_path):
             ),
             job_id="page-sheet-mixed-size",
         )
+
+
+def _make_multi_sticker_page_sheet(path, count=5) -> None:
+    """Tạo 1 trang tấm decal chứa nhiều con tem độc lập (mỗi tem có artwork và CutContour)."""
+    pdf = pikepdf.Pdf.new()
+    page_w, page_h = 200.0, 300.0
+    page = pdf.add_blank_page(page_size=(page_w, page_h))
+    tint_transform = pikepdf.Dictionary({
+        "/FunctionType": 2,
+        "/Domain": pikepdf.Array([0, 1]),
+        "/C0": pikepdf.Array([0, 0, 0, 0]),
+        "/C1": pikepdf.Array([0, 1, 0, 0]),
+        "/N": 1,
+    })
+    page.Resources = pikepdf.Dictionary({
+        "/ColorSpace": pikepdf.Dictionary({
+            "/CutContour": pikepdf.Array([
+                pikepdf.Name("/Separation"),
+                pikepdf.Name("/CutContour"),
+                pikepdf.Name("/DeviceCMYK"),
+                tint_transform,
+            ]),
+        }),
+    })
+    streams = []
+    # count con tem xếp dọc, cách nhau 10pt (vượt xa pad 5pt để kiểm tra anchor isolation)
+    for i in range(count):
+        y = 15.0 + i * 55.0
+        x = 20.0
+        w = 160.0
+        h = 45.0
+        # Artwork fill
+        streams.append(f"0 0 0 1 k {x} {y} {w} {h} re f\n")
+        # CutContour stroke
+        streams.append(f"/CutContour CS 1 SCN {x} {y} {w} {h} re S\n")
+    page.Contents = pikepdf.Stream(pdf, "".join(streams).encode("ascii"))
+    pdf.save(path)
+    pdf.close()
+
+
+def test_page_sheet_with_multiple_stickers_preserves_all_cut_contours(tmp_path):
+    """[PAGE-SHEET-DIE 2026-09-29] Bình 2 tấm decal lên tờ in phải giữ đủ 5x2=10 đường cắt, không bị hụt còn 2."""
+    source = tmp_path / "page-sheet-5stickers.pdf"
+    output = tmp_path / "page-sheet-5stickers-out.pdf"
+    _make_multi_sticker_page_sheet(source, count=5)
+
+    # Bình 2 tấm lên tờ in: cols=1, rows=2, targetQuantity=2
+    # Khổ tấm: 200 x 300 pt (~70.5 x 105.8 mm)
+    # Khổ tờ in: 250 x 650 pt (vừa đủ 1x2 tấm với gap 10pt)
+    nup_engine.run_nup_engine(
+        str(source),
+        str(output),
+        _settings(
+            sheetWidth=250 / MM_TO_PT,
+            sheetHeight=650 / MM_TO_PT,
+            cols=1,
+            rows=2,
+            targetQuantity=2,
+            gapX=0,
+            gapY=10,
+            bleed=0,
+        ),
+        job_id="test-5stickers",
+    )
+
+    with pikepdf.Pdf.open(output) as pdf:
+        # Có 2 trang: Trang in (page 0) và Trang bế (page 1)
+        assert len(pdf.pages) == 2
+
+    # Trang bế: Phải có đúng 5 x 2 = 10 đường cắt hình chữ nhật
+    cut_paths = _vector_paths(output, 1)
+    matching_cuts = [
+        p for p in cut_paths
+        if abs(p["rect"].width - 160.0) <= 2.0 and abs(p["rect"].height - 45.0) <= 2.0
+    ]
+    assert len(matching_cuts) == 10, f"Kỳ vọng 10 đường bế (5 tem x 2 tấm), nhưng chỉ tìm thấy {len(matching_cuts)}"
+
+    # Trang in: Đường CutContour phải được bóc tách sạch sẽ
+    print_paths = _vector_paths(output, 0)
+    print_cutcontours = [
+        p for p in print_paths
+        if p.get("spot_name") and "cutcontour" in str(p.get("spot_name")).lower()
+    ]
+    assert len(print_cutcontours) == 0, "Trang in không được còn sót nét CutContour"
+
+
+def test_page_sheet_pont_order_with_disable_collision_allows_overlap_and_draws_ponts(tmp_path):
+    """Khi disableCollision=True: cho phép tem/tấm đè lên ốc bình thường, ốc vẫn hiển thị trên tờ in."""
+    from app.workers.sticker_grid_order import uses_page_sheet_pont_order, build_sticker_grid_order
+
+    source = tmp_path / "overlap-source.pdf"
+    output = tmp_path / "overlap-output.pdf"
+    # Tạo trang 170x230 mm
+    _make_layered_page(source, width_mm=170, height_mm=230)
+
+    # Tờ in 180x240 mm, lề giấy 5mm -> usable 170x230 mm (tem chiếm vừa khít toàn bộ usable)
+    # Ốc bế ở 4 góc tại lề 5mm, bán kính 4mm -> các ốc bế giao cắt hoàn toàn với 4 góc của tem
+    colliding_pont_cfg = {
+        **PONT_CONFIG,
+        "size": 8.0,
+        "marginTop": 5.0,
+        "marginBottom": 5.0,
+        "marginLeft": 5.0,
+        "marginRight": 5.0,
+        "disableCollision": False,
+    }
+
+    settings_colliding = _settings(
+        sheetWidth=180,
+        sheetHeight=240,
+        marginTop=5,
+        marginBottom=5,
+        marginLeft=5,
+        marginRight=5,
+        cols=1,
+        rows=1,
+        layoutType="sequential",
+        pontType="corner",
+        pontConfig=colliding_pont_cfg,
+        targetQuantity=1,
+        separateCutPage=False,
+    )
+
+    # 1. Khi disableCollision=False: phát hiện va chạm góc và từ chối đặt ô
+    doc = pdf_lib.open(str(source))
+    try:
+        with pytest.raises(ValueError, match="va chạm với dấu boong/ốc bế ở các góc"):
+            build_sticker_grid_order(doc, settings_colliding)
+    finally:
+        doc.close()
+
+    # 2. Khi disableCollision=True: uses_page_sheet_pont_order vẫn là True, tem được đặt đè lên ốc
+    disabled_pont_cfg = dict(colliding_pont_cfg)
+    disabled_pont_cfg["disableCollision"] = True
+    settings_disabled = dict(settings_colliding)
+    settings_disabled["pontConfig"] = disabled_pont_cfg
+
+    assert uses_page_sheet_pont_order(settings_disabled) is True
+
+    doc = pdf_lib.open(str(source))
+    try:
+        grid_order = build_sticker_grid_order(doc, settings_disabled)
+        assert grid_order.layout["totalItems"] == 1
+        assert len(grid_order.placements[0]) == 1
+    finally:
+        doc.close()
+
+    # 3. Xuất file bằng nup_engine: thành công, có 4 ốc bế và tem đè lên ốc
+    nup_engine.run_nup_engine(
+        str(source),
+        str(output),
+        settings_disabled,
+        job_id="test-disable-collision-overlap",
+    )
+
+    with pikepdf.Pdf.open(output) as pdf:
+        assert len(pdf.pages) == 2
+
+    # Ốc bế vẫn được vẽ đủ 4 góc trên trang in dù tem đè lên ốc
+    print_paths = _vector_paths(output, 0)
+    assert _count_circle_ponts(print_paths, size_mm=8.0) == 4
+

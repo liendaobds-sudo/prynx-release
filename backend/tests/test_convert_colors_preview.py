@@ -514,3 +514,97 @@ def test_preview_rejects_ambiguous_or_grayscale_contract(conversions):
         assert response.status_code == 422, response.text
     finally:
         app.dependency_overrides.pop(require_license, None)
+
+
+@pytest.mark.asyncio
+async def test_preview_slices_single_page_on_multipage_pdf(monkeypatch, tmp_path):
+    """PERF (audit 2026-09-29): Tài liệu nhiều trang chỉ chuyển đổi đúng trang đang xem."""
+    import pikepdf
+    from app.core import icc_profiles, pdf_actions_native
+    from app.core.separations import SeparationEngine
+    from app.core.softproof import SoftProofEngine
+
+    source = tmp_path / "multi_page.pdf"
+    pdf = pikepdf.new()
+    for _ in range(3):
+        pdf.add_blank_page(page_size=(100, 100))
+    pdf.save(source)
+
+    input_paths: list[str] = []
+    proof_pages: list[int] = []
+
+    monkeypatch.setattr(
+        icc_profiles, "resolve_cmyk_profile_path", lambda _profile: "destination.icc"
+    )
+    monkeypatch.setattr(
+        icc_profiles, "resolve_srgb_profile_path", lambda: "source.icc"
+    )
+    monkeypatch.setattr(preview, "effective_preview_dpi", lambda dpi: dpi)
+    monkeypatch.setattr(
+        SoftProofEngine,
+        "_render_pdfium_rgb",
+        lambda _self, _path, _page, _dpi: Image.new("RGB", (4, 3), (80, 120, 160)),
+    )
+
+    converted_page_counts: list[int] = []
+
+    def fake_convert(input_pdf, output, *_profiles, **options):
+        input_paths.append(str(input_pdf))
+        with pikepdf.Pdf.open(input_pdf) as check_pdf:
+            converted_page_counts.append(len(check_pdf.pages))
+        path = Path(output)
+        path.write_bytes(b"%PDF-1.4\n% temp candidate\n%%EOF\n")
+        return {"supported": True, "postflight": {"passed": True}}
+
+    async def fake_proof(_self, pdf_path, page, **_kwargs):
+        proof_pages.append(page)
+        return {
+            "success": True,
+            "softproof_b64": _png_b64((120, 120, 120)),
+            "image_mime": "image/png",
+            "gamut_b64": None,
+            "out_of_gamut_pct": 0.0,
+            "width": 4,
+            "height": 3,
+            "engine": "ppe+lcms",
+            "accuracy": "rip_softproof",
+            "degraded": False,
+            "ink_unsound": False,
+            "ppe_degraded": False,
+            "ppe_ink_unsound": False,
+        }
+
+    async def fake_separations(_self, _pdf_path, _page, **_kwargs):
+        return _trusted_tac(32)
+
+    monkeypatch.setattr(pdf_actions_native, "convert_to_cmyk", fake_convert)
+    monkeypatch.setattr(SoftProofEngine, "render_softproof", fake_proof)
+    monkeypatch.setattr(SeparationEngine, "extract_separations", fake_separations)
+
+    payload = await preview.create_color_conversion_preview(
+        str(source),
+        page=2,
+        conversions=["rgb_to_cmyk"],
+        icc_profile="fogra39",
+        rendering_intent="relative",
+        preserve_black=True,
+        black_point_compensation=True,
+        gamut_mapping="icc",
+        adjustment_stage="post_cmyk",
+        brightness_lstar=0,
+        contrast_percent=0,
+        vibrance_percent=0,
+        preview_policy="manual",
+        dpi=150,
+        request_id="req-multipage",
+    )
+
+    assert payload["success"] is True
+    assert payload["page"] == 2
+    assert input_paths
+    assert all("source_preview_page_2.pdf" in p for p in input_paths)
+    assert converted_page_counts == [1]
+    assert proof_pages
+    assert all(p == 1 for p in proof_pages)
+
+

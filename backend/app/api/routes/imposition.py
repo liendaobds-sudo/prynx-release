@@ -2453,7 +2453,6 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
             _page_sheet_pont_order = (
                 req.page_sheet_mode and req.layout_type in ("sequential", "cut_stacks")
                 and req.pont_type != "none" and bool(req.pont_config)
-                and not req.pont_config.get("disableCollision", False)
                 and req.grouping_strategy != "cluster_tile"
             )
             _single_optimal_order = (

@@ -26,7 +26,6 @@ def uses_page_sheet_pont_order(settings) -> bool:
         and settings.get("layoutType") in ("sequential", "cut_stacks")
         and settings.get("pontType", "none") != "none"
         and bool(settings.get("pontConfig"))
-        and not settings["pontConfig"].get("disableCollision", False)
         and settings.get("groupingStrategy") != "cluster_tile"
     )
 
@@ -196,6 +195,12 @@ def build_sticker_grid_order(doc, settings, *, logical_page_count=None, repeat_t
         if slots:
             candidates.append(((math.ceil(total / len(slots)), rotated, -len(slots)), raw, slots))
     if not candidates:
+        had_raw_cells = any(bool(raw.get("cells")) for raw in raw_candidates)
+        if had_raw_cells and zones:
+            raise ValueError(
+                "Lưới không thể đặt vừa tem do va chạm với dấu boong/ốc bế ở các góc. "
+                "Hãy kiểm tra vị trí boong hoặc bật tùy chọn 'Bỏ xử lý va chạm'."
+            )
         raise ValueError("Lưới đơn giản không đặt vừa tem sau khi chừa boong/lề. Hãy tăng khổ giấy hoặc kiểm tra thiết lập.")
     _, raw, slots = min(candidates, key=lambda value: value[0])
     capacity = len(slots)

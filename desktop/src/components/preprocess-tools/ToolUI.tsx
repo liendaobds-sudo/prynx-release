@@ -59,6 +59,85 @@ export const ToolCollapsibleSection = ({
     );
 };
 
+export interface ToolAccordionCardProps {
+    step?: number | string;
+    title: string;
+    badge?: React.ReactNode;
+    storageKey?: string;
+    defaultOpen?: boolean;
+    children: React.ReactNode;
+    className?: string;
+}
+
+export const ToolAccordionCard = ({
+    step,
+    title,
+    badge,
+    storageKey,
+    defaultOpen = true,
+    children,
+    className = '',
+}: ToolAccordionCardProps) => {
+    const fullKey = storageKey ? `ps_card_${storageKey}` : null;
+    const [isOpen, setIsOpen] = useState(() => {
+        if (!fullKey) return defaultOpen;
+        try {
+            const saved = localStorage.getItem(fullKey);
+            if (saved !== null) return saved === 'true';
+        } catch { /* localStorage có thể bị block */ }
+        return defaultOpen;
+    });
+
+    useEffect(() => {
+        if (!fullKey) return;
+        try { localStorage.setItem(fullKey, String(isOpen)); } catch { /* bỏ qua */ }
+    }, [fullKey, isOpen]);
+
+    return (
+        <div className={`rounded-xl border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 shadow-sm ${isOpen ? 'overflow-visible' : 'overflow-hidden'} transition-all ${className}`}>
+            <button
+                type="button"
+                aria-label={title}
+                aria-expanded={isOpen}
+                onClick={() => setIsOpen(o => !o)}
+                className={`w-full flex items-center justify-between gap-2 px-3 py-2.5 text-left transition-colors bg-slate-200 hover:bg-slate-300/70 dark:bg-zinc-800 dark:hover:bg-zinc-700 select-none rounded-t-xl ${
+                    isOpen ? 'border-b border-slate-300/80 dark:border-zinc-700' : 'rounded-b-xl'
+                }`}
+            >
+                <div className="flex items-center gap-2 min-w-0">
+                    {step && (
+                        <span className="inline-flex items-center justify-center w-5 h-5 rounded-full text-[11px] font-bold text-white bg-teal-600 dark:bg-teal-500 shrink-0">
+                            {step}
+                        </span>
+                    )}
+                    <span className="text-[12px] font-bold text-slate-800 dark:text-zinc-100 tracking-wide uppercase truncate">
+                        {title}
+                    </span>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                    {badge && (
+                        <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-white dark:bg-zinc-900 text-teal-700 dark:text-teal-300 border border-teal-200 dark:border-teal-800 truncate max-w-[150px] shadow-xs">
+                            {badge}
+                        </span>
+                    )}
+                    <svg
+                        aria-hidden="true"
+                        className={`h-3.5 w-3.5 shrink-0 text-slate-500 dark:text-zinc-400 transition-transform duration-200 ${isOpen ? 'rotate-180' : ''}`}
+                        fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}
+                    >
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                    </svg>
+                </div>
+            </button>
+            {isOpen && (
+                <div className="p-3 space-y-3 bg-white dark:bg-zinc-900 rounded-b-xl animate-in fade-in duration-150">
+                    {children}
+                </div>
+            )}
+        </div>
+    );
+};
+
 export const ToolDivider = () => (
     <div className="h-px bg-slate-200 dark:bg-white/10 w-full my-4" />
 );

@@ -456,4 +456,70 @@ class TestLiveTextIllustratorInteroperability:
         assert "CHỨNG NHẬN" in extracted
 
 
+class TestNoDuplicateBoldText:
+    """Kiểm tra bất biến: Chữ in đậm (Bold/weight >= 600) KHÔNG bao giờ bị nhân đôi text object."""
+
+    def test_is_font_already_bold_helper(self):
+        from app.workers.vdp_engine import _is_font_already_bold
+        # Các file bold hệ thống phổ biến nếu có
+        for p in (r"C:\Windows\Fonts\arialbd.ttf", r"C:\Windows\Fonts\timesbd.ttf"):
+            if os.path.exists(p):
+                assert _is_font_already_bold(p) is True
+
+    def test_bold_field_produces_single_text_object(self, template_1page, tmp_path):
+        out_path = os.path.join(str(tmp_path), "out_single_bold.pdf")
+        tf_bold = VdpField(
+            id="f_bold",
+            name="name",
+            type="text",
+            x=20,
+            y=50,
+            width=60,
+            height=15,
+            fontSize=14,
+            fontWeight=700,
+            fontStyle="bold",
+            fontFile=r"C:\Windows\Fonts\arialbd.ttf" if os.path.exists(r"C:\Windows\Fonts\arialbd.ttf") else None,
+            textContent="{name}",
+        )
+        data = [{"name": "Phạm Sĩ Mạnh"}]
+        run_vdp_engine(template_1page, [tf_bold], data, out_path, job_id=uuid.uuid4().hex)
+        assert os.path.exists(out_path)
+
+        doc = pdfium.PdfDocument(out_path)
+        page = doc[0]
+        text_objs = [obj for obj in page.get_objects() if obj.type == pdfium.raw.FPDF_PAGEOBJ_TEXT]
+        # Bất biến cốt lõi: 1 text field chỉ sinh đúng 1 text object, TUYỆT ĐỐI không sinh đè 2 text objects
+        assert len(text_objs) == 1
+        doc.close()
+
+    def test_faux_bold_regular_font_produces_single_text_object(self, template_1page, tmp_path):
+        out_path = os.path.join(str(tmp_path), "out_single_faux_bold.pdf")
+        # Dùng font regular nhưng yêu cầu bold để kích hoạt nhánh faux bold
+        tf_faux = VdpField(
+            id="f_faux",
+            name="name",
+            type="text",
+            x=20,
+            y=50,
+            width=60,
+            height=15,
+            fontSize=14,
+            fontWeight=700,
+            fontStyle="bold",
+            fontFile=r"C:\Windows\Fonts\arial.ttf" if os.path.exists(r"C:\Windows\Fonts\arial.ttf") else None,
+            textContent="{name}",
+        )
+        data = [{"name": "Phạm Sĩ Mạnh Faux"}]
+        run_vdp_engine(template_1page, [tf_faux], data, out_path, job_id=uuid.uuid4().hex)
+        assert os.path.exists(out_path)
+
+        doc = pdfium.PdfDocument(out_path)
+        page = doc[0]
+        text_objs = [obj for obj in page.get_objects() if obj.type == pdfium.raw.FPDF_PAGEOBJ_TEXT]
+        assert len(text_objs) == 1
+        doc.close()
+
+
+
 
