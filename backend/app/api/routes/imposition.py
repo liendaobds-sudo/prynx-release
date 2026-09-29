@@ -1182,9 +1182,6 @@ def _launch_impose_job(body: dict, prefix: str, license_info: dict = None) -> di
     Helper chung cho N-Up & Sticker (Task 18 / Req 9.3).
     Hai chế độ chỉ khác tiền tố tên file; mode thực do settings['isDieCutMode'].
     """
-    from app.core.workflow_debug_log import dbg_log
-    _st = dict(body.get("settings", {}) or {})
-    dbg_log("IMPOSE_LAUNCH", f"Bắt đầu chạy bình bản ({prefix}) file='{os.path.basename(str(body.get('source_path') or ''))}'", taskMode=_st.get("taskMode"), layoutType=_st.get("layoutType"), isDieCutMode=_st.get("isDieCutMode"), gridStrategy=_st.get("gridStrategy"), groupingStrategy=_st.get("groupingStrategy"), sheet_mm=f"{_st.get('sheetWidth')}x{_st.get('sheetHeight')}", targetQuantity=_st.get("targetQuantity"))
     source_path = _validate_file_path(body.get("source_path"))
     try:
         # REVISION (audit 2026-08-25 §REV.13): chụp trước khi request đi vào
@@ -2172,8 +2169,6 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
     to guarantee preview ≡ output.
     """
     from app.workers.sticker_nup_policy import effective_nup_quantity
-    from app.core.workflow_debug_log import dbg_log
-    dbg_log("PREVIEW_LAYOUT_REQ", f"Yêu cầu preview: task_mode={req.task_mode}, layout_type={req.layout_type}, strategy={req.strategy}", is_die_cut=req.is_die_cut, sheet_mm=f"{req.sheet_w}x{req.sheet_h}", usable_mm=f"{req.usable_w}x{req.usable_h}", item_mm=f"{req.item_w}x{req.item_h}", total_pages=req.total_pages, target_qty=req.target_quantity, imposer_mode=req.imposer_mode, path=os.path.basename(str(req.path or req.file_id or '')))
     from app.utils.preview_perf_log import log as _diag_log, sanitize_diagnostic_id
     _diagnostic_trace_id = sanitize_diagnostic_id(req.diagnostic_trace_id)
     _diagnostic_request_id = sanitize_diagnostic_id(req.diagnostic_request_id)
@@ -2465,15 +2460,10 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                 req.strategy == "optimal_auto" and (req.total_pages or doc.page_count) == 1
                 and req.grouping_strategy != "cluster_tile"
             )
-            _is_repeat_mode = (
-                req.is_die_cut
-                and req.imposer_mode != "cnc"
-                and not req.page_sheet_mode
-                and (req.task_mode in ("step_repeat", "sr") or req.layout_type == "repeat")
-            )
-            if _page_sheet_pont_order or _is_repeat_mode or ((req.strategy in ("simple_auto", "manual") or _single_optimal_order) and req.is_die_cut
+            if _page_sheet_pont_order or ((req.strategy in ("simple_auto", "manual") or _single_optimal_order) and req.is_die_cut
                     and req.imposer_mode != "cnc" and not req.page_sheet_mode
-                    and req.task_mode in ("nup", "sticker_imposer") and req.layout_type != "repeat"):
+                    and ((req.task_mode in ("nup", "sticker_imposer") and req.layout_type != "repeat")
+                         or (req.strategy == "manual" and req.task_mode == "step_repeat"))):
                 from app.core.nesting_preview_capacity import settings_from_preview_request
                 from app.workers.sticker_grid_order import build_sticker_grid_order, build_sticker_manual_repeat_order
                 grid_settings = settings_from_preview_request(req)
@@ -2484,7 +2474,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                 try:
                     grid_preview = (
                         build_sticker_manual_repeat_order(doc, grid_settings, logical_page_count=req.total_pages).preview
-                        if (req.task_mode in ("step_repeat", "sr") or req.layout_type == "repeat") else
+                        if req.task_mode == "step_repeat" else
                         build_sticker_grid_order(doc, grid_settings, logical_page_count=req.total_pages).preview
                     )
                     _plog(f"RETURN {req.strategy} plan: sheets={grid_preview['sheetsNeeded']} items={grid_preview['orderSummary']['placedCount']}")
