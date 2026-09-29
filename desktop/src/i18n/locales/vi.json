@@ -5061,6 +5061,7 @@
     "khong_nap_duoc_font_unicode": "Không nạp được font Unicode kèm ứng dụng — đang dùng font thay thế"
   },
   "preprocess.sticker": {
+    "khong_tao_duong_cat": "🚫 Không tạo đường cắt",
     "binh_long_ghep_tu_do": "Bình lồng ghép tự do",
     "xep_nhieu_loai_khuon_xoay_tu_do": "Xếp nhiều loại khuôn, xoay tự do mọi góc",
     "chua_co_file_de_chuyen_tiep": "Chưa có file để chuyển tiếp. Hãy tạo đường cắt trước.",

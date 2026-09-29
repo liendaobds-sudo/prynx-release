@@ -5061,6 +5061,7 @@
     "khong_nap_duoc_font_unicode": "Could not load the bundled Unicode font — using a fallback font"
   },
   "preprocess.sticker": {
+    "khong_tao_duong_cat": "🚫 Do not create cutline",
     "binh_long_ghep_tu_do": "Free-Angle Nesting",
     "xep_nhieu_loai_khuon_xoay_tu_do": "Nest mixed dielines, free rotation at any angle",
     "chua_co_file_de_chuyen_tiep": "No file to hand off yet. Create the cutline first.",
