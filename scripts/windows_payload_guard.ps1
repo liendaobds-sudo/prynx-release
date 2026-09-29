@@ -599,6 +599,8 @@ function Test-PrynXReleaseSecretName {
     $leaf = $Name.Trim().TrimEnd([char[]]@('\', '/'))
     if ([string]::IsNullOrWhiteSpace($leaf)) { return $true }
     $leaf = [System.IO.Path]::GetFileName($leaf).ToLowerInvariant()
+    # certifi/cacert.pem la bundle CA cong khai cua Mozilla cho HTTPS, khong phai secret
+    if ($leaf -eq 'cacert.pem') { return $false }
     $extension = [System.IO.Path]::GetExtension($leaf).ToLowerInvariant()
     if ($leaf -in @(
             '.env', '.git-credentials', '.npmrc', '.pypirc', '.netrc',
