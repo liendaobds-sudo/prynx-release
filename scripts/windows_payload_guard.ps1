@@ -588,7 +588,7 @@ public sealed class PrynXOffsetReadStream : Stream
 }
 
 $script:PrynXReleaseSecretContentRegex = New-Object System.Text.RegularExpressions.Regex(
-    '(?:sb_secret_[A-Za-z0-9_-]{20,}|service[_-]?role|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|TAURI_SIGNING_PRIVATE_KEY(?:_PASSWORD)?|PRYNX_SUPABASE_(?:SECRET|SERVICE)_KEY|SUPABASE_SERVICE_ROLE_KEY)',
+    '(?:sb_secret_[A-Za-z0-9_-]{20,}|service[_-]?role|-----BEGIN (?:RSA |EC )?PRIVATE KEY-----|TAURI_SIGNING_PRIVATE_KEY(?:_PASSWORD)?|PRYNX_SUPABASE_(?:SECRET|SERVICE)_KEY|SUPABASE_SERVICE_ROLE_KEY)',
     ([System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor
         [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)
 )
