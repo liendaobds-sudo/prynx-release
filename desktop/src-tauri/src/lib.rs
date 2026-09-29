@@ -2304,25 +2304,20 @@ pub fn run_render_worker_stdio() -> i32 {
 
 /// Breadcrumb khởi động → %APPDATA%\PrynX\logs\startup_debug.log
 fn startup_breadcrumb(msg: &str) {
-    #[cfg(debug_assertions)]
-    {
-        log::info!("[STARTUP] {}", msg);
-        if let Ok(appdata) = std::env::var("APPDATA") {
-            let dir = std::path::Path::new(&appdata).join("PrynX").join("logs");
-            let _ = std::fs::create_dir_all(&dir);
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(dir.join("startup_debug.log"))
-            {
-                use std::io::Write;
-                let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
-                let _ = writeln!(f, "[{}] {}", now, msg);
-            }
+    log::info!("[STARTUP] {}", msg);
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        let dir = std::path::Path::new(&appdata).join("PrynX").join("logs");
+        let _ = std::fs::create_dir_all(&dir);
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("startup_debug.log"))
+        {
+            use std::io::Write;
+            let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+            let _ = writeln!(f, "[{}] {}", now, msg);
         }
     }
-    #[cfg(not(debug_assertions))]
-    let _ = msg;
 }
 
 fn reveal_main_window(app: &tauri::AppHandle) -> Result<(), String> {
