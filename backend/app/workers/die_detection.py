@@ -1162,23 +1162,22 @@ def select_all_page_sheet_die_paths(page, die_channel_names=(), die_colors=None,
     named = [c for c in scored if c[0] >= _NAME_MATCH_SCORE]
     if named:
         pool_paths = [c[5] for c in named]
+        has_die_spot = True
     else:
         # Ưu tiên 2: Kênh spot bế dành riêng
         spots = [c for c in scored if c[0] >= _ANON_SPOT_SCORE]
         if spots:
             pool_paths = [c[5] for c in spots]
+            has_die_spot = True
         else:
-            # Ưu tiên 3: Lớp màu bế trên cùng theo paint order
-            layer_top: dict = {}
-            for c in scored:
-                key = _die_layer_key(c[5], die_colors, die_color_tol)
-                if key not in layer_top or c[3] > layer_top[key]:
-                    layer_top[key] = c[3]
-            best_layer = max(layer_top, key=lambda k: layer_top[k])
-            pool_paths = [
-                c[5] for c in scored
-                if _die_layer_key(c[5], die_colors, die_color_tol) == best_layer
-            ]
+            # Ưu tiên 3: Không có kênh spot bế.
+            # Trong chế độ nguyên tấm (page_sheet), nếu không có kênh Spot mà chỉ có màu Process CMYK,
+            # không thể giả định mọi nét cùng màu trên cả trang đều là khuôn (trang có thể chứa hoa văn
+            # hoặc text in cùng màu CMYK — xem test_same_process_color_only_strips_selected_cut_geometry).
+            # Do đó fallback an toàn: chọn cụm khuôn chính (anchor) và các nét lân cận của cụm đó.
+            best = max(scored, key=lambda c: (c[0], c[1], c[2], c[3]))
+            members = _collect_die_group(paths, best[5], page_rect, die_colors, die_color_tol, die_channel_names=die_channel_names)
+            return _merge_die_paths(members)
 
     if not pool_paths:
         return None
@@ -1203,7 +1202,7 @@ def select_all_page_sheet_die_paths(page, die_channel_names=(), die_colors=None,
                 if (
                     (p_spot and _match_die_channel(p_spot, names_lower))
                     or _is_genuine_spot(p_spot)
-                    or _color_matches_die(p_col, die_colors, die_color_tol)
+                    or (not has_die_spot and _color_matches_die(p_col, die_colors, die_color_tol))
                 ):
                     all_selected.append(p)
                     changed = True
