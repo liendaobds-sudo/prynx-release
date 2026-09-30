@@ -1051,6 +1051,21 @@ $scan = Assert-PrynXReleasePayloadSecretFree `
     assert "ARCHIVE_COUNT=0" in incidental_pk_result.stdout
     assert "ARCHIVE_ENTRY_COUNT=0" in incidental_pk_result.stdout
 
+    valid_gz = tmp_path / "valid.json.gz"
+    valid_gz.write_bytes(gzip.compress(b'{"cmap": "valid"}'))
+    valid_gz_result = run_file_scan(valid_gz)
+    assert valid_gz_result.returncode == 0, (
+        valid_gz_result.stdout + valid_gz_result.stderr
+    )
+    assert "ARCHIVE_COUNT=1" in valid_gz_result.stdout
+    assert "ARCHIVE_ENTRY_COUNT=1" in valid_gz_result.stdout
+
+    flagged_gz = tmp_path / "flagged.json.gz"
+    flagged_gz.write_bytes(gzip.compress(b"TAURI_SIGNING_PRIVATE_KEY_PASSWORD"))
+    flagged_gz_result = run_file_scan(flagged_gz)
+    assert flagged_gz_result.returncode != 0
+    assert "secret marker detected" in flagged_gz_result.stderr
+
 
 def test_installed_verifier_scans_live_nuitka_extraction_and_writes_v2_evidence(
     tmp_path: Path,
@@ -1305,6 +1320,7 @@ def test_sec20_s3_connects_v2_evidence_and_leased_upload_gate():
     assert "ReadAllText" not in helper
     assert "Invoke-PrynXReleaseSecretStreamScan" in helper
     assert "Invoke-PrynXZipReleaseSecretScan" in helper
+    assert "Invoke-PrynXGzipReleaseSecretScan" in helper
     assert "Test-PrynXOpaqueArchiveExtension" in helper
     assert "Assert-PrynXNoAlternateDataStream" in helper
     assert "FileAttributes]::ReparsePoint" in helper

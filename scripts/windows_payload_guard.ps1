@@ -821,6 +821,88 @@ function Invoke-PrynXZipReleaseSecretScan {
     }
 }
 
+function Invoke-PrynXGzipReleaseSecretScan {
+    param(
+        [Parameter(Mandatory = $true)][System.IO.Stream]$Stream,
+        [Parameter(Mandatory = $true)][string]$DisplayPath
+    )
+
+    $gzipStream = $null
+    $buffer = New-Object byte[] (1024 * 1024)
+    $carry = ''
+    [long]$expandedBytes = 0
+    [long]$maxGzipExpandedBytes = 64 * 1024 * 1024
+    $prefixBytes = New-Object byte[] 512
+    [int]$prefixCount = 0
+
+    try {
+        if ($Stream.CanSeek) { $Stream.Position = 0 }
+        try {
+            $gzipStream = [System.IO.Compression.GZipStream]::new(
+                $Stream,
+                [System.IO.Compression.CompressionMode]::Decompress,
+                $true
+            )
+        } catch {
+            throw "SEC: Gzip-compatible release payload cannot be opened: $DisplayPath"
+        }
+
+        try {
+            while (($read = $gzipStream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                $expandedBytes += [long]$read
+                if ($expandedBytes -gt $maxGzipExpandedBytes) {
+                    throw "SEC: Gzip payload exceeds maximum expanded size limit ($maxGzipExpandedBytes bytes): $DisplayPath"
+                }
+                if ($prefixCount -lt $prefixBytes.Length) {
+                    $toCopy = [Math]::Min($prefixBytes.Length - $prefixCount, $read)
+                    [System.Buffer]::BlockCopy($buffer, 0, $prefixBytes, $prefixCount, $toCopy)
+                    $prefixCount += $toCopy
+                }
+                $chunk = [System.Text.Encoding]::ASCII.GetString($buffer, 0, $read)
+                $window = $carry + $chunk
+                $windowWithoutNul = $window.Replace(([string][char]0), '')
+                if ($script:PrynXReleaseSecretContentRegex.IsMatch($window) -or
+                    $script:PrynXReleaseSecretContentRegex.IsMatch($windowWithoutNul)) {
+                    throw "SEC: Release secret marker detected in payload content: $DisplayPath::<gzip-decompressed>"
+                }
+                $carryLength = [Math]::Min(512, $window.Length)
+                $carry = if ($carryLength -gt 0) {
+                    $window.Substring($window.Length - $carryLength)
+                } else {
+                    ''
+                }
+            }
+        } catch [System.IO.InvalidDataException] {
+            throw "SEC: Gzip-compatible release payload cannot be inspected safely: $DisplayPath"
+        }
+
+        # Chan nested archive (gzip, zip, 7z, tar) ben trong luong gzip
+        if ($prefixCount -ge 2 -and $prefixBytes[0] -eq 0x1F -and $prefixBytes[1] -eq 0x8B) {
+            throw "SEC: Nested archive (gzip) is not independently inspectable: $DisplayPath"
+        }
+        if ($prefixCount -ge 4 -and $prefixBytes[0] -eq 0x50 -and $prefixBytes[1] -eq 0x4B -and
+            $prefixBytes[2] -in @(0x03, 0x05, 0x07) -and $prefixBytes[3] -in @(0x04, 0x06, 0x08)) {
+            throw "SEC: Nested archive (zip) is not independently inspectable: $DisplayPath"
+        }
+        if ($prefixCount -ge 6 -and $prefixBytes[0] -eq 0x37 -and $prefixBytes[1] -eq 0x7A -and
+            $prefixBytes[2] -eq 0xBC -and $prefixBytes[3] -eq 0xAF -and $prefixBytes[4] -eq 0x27 -and $prefixBytes[5] -eq 0x1C) {
+            throw "SEC: Nested archive (7z) is not independently inspectable: $DisplayPath"
+        }
+        if ($prefixCount -ge 262 -and $prefixBytes[257] -eq 0x75 -and $prefixBytes[258] -eq 0x73 -and
+            $prefixBytes[259] -eq 0x74 -and $prefixBytes[260] -eq 0x61 -and $prefixBytes[261] -eq 0x72) {
+            throw "SEC: Nested archive (tar) is not independently inspectable: $DisplayPath"
+        }
+
+        return [pscustomobject]@{
+            EntryCount = 1
+            ExpandedBytes = $expandedBytes
+        }
+    } finally {
+        if ($null -ne $gzipStream) { $gzipStream.Dispose() }
+        if ($Stream.CanSeek) { $Stream.Position = 0 }
+    }
+}
+
 function Invoke-PrynXReleaseSecretFileScan {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -864,6 +946,13 @@ function Invoke-PrynXReleaseSecretFileScan {
                 -Stream $stream `
                 -DisplayPath $DisplayPath `
                 -ArchiveKind $archiveKind
+            $archiveCount = 1
+            $archiveEntryCount = [long]$archiveResult.EntryCount
+            $expandedBytes = [long]$archiveResult.ExpandedBytes
+        } elseif ($archiveKind -eq 'gzip' -and $fullPath.EndsWith('.gz', [System.StringComparison]::OrdinalIgnoreCase)) {
+            $archiveResult = Invoke-PrynXGzipReleaseSecretScan `
+                -Stream $stream `
+                -DisplayPath $DisplayPath
             $archiveCount = 1
             $archiveEntryCount = [long]$archiveResult.EntryCount
             $expandedBytes = [long]$archiveResult.ExpandedBytes
