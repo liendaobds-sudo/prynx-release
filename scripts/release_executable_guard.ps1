@@ -1,4 +1,4 @@
-﻿# SEC (audit 2026-09-04 SEC.24-R2): resolve executable phat hanh tu nguon OS
+# SEC (audit 2026-09-04 SEC.24-R2): resolve executable phat hanh tu nguon OS
 # co dinh, kiem chu ky va giu handle de chan PATH hijack/TOCTOU.
 # File co UTF-8 BOM de Windows PowerShell 5.1 doc on dinh khi dot-source.
 
@@ -1050,7 +1050,9 @@ function Assert-PrynXGitHubCliGrammar {
                     else {
                         ''
                     }
-                    if ($Arguments.Count -ne 13 -or
+                    $isPrerelease = ($Arguments.Count -eq 14 -and $Arguments[10] -ceq '--prerelease')
+                    $assetIndexes = if ($isPrerelease) { @(11, 12, 13) } else { @(10, 11, 12) }
+                    if (($Arguments.Count -ne 13 -and -not $isPrerelease) -or
                         [string]::IsNullOrWhiteSpace($version) -or
                         $Arguments[2] -cne '--repo' -or
                         -not (Test-PrynXGitHubRepositoryArgument -Value $Arguments[3]) -or
@@ -1061,7 +1063,7 @@ function Assert-PrynXGitHubCliGrammar {
                         $Arguments[8] -cne '--notes' -or
                         -not (Test-PrynXReleaseAssetArguments `
                             -Arguments $Arguments `
-                            -Indexes @(10, 11, 12))) {
+                            -Indexes $assetIndexes)) {
                         throw 'SEC: gh release create command khong nam trong exact allowlist.'
                     }
                 }
