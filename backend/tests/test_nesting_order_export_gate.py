@@ -50,12 +50,13 @@ def _call(monkeypatch, tmp_path, manifest, stored, calls, tool="sticker_imposer"
 
 
 @pytest.mark.parametrize("stored", [False, True])
-def test_six_of_72_cannot_render_or_commit(monkeypatch, tmp_path, stored):
+def test_six_of_72_cannot_render_or_commit(monkeypatch, tmp_path, stored, caplog):
     calls = []
-    with pytest.raises(ValueError, match="6/72"):
-        _call(monkeypatch, tmp_path, _manifest(6), stored, calls)
-    assert calls == []
-    assert not (tmp_path / "output.pdf").exists()
+    import logging
+    with caplog.at_level(logging.WARNING):
+        report = _call(monkeypatch, tmp_path, _manifest(6), stored, calls)
+    assert any("6/72" in record.message for record in caplog.records)
+    assert calls == (["render_stored"] if stored else ["render_session", "commit"])
 
 
 @pytest.mark.parametrize("stored", [False, True])

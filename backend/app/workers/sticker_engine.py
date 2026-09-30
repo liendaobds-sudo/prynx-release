@@ -8904,15 +8904,10 @@ def _n_pages_should_parallelize(
         return False
     threshold = _STICKER_PARALLEL_MIN_PAGES
     hw_prof = get_sticker_hw_profile()
-    if hw_prof.get("tier") == "full" and hw_prof.get("max_workers", 1) > 1:
-        # PERF (audit 2026-09-30 §RAM-GATE): Máy mạnh (RAM >= 16GB, CPU >= 4 nhân)
-        # chạy hết công suất phần cứng: bất kể trang tem nhỏ hay lớn, từ 2 trang
-        # đã nên fan-out song song để tận dụng tối đa tất cả các nhân CPU, không ép
-        # chạy tuần tự 1 nhân lãng phí 4-16s.
-        threshold = _STICKER_PARALLEL_MIN_PAGES_LARGE
-    elif (
+    if (
         page_area_pt2 is not None
         and page_area_pt2 >= _STICKER_LARGE_PAGE_PT2
+        and hw_prof.get("tier") == "full"
         and hw_prof.get("max_workers", 1) > 1
     ):
         threshold = _STICKER_PARALLEL_MIN_PAGES_LARGE

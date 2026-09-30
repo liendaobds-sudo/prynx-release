@@ -812,19 +812,6 @@ if ($releaseExists) {
                 [string]$publishLease.Latest.Path
             )
         if ($uploadResult.ExitCode -ne 0) { throw "gh release upload (clobber) that bai." }
-        if ($Prerelease) {
-            $prereleaseResult = Invoke-PrynXGitHubCliCommand `
-                -GitHubCliPath $script:PrynXGitHubCli `
-                -Command 'release' `
-                -Arguments @(
-                    'edit',
-                    $tag,
-                    '--repo',
-                    "github.com/$ReleaseRepo",
-                    '--prerelease'
-                )
-            if ($prereleaseResult.ExitCode -ne 0) { throw "gh release edit --prerelease that bai." }
-        }
     } finally {
         Close-PrynXPayloadLease -Lease $publishLease
     }
