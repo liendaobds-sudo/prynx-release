@@ -38,6 +38,9 @@ else:
 os.environ["DEV_MODE"] = "false"
 # Result artifacts are signed in enforced-mode tests with this process-local fixture secret.
 os.environ["PRYNX_SIDECAR_TOKEN"] = "pytest-sidecar-token"
+# TEST-ISOLATION: Mặc định cờ True-Shape Nesting tắt trong test suite để các test
+# kiểm tra fallback và off-by-default chạy hermetic; các test cần bật sẽ dùng fixture `flag_on`.
+os.environ["PRYNX_TRUE_SHAPE_NESTING_ENABLED"] = "false"
 
 # TEST-ISOLATION (audit 2026-09-01 §PERF-NEST-02): các test nesting có thể pin
 # source ngay trong lúc dựng/solve job. Kho mặc định ``backend/uploads/results``
