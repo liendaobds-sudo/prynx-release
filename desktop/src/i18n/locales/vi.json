@@ -10168,6 +10168,18 @@
 
     "le_ngoai_mm": "Lề ngoài (cách tem)",
 
+    "tach_4_canh_hint": "Đang khóa đều 4 cạnh. Bấm để chỉnh riêng từng cạnh",
+
+    "deu_4_canh": "Đều 4 cạnh",
+
+    "side_top": "Trên",
+
+    "side_bottom": "Dưới",
+
+    "side_left": "Trái",
+
+    "side_right": "Phải",
+
     "bo_goc_ngoai_mm": "Bo góc khung ngoài",
 
     "ten_va_mau_spot_be_dut": "Tên kênh & Màu Spot bế đứt",
@@ -12759,6 +12771,8 @@
     "classic_preview_updating": "Đang cập nhật đường bế xem trước… Vẫn giữ đường hiện tại.",
 
     "classic_preview_update_error": "Không cập nhật được đường bế xem trước.",
+
+    "classic_preview_timeout": "Quá thời gian tải xem trước đường bế.",
 
     "cutline_output": "Tạo PDF có đường cắt",
 

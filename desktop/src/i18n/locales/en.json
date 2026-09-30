@@ -10168,6 +10168,18 @@
 
     "le_ngoai_mm": "Outer margin (from sticker)",
 
+    "tach_4_canh_hint": "4 sides locked uniformly. Click to edit sides individually",
+
+    "deu_4_canh": "Uniform 4 sides",
+
+    "side_top": "Top",
+
+    "side_bottom": "Bottom",
+
+    "side_left": "Left",
+
+    "side_right": "Right",
+
     "bo_goc_ngoai_mm": "Corner radius",
 
     "ten_va_mau_spot_be_dut": "Thru-cut spot name & color",
@@ -12759,6 +12771,8 @@
     "classic_preview_updating": "Updating the cutline preview… Keeping the current line visible.",
 
     "classic_preview_update_error": "Could not update the cutline preview.",
+
+    "classic_preview_timeout": "Classic cutline preview request timed out.",
 
     "cutline_output": "Create PDF with cutlines",
 

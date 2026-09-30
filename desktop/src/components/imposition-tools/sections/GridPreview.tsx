@@ -758,8 +758,7 @@ const DEBOUNCE_MS = 250;
 // PERF (audit 2026-08-29 §NEST-SINGLEFLIGHT): solver sync không dừng chỉ vì browser
 // abort request. Debounce dài hơn khi nesting gom chuỗi gõ report/mã đơn thành một lượt,
 // tránh mỗi ký tự tạo một identity khác và khởi chạy thêm cold solve 16–40 giây.
-// PERF (audit 2026-09-30 §PREVIEW-SPEED): giảm debounce từ 750ms xuống 300ms để phản hồi nhanh
-const NESTING_DEBOUNCE_MS = 300;
+const NESTING_DEBOUNCE_MS = 750;
 const NESTING_CANCEL_MAX_ATTEMPTS = 3;
 const NESTING_CANCEL_RETRY_MS = 120;
 // B10-6: localhost treo cũng phải nhả trạng thái hủy trong thời gian hữu hạn.
