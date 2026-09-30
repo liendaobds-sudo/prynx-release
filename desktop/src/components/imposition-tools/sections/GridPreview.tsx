@@ -26,6 +26,7 @@ import {
   trueShapeJobMembershipKey,
 } from "../trueShapeNestingRollout";
 import { resolveCellDirectionDegrees, resolveTrapezoidPreviewRatios, shouldAutoSwitchToMixedGuillotine, type CellDirectionDegrees } from "./gridPreviewHelpers";
+import { GridPreviewCanvas } from "./GridPreviewCanvas";
 
 // UIUX (audit 2026-09-05 §PV26.2): nhận mã job hoặc status chưa có số đo
 // chỉ cho biết phase; không được biến thành 0%/100% do frontend tự đặt.
@@ -3586,14 +3587,25 @@ export default function GridPreview(props: GridPreviewProps) {
     _nupTotal != null && _nupTotal < svgCells.length &&
     align === "center" && visibleCells.length
   ) {
-    const minX = Math.min(...visibleCells.map((c) => c.sx));
-    const maxX = Math.max(...visibleCells.map((c) => c.sx + c.sw));
-    const minY = Math.min(...visibleCells.map((c) => c.sy));
-    const maxY = Math.max(...visibleCells.map((c) => c.sy + c.sh));
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (let i = 0; i < visibleCells.length; i++) {
+      const c = visibleCells[i];
+      if (c.sx < minX) minX = c.sx;
+      if (c.sx + c.sw > maxX) maxX = c.sx + c.sw;
+      if (c.sy < minY) minY = c.sy;
+      if (c.sy + c.sh > maxY) maxY = c.sy + c.sh;
+    }
     const dx = uaX + uaW / 2 - (minX + maxX) / 2;
     const dy = uaY + uaH / 2 - (minY + maxY) / 2;
     visibleCells = visibleCells.map((c) => ({ ...c, sx: c.sx + dx, sy: c.sy + dy }));
   }
+
+  // PERF (audit 2026-09-30): Khi số tem > 48, chuyển sang Canvas 2D hybrid
+  // để đạt 60 FPS mượt mà, không làm nghẽn DOM SVG với hàng nghìn nodes.
+  const useCanvasForCells = visibleCells.length > 48;
 
   // CUT-BORDER (audit 2026-08-04 §CB.5): overlay dùng chính cell tuyệt đối mà
   // preview nhận từ backend. Bleed chỉ mở rộng rect, không gọi lại solver/layout.
@@ -3920,12 +3932,35 @@ export default function GridPreview(props: GridPreviewProps) {
                     {t(_mixedBackFace ? 'imposition.gridPreview:mat_sau' : 'imposition.gridPreview:mat_truoc')}
                   </div>
                 )}
-                <svg
-                  width={svgW}
-                  height={svgH}
-                  viewBox={`0 0 ${svgW} ${svgH}`}
-                  className="transition-all duration-300"
-                >
+                <div className="relative" style={{ width: svgW, height: svgH }}>
+                  {useCanvasForCells && (
+                    <GridPreviewCanvas
+                      width={svgW}
+                      height={svgH}
+                      cells={visibleCells}
+                      isMixed={!!layoutResult?.isMixedPreview}
+                      shapesByPage={shapesByPage}
+                      shapeParamsByPage={shapeParamsByPage}
+                      shapeType={shapeType}
+                      shapePropsParsed={shapePropsParsed}
+                      diePolygon={layoutResult?.diePolygon}
+                      diePolygonsByPage={layoutResult?.diePolygonsByPage}
+                      effectiveAlternateRotation={effectiveAlternateRotation}
+                      side="front"
+                      cellLabel={cellLabel}
+                      colorIndexFor={colorIndexFor}
+                      cutBorder={cutBorder}
+                      canUseBorder={Boolean(canUseCutBorder({ activeTool, taskMode, pageSheetMode }) && !isDieCut)}
+                      borderBleedPx={cutBorder?.position === "bleed" ? Math.max(0, bleed) * scale : 0}
+                      borderThicknessPx={Math.max(0.5, Math.min(2, Math.max(0.1, Number(cutBorder?.thickness) || 0.3)) * scale)}
+                    />
+                  )}
+                  <svg
+                    width={svgW}
+                    height={svgH}
+                    viewBox={`0 0 ${svgW} ${svgH}`}
+                    className="transition-all duration-300"
+                  >
                   <defs>
                     <marker
                       id="arrowHead"
@@ -4005,8 +4040,8 @@ export default function GridPreview(props: GridPreviewProps) {
                   {/* Dấu canh in 2 mặt (CNC Duplex Marks) */}
                   {renderCncDuplexMarks()}
 
-                  {/* Cells */}
-                  {visibleCells.map((c) => {
+                  {/* Cells (SVG fallback khi <= 48 ô để tương thích 100% test DOM inspect) */}
+                  {!useCanvasForCells && visibleCells.map((c) => {
                     const isMixed = !!layoutResult?.isMixedPreview;
                     const color = BLOCK_COLORS[colorIndexFor(c.blockId) % BLOCK_COLORS.length];
                     // Per-page shape: use pageIdx to get correct shape for this item
@@ -4078,8 +4113,9 @@ export default function GridPreview(props: GridPreviewProps) {
                       </g>
                     );
                   })}
-                  {renderCutBorderRects(visibleCells, "front")}
+                  {!useCanvasForCells && renderCutBorderRects(visibleCells, "front")}
                 </svg>
+              </div>
 
                 {/* Loading overlay */}
                 {isLoading && (
@@ -4103,12 +4139,36 @@ export default function GridPreview(props: GridPreviewProps) {
                   <div className="text-center text-[11px] font-bold text-slate-500 mb-2">
                     {t('imposition.gridPreview:mat_sau')}
                   </div>
-                  <svg
-                    width={svgW}
-                    height={svgH}
-                    viewBox={`0 0 ${svgW} ${svgH}`}
-                    className="transition-all duration-300"
-                  >
+                  <div className="relative" style={{ width: svgW, height: svgH }}>
+                    {useCanvasForCells && (
+                      <GridPreviewCanvas
+                        width={svgW}
+                        height={svgH}
+                        cells={cncBackCells}
+                        isMixed={!!layoutResult?.isMixedPreview}
+                        shapesByPage={shapesByPage}
+                        shapeParamsByPage={shapeParamsByPage}
+                        shapeType={shapeType}
+                        shapePropsParsed={shapePropsParsed}
+                        diePolygon={layoutResult?.diePolygon}
+                        diePolygonsByPage={layoutResult?.diePolygonsByPage}
+                        effectiveAlternateRotation={effectiveAlternateRotation}
+                        side="back"
+                        cellLabel={cellLabel}
+                        colorIndexFor={colorIndexFor}
+                        cutBorder={cutBorder}
+                        canUseBorder={Boolean(canUseCutBorder({ activeTool, taskMode, pageSheetMode }) && !isDieCut)}
+                        borderBleedPx={cutBorder?.position === "bleed" ? Math.max(0, bleed) * scale : 0}
+                        borderThicknessPx={Math.max(0.5, Math.min(2, Math.max(0.1, Number(cutBorder?.thickness) || 0.3)) * scale)}
+                        isCncShortFlip={_cncShortFlip}
+                      />
+                    )}
+                    <svg
+                      width={svgW}
+                      height={svgH}
+                      viewBox={`0 0 ${svgW} ${svgH}`}
+                      className="transition-all duration-300"
+                    >
                     <g transform={backGroupTransform}>
                       <rect
                         x={pad}
@@ -4144,8 +4204,8 @@ export default function GridPreview(props: GridPreviewProps) {
                       {/* Dấu canh in 2 mặt (CNC Duplex Marks) trên Mặt Sau */}
                       {renderCncDuplexMarks()}
 
-                      {/* Cells */}
-                      {cncBackCells.map((c) => {
+                      {/* Cells (SVG fallback khi <= 48 ô để tương thích 100% test DOM inspect) */}
+                      {!useCanvasForCells && cncBackCells.map((c) => {
                         const isMixed = !!layoutResult?.isMixedPreview;
                         const color =
                           BLOCK_COLORS[colorIndexFor(c.blockId) % BLOCK_COLORS.length];
@@ -4227,9 +4287,10 @@ export default function GridPreview(props: GridPreviewProps) {
                           </g>
                         );
                       })}
-                      {renderCutBorderRects(cncBackCells, "back")}
+                      {!useCanvasForCells && renderCutBorderRects(cncBackCells, "back")}
                     </g>
                   </svg>
+                </div>
 
                   <div className="absolute bottom-1 right-1 bg-white/80 dark:bg-zinc-800/80 rounded px-1.5 py-0.5 text-[9px] text-slate-400 dark:text-zinc-500 font-medium opacity-0 group-hover:opacity-100 transition-opacity">
                     {expanded ? t('imposition.gridPreview:thu_gon_2') : t('imposition.gridPreview:phong_to')}

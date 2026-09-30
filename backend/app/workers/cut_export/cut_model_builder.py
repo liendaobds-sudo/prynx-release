@@ -24,34 +24,41 @@ class NamingContractError(ValueError):
     """Tên nhóm/ô/lớp không khớp cài đặt ốc (PontConfig) — Req 1.5."""
 
 
-def _polygon_to_polylines(geom: Any) -> list[list[tuple[float, float]]]:
-    """Chuẩn hoá một hình học → danh sách polyline (exterior + các interior).
+def _polygon_to_polylines_with_holes(geom: Any) -> list[tuple[list[tuple[float, float]], bool]]:
+    """Chuẩn hoá một hình học → danh sách (polyline, is_hole).
 
     Chấp nhận:
       - Shapely Polygon/MultiPolygon (có .exterior/.geoms),
       - list điểm [(x,y), ...],
       - dict {'points': [...]}.
+    is_hole = False cho exterior (đường bao ngoài),
+    is_hole = True cho interior (lỗ thủng bên trong).
     """
     # dict
     if isinstance(geom, dict) and "points" in geom:
-        return [[(float(x), float(y)) for x, y in geom["points"]]]
+        return [([(float(x), float(y)) for x, y in geom["points"]], False)]
     # list điểm
     if isinstance(geom, (list, tuple)) and geom and isinstance(geom[0], (list, tuple)) and len(geom[0]) == 2:
-        return [[(float(x), float(y)) for x, y in geom]]
+        return [([(float(x), float(y)) for x, y in geom], False)]
     # Shapely
-    rings: list[list[tuple[float, float]]] = []
+    rings: list[tuple[list[tuple[float, float]], bool]] = []
     geoms = getattr(geom, "geoms", None)
     if geoms is not None:  # MultiPolygon
         for g in geoms:
-            rings.extend(_polygon_to_polylines(g))
+            rings.extend(_polygon_to_polylines_with_holes(g))
         return rings
     ext = getattr(geom, "exterior", None)
     if ext is not None:  # Polygon
-        rings.append([(float(x), float(y)) for x, y in list(ext.coords)])
+        rings.append(([(float(x), float(y)) for x, y in list(ext.coords)], False))
         for interior in getattr(geom, "interiors", []):
-            rings.append([(float(x), float(y)) for x, y in list(interior.coords)])
+            rings.append(([(float(x), float(y)) for x, y in list(interior.coords)], True))
         return rings
     raise TypeError(f"Không nhận dạng được hình học đường cắt: {type(geom)!r}")
+
+
+def _polygon_to_polylines(geom: Any) -> list[list[tuple[float, float]]]:
+    """Tương thích ngược: trả danh sách polyline không kèm cờ is_hole."""
+    return [r for r, _ in _polygon_to_polylines_with_holes(geom)]
 
 
 def _extract_source_names(pont_config: Optional[dict]) -> dict:
@@ -95,7 +102,7 @@ def build_cut_model(
     geoms = list(cut_geometries)
     paths: list[CutPath] = []
     for i, geom in enumerate(geoms):
-        for ring in _polygon_to_polylines(geom):
+        for ring, is_hole in _polygon_to_polylines_with_holes(geom):
             if len(ring) < 2:
                 continue
             simplified = rdp_simplify(ring, rdp_eps_mm)
@@ -103,7 +110,7 @@ def build_cut_model(
                 continue
             tag = tool_tags[i] if tool_tags and i < len(tool_tags) else None
             bid = block_ids[i] if block_ids and i < len(block_ids) else 0
-            paths.append(CutPath(points=simplified, closed=True, tool_tag=tag, block_id=bid))
+            paths.append(CutPath(points=simplified, closed=True, tool_tag=tag, block_id=bid, is_hole=is_hole))
 
     mark_objs: list[RegMark] = []
     for m in (marks or []):

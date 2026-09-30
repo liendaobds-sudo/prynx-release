@@ -117,3 +117,129 @@ def max_segment_length(points: Sequence[Point]) -> float:
     if len(points) < 2:
         return 0.0
     return max(_dist(points[i], points[i + 1]) for i in range(len(points) - 1))
+
+
+def optimize_cut_paths_tsp(
+    paths: Sequence[Any],
+    start_pos: Point = (0.0, 0.0),
+    rotate_closed_start: bool = True,
+) -> list[Any]:
+    """PERF (audit 2026-09-30 §CNC.TSP): Tối ưu hóa thứ tự đường dao cắt CNC.
+
+    1. Inside-Out Hierarchy: Bắt buộc cắt toàn bộ các lỗ khoét bên trong (is_hole == True)
+       trước khi cắt đường viền bao ngoài (is_hole == False) để bảo toàn lực hút chân không
+       và chống nhăn xê dịch tem.
+    2. TSP Nearest Neighbor: Chọn đường cắt kế tiếp có điểm bắt đầu gần nhất với vị trí
+       đầu dao hiện tại, giảm tối đa quãng đường chạy dao không tải (Pen-Up / Rapid move).
+    3. Closed Loop Alignment: Với đường cắt khép kín, chọn đỉnh xuất phát gần nhất với đầu dao.
+    4. Open Path Direction: Với đường cắt hở, tự động chọn hướng đi thuận (xuất phát từ đầu mút gần hơn).
+    5. Đơn định tuyệt đối: Giữ thứ tự ổn định qua tie-breaking bằng chỉ số gốc.
+    """
+    if not paths or len(paths) <= 1:
+        return list(paths)
+
+    from app.workers.cut_export.cut_model import CutPath
+
+    blocks: dict[tuple[int, str | None], list[tuple[int, Any]]] = {}
+    for idx, p in enumerate(paths):
+        key = (getattr(p, 'block_id', 0), getattr(p, 'tool_tag', None))
+        blocks.setdefault(key, []).append((idx, p))
+
+    optimized_all: list[Any] = []
+    curr_x, curr_y = start_pos
+
+    for key in sorted(blocks.keys(), key=lambda k: (k[0], str(k[1]))):
+        indexed_block_paths = blocks[key]
+        holes = [(idx, p) for idx, p in indexed_block_paths if getattr(p, 'is_hole', False)]
+        exteriors = [(idx, p) for idx, p in indexed_block_paths if not getattr(p, 'is_hole', False)]
+
+        for group in (holes, exteriors):
+            unvisited = list(group)
+            while unvisited:
+                best_i = 0
+                best_dist_sq = float('inf')
+                best_new_path = unvisited[0][1]
+
+                for i, (orig_idx, p) in enumerate(unvisited):
+                    pts = p.points
+                    if not pts:
+                        if float('inf') < best_dist_sq:
+                            best_dist_sq = float('inf')
+                            best_i = i
+                            best_new_path = p
+                        continue
+
+                    if getattr(p, 'closed', True) and len(pts) >= 2:
+                        raw_pts = pts[:-1] if (len(pts) > 1 and pts[-1] == pts[0]) else pts
+                        if rotate_closed_start and len(raw_pts) > 1 and not getattr(p, 'segments', None):
+                            closest_vi = 0
+                            min_d = float('inf')
+                            for vi, (vx, vy) in enumerate(raw_pts):
+                                d = (vx - curr_x) ** 2 + (vy - curr_y) ** 2
+                                if d < min_d:
+                                    min_d = d
+                                    closest_vi = vi
+                            if min_d < best_dist_sq:
+                                best_dist_sq = min_d
+                                best_i = i
+                                rot = raw_pts[closest_vi:] + raw_pts[:closest_vi]
+                                best_new_path = CutPath(
+                                    points=rot + [rot[0]],
+                                    closed=True,
+                                    tool_tag=p.tool_tag,
+                                    block_id=p.block_id,
+                                    is_hole=getattr(p, 'is_hole', False),
+                                )
+                        elif rotate_closed_start and len(raw_pts) > 1 and getattr(p, 'segments', None):
+                            closest_si = 0
+                            min_d = float('inf')
+                            for si, seg in enumerate(p.segments):
+                                vx, vy = seg[0]
+                                d = (vx - curr_x) ** 2 + (vy - curr_y) ** 2
+                                if d < min_d:
+                                    min_d = d
+                                    closest_si = si
+                            if min_d < best_dist_sq:
+                                best_dist_sq = min_d
+                                best_i = i
+                                rot_seg = p.segments[closest_si:] + p.segments[:closest_si]
+                                best_new_path = CutPath(
+                                    points=[],
+                                    closed=True,
+                                    tool_tag=p.tool_tag,
+                                    block_id=p.block_id,
+                                    segments=rot_seg,
+                                    is_hole=getattr(p, 'is_hole', False),
+                                )
+                        else:
+                            d = (pts[0][0] - curr_x) ** 2 + (pts[0][1] - curr_y) ** 2
+                            if d < best_dist_sq:
+                                best_dist_sq = d
+                                best_i = i
+                                best_new_path = p
+                    else:
+                        d0 = (pts[0][0] - curr_x) ** 2 + (pts[0][1] - curr_y) ** 2
+                        d1 = (pts[-1][0] - curr_x) ** 2 + (pts[-1][1] - curr_y) ** 2
+                        if d0 <= d1:
+                            if d0 < best_dist_sq:
+                                best_dist_sq = d0
+                                best_i = i
+                                best_new_path = p
+                        else:
+                            if d1 < best_dist_sq:
+                                best_dist_sq = d1
+                                best_i = i
+                                best_new_path = CutPath(
+                                    points=list(reversed(pts)),
+                                    closed=False,
+                                    tool_tag=p.tool_tag,
+                                    block_id=p.block_id,
+                                    is_hole=getattr(p, 'is_hole', False),
+                                )
+
+                unvisited.pop(best_i)
+                optimized_all.append(best_new_path)
+                if best_new_path.points:
+                    curr_x, curr_y = best_new_path.points[-1]
+
+    return optimized_all

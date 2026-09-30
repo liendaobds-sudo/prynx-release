@@ -5704,12 +5704,21 @@ def extract_alpha_base_geometry(
     if base_geometry.is_empty or not isinstance(base_geometry, (Polygon, MultiPolygon)):
         return None
 
+    px_per_mm = min(dpi_x, dpi_y_resolved) / 25.4
+    sdf_field = None
+    try:
+        from app.workers.sticker_cutline_sdf import compute_signed_distance_field
+        sdf_field = compute_signed_distance_field(mask, px_per_mm=px_per_mm)
+    except Exception:
+        pass
+
     return {
         "base_geometry": base_geometry,
         "source_pixel_mm": max(25.4 / dpi_x, 25.4 / dpi_y_resolved),
         "dropped_contours": len(filtered_exteriors),
         "dpi_x": dpi_x,
         "dpi_y": dpi_y_resolved,
+        "sdf_field": sdf_field,
     }
 
 
@@ -5768,6 +5777,7 @@ def offset_alpha_base_geometry(
         "source_pixel_mm": float(base_info.get("source_pixel_mm", 0.0)),
         "corner_style": str(corner_style or "preserve").strip().lower(),
         "dropped_contours": int(base_info.get("dropped_contours", 0)),
+        "sdf_field": base_info.get("sdf_field"),
     }
 
 

@@ -138,13 +138,10 @@ class CommandStreamEmitter:
         return "".join(seg)
 
     def _ordered_paths(self, model: CutModel):
-        """Thứ tự cắt: theo block_id, rồi trái→phải, dưới→lên (theo centroid mm)."""
-        def key(path):
-            pts = path.points
-            cx = sum(x for x, _ in pts) / len(pts)
-            cy = sum(y for _, y in pts) / len(pts)
-            return (path.block_id, round(cx, 2), round(cy, 2))
-        return sorted((p for p in model.paths if not p.is_empty), key=key)
+        """PERF (audit 2026-09-30 §CNC.TSP): Thứ tự cắt tối ưu TSP + Inside-Out (lỗ trong trước)."""
+        from app.workers.cut_export.geometry import optimize_cut_paths_tsp
+        valid = [p for p in model.paths if not p.is_empty]
+        return optimize_cut_paths_tsp(valid, start_pos=(0.0, 0.0))
 
     def _emit_path(self, path, tx) -> str:
         p = self.profile
@@ -158,6 +155,19 @@ class CommandStreamEmitter:
             seg.append(p.pen_down.format(x=px, y=py))
         if path.closed:
             seg.append(p.pen_down.format(x=x0, y=y0))
+            # PERF (audit 2026-09-30 §CNC.OVERCUT): Cắt quá mép để đứt sạch sợi decal
+            blade = p.blade or {}
+            overcut_mm = float(blade.get("overcut_mm", 0.0) or 0.0)
+            if overcut_mm > 0 and len(pts) > 1:
+                dx = pts[1][0] - pts[0][0]
+                dy = pts[1][1] - pts[0][1]
+                dist = (dx * dx + dy * dy) ** 0.5
+                if dist > 1e-4:
+                    ratio = min(1.0, overcut_mm / dist)
+                    ox = pts[0][0] + dx * ratio
+                    oy = pts[0][1] + dy * ratio
+                    pox, poy = tx(ox, oy)
+                    seg.append(p.pen_down.format(x=pox, y=poy))
         return "".join(seg)
 
 

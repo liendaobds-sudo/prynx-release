@@ -58,6 +58,7 @@ class CutPath:
     # hoặc 4 điểm (cubic), tọa độ mm tuyệt đối. Tuple tránh sửa tay control point.
     segments: tuple[tuple[tuple[float, float], ...], ...] = ()
     flatten_tolerance_mm: float = FLATTEN_TOL_MM
+    is_hole: bool = False
     _vector_points: tuple[tuple[float, float], ...] = field(default=(), init=False, repr=False)
     _vector_segments: tuple = field(default=(), init=False, repr=False)
 
