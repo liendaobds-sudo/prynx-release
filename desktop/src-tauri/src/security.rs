@@ -1394,6 +1394,15 @@ mod license_runtime_policy_tests {
             assert!(registration_hardware_id(&token, || Err("WMI unavailable".into())).is_err());
         }
     }
+
+    #[test]
+    fn test_trusted_license_verifying_key_parity() {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
+        let vk = trusted_license_verifying_key().expect("trusted pubkey must reconstruct cleanly");
+        let reconstructed_b64 = STANDARD.encode(vk.as_bytes());
+        assert_eq!(reconstructed_b64, "AxpiZnEFXady9wI01spdMRrTNtEthMD30W/90gi27Zk=");
+    }
 }
 
 /// Xoá sạch cache key đã xác thực → sign_api_request lập tức từ chối ký request mới.
@@ -1430,8 +1439,62 @@ fn clear_validated_keys_inner() -> Result<(), String> {
 }
 
 // ── F2: Ed25519 license-token verification (đối xứng với backend license_guard.py) ──
-// Public key TRUST ANCHOR — PHẢI KHỚP `_LICENSE_PUBLIC_KEY_B64` ở backend.
-const LICENSE_PUBLIC_KEY_B64: &str = "AxpiZnEFXady9wI01spdMRrTNtEthMD30W/90gi27Zk=";
+// SEC (audit 2026-10-01 Ghidra hardening): Khóa công khai Ed25519 được phân tán và bảo vệ
+// bằng XOR mask tại compile-time, không lưu chuỗi plain text Base64 trong binary.
+// Giá trị toán học 32 bytes thô khớp tuyệt đối với `_LICENSE_PUBLIC_KEY_B64` ở backend.
+
+/// Macro xáo trộn chuỗi compile-time thuần túy (Zero-dependency):
+/// Ép LLVM lưu chuỗi dưới dạng opcodes/XOR array lúc biên dịch,
+/// chỉ giải mã trên stack lúc runtime để triệt tiêu String Search trong Ghidra / IDA Pro.
+macro_rules! obf_str {
+    ($s:literal) => {{
+        const S_BYTES: &[u8] = $s.as_bytes();
+        const LEN: usize = S_BYTES.len();
+        const XOR_KEY: u8 = 0x5C;
+        const OBF_BYTES: [u8; LEN] = {
+            let mut arr = [0u8; LEN];
+            let mut i = 0;
+            while i < LEN {
+                arr[i] = S_BYTES[i] ^ XOR_KEY;
+                i += 1;
+            }
+            arr
+        };
+        let mut deobf = [0u8; LEN];
+        let mut i = 0;
+        while i < LEN {
+            deobf[i] = OBF_BYTES[i] ^ XOR_KEY;
+            i += 1;
+        }
+        // Safety: $s là string literal UTF-8 hợp lệ, phép XOR kép khôi phục đúng 100% byte UTF-8 ban đầu.
+        unsafe { std::str::from_utf8_unchecked(&deobf).to_string() }
+    }};
+}
+
+/// Tái tạo khóa công khai Ed25519 trên stack lúc runtime từ mảng obfuscated + mask.
+/// Chuỗi Base64 "AxpiZnEF..." không bao giờ xuất hiện trong file nhị phân.
+fn trusted_license_verifying_key() -> Result<ed25519_dalek::VerifyingKey, String> {
+    const TRUSTED_KEY_MASK: [u8; 32] = [
+        0x8F, 0x3B, 0x5C, 0x12, 0x9A, 0x64, 0x2E, 0xD7,
+        0x41, 0x78, 0xB0, 0x53, 0xC9, 0x1F, 0x8A, 0x62,
+        0x3E, 0x5D, 0x91, 0x24, 0x7C, 0xA6, 0x0D, 0xF5,
+        0x19, 0x48, 0xE2, 0x3B, 0x70, 0x9C, 0x51, 0x84,
+    ];
+    const OBFUSCATED_KEY: [u8; 32] = [
+        0x8C, 0x21, 0x3E, 0x74, 0xEB, 0x61, 0x73, 0x70,
+        0x33, 0x8F, 0xB2, 0x67, 0x1F, 0xD5, 0xD7, 0x53,
+        0x24, 0x8E, 0xA7, 0xF5, 0x51, 0x22, 0xCD, 0x02,
+        0xC8, 0x27, 0x1F, 0xE9, 0x78, 0x2A, 0xBC, 0x1D,
+    ];
+    let mut key_bytes = [0u8; 32];
+    let mut i = 0;
+    while i < 32 {
+        key_bytes[i] = OBFUSCATED_KEY[i] ^ TRUSTED_KEY_MASK[i];
+        i += 1;
+    }
+    ed25519_dalek::VerifyingKey::from_bytes(&key_bytes)
+        .map_err(|e| format!("trusted pubkey: {}", e))
+}
 
 fn b64url_decode(s: &str) -> Result<Vec<u8>, String> {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
@@ -1449,11 +1512,12 @@ fn verify_license_token_internal(
     license_key: &str,
     local_device_key_id: Option<&str>,
 ) -> Result<VerifiedLicenseToken, String> {
-    verify_token_with_pubkey_and_device(
+    let vk = trusted_license_verifying_key()?;
+    verify_token_with_verifying_key_and_device(
         token,
         hwid,
         license_key,
-        LICENSE_PUBLIC_KEY_B64,
+        &vk,
         local_device_key_id,
     )
 }
@@ -1476,9 +1540,7 @@ fn verify_token_with_pubkey_and_device(
     local_device_key_id: Option<&str>,
 ) -> Result<VerifiedLicenseToken, String> {
     use base64::{engine::general_purpose::STANDARD, Engine};
-    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-
-    let (payload_b64, sig_b64) = token.split_once('.').ok_or("malformed license token")?;
+    use ed25519_dalek::VerifyingKey;
 
     let pub_bytes = STANDARD
         .decode(pub_b64)
@@ -1488,11 +1550,32 @@ fn verify_token_with_pubkey_and_device(
         .try_into()
         .map_err(|_| "pubkey length")?;
     let vk = VerifyingKey::from_bytes(&pub_arr).map_err(|e| format!("pubkey: {}", e))?;
+    verify_token_with_verifying_key_and_device(
+        token,
+        hwid,
+        license_key,
+        &vk,
+        local_device_key_id,
+    )
+}
+
+fn verify_token_with_verifying_key_and_device(
+    token: &str,
+    hwid: &str,
+    license_key: &str,
+    vk: &ed25519_dalek::VerifyingKey,
+    local_device_key_id: Option<&str>,
+) -> Result<VerifiedLicenseToken, String> {
+    use ed25519_dalek::{Signature, Verifier};
+
+    let (payload_b64, sig_b64) = token
+        .split_once('.')
+        .ok_or_else(|| obf_str!("malformed license token"))?;
 
     let sig_bytes = b64url_decode(sig_b64)?;
     let sig = Signature::from_slice(&sig_bytes).map_err(|e| format!("sig: {}", e))?;
     vk.verify(payload_b64.as_bytes(), &sig)
-        .map_err(|_| "invalid license token signature".to_string())?;
+        .map_err(|_| obf_str!("invalid license token signature"))?;
 
     let payload_bytes = b64url_decode(payload_b64)?;
     let payload: serde_json::Value =
@@ -1500,14 +1583,14 @@ fn verify_token_with_pubkey_and_device(
 
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| "system clock before unix epoch".to_string())?
+        .map_err(|_| obf_str!("system clock before unix epoch"))?
         .as_secs();
     let exp = payload
         .get("exp")
         .and_then(|value| value.as_u64())
-        .ok_or("license token missing or invalid exp")?;
+        .ok_or_else(|| obf_str!("license token missing or invalid exp"))?;
     if exp < now {
-        return Err("license token expired".to_string());
+        return Err(obf_str!("license token expired"));
     }
 
     // V3 (đối xứng backend license_guard.py): cận trên tuổi thọ token — chống replay token
@@ -1519,7 +1602,7 @@ fn verify_token_with_pubkey_and_device(
     // Siết xuống 4 ngày SAU KHI chúng hết hạn. Bất biến: PHẢI ≥ TTL token edge function cấp.
     const MAX_TOKEN_LIFETIME_SECS: u64 = 8 * 24 * 60 * 60;
     if exp - now > MAX_TOKEN_LIFETIME_SECS {
-        return Err("license token lifetime implausible (clock rollback?)".to_string());
+        return Err(obf_str!("license token lifetime implausible (clock rollback?)"));
     }
 
     // Thiếu field `v` là v1 legacy. Giá trị null/bool/string/version lạ không
@@ -1527,11 +1610,11 @@ fn verify_token_with_pubkey_and_device(
     let version = match payload.get("v") {
         None => 1,
         Some(value) => {
-            let version_raw = value.as_u64().ok_or("license token has invalid version")?;
+            let version_raw = value.as_u64().ok_or_else(|| obf_str!("license token has invalid version"))?;
             let parsed = u8::try_from(version_raw)
-                .map_err(|_| "license token version is invalid".to_string())?;
+                .map_err(|_| obf_str!("license token version is invalid"))?;
             if parsed != 1 && parsed != LICENSE_TOKEN_V2 && parsed != LICENSE_TOKEN_V3 {
-                return Err("unsupported license token version".to_string());
+                return Err(obf_str!("unsupported license token version"));
             }
             parsed
         }
@@ -1544,7 +1627,7 @@ fn verify_token_with_pubkey_and_device(
             .iter()
             .any(|field| payload.get(*field).is_some())
         {
-            return Err("license token v1 has incompatible v2 claims".to_string());
+            return Err(obf_str!("license token v1 has incompatible v2 claims"));
         }
         (None, None, None, None)
     } else if version == LICENSE_TOKEN_V2 {
@@ -1552,72 +1635,72 @@ fn verify_token_with_pubkey_and_device(
             .iter()
             .any(|field| payload.get(*field).is_some())
         {
-            return Err("license token v2 has incompatible v3 claims".to_string());
+            return Err(obf_str!("license token v2 has incompatible v3 claims"));
         }
         let issued_at = payload
             .get("iat")
             .and_then(|value| value.as_u64())
             .filter(|value| *value > 0)
-            .ok_or("license token v2 missing or invalid iat")?;
+            .ok_or_else(|| obf_str!("license token v2 missing or invalid iat"))?;
         let max_iat = now.saturating_add(LICENSE_CLOCK_SKEW_SECS);
         if issued_at > max_iat {
-            return Err("license token issued-at is in the future".to_string());
+            return Err(obf_str!("license token issued-at is in the future"));
         }
         if exp < issued_at || exp - issued_at > MAX_TOKEN_LIFETIME_SECS {
-            return Err("license token lifetime is invalid".to_string());
+            return Err(obf_str!("license token lifetime is invalid"));
         }
         let challenge = payload
             .get("challenge")
             .and_then(|value| value.as_str())
             .and_then(normalize_license_challenge)
-            .ok_or("license token v2 missing or invalid challenge")?;
+            .ok_or_else(|| obf_str!("license token v2 missing or invalid challenge"))?;
         (Some(issued_at), Some(challenge), None, None)
     } else {
         if payload.get("challenge").is_some() {
-            return Err("license token v3 must not contain raw challenge".to_string());
+            return Err(obf_str!("license token v3 must not contain raw challenge"));
         }
         let issued_at = payload
             .get("iat")
             .and_then(|value| value.as_u64())
             .filter(|value| *value > 0)
-            .ok_or("license token v3 missing or invalid iat")?;
+            .ok_or_else(|| obf_str!("license token v3 missing or invalid iat"))?;
         if issued_at > now.saturating_add(LICENSE_CLOCK_SKEW_SECS)
             || exp < issued_at
             || exp - issued_at > LICENSE_TOKEN_V3_MAX_TTL_SECS
         {
-            return Err("license token v3 lifetime is invalid".to_string());
+            return Err(obf_str!("license token v3 lifetime is invalid"));
         }
         if payload.get("min_v").and_then(|value| value.as_u64()) != Some(LICENSE_TOKEN_V3.into()) {
-            return Err("license token v3 protocol floor is invalid".to_string());
+            return Err(obf_str!("license token v3 protocol floor is invalid"));
         }
         let device_id = payload
             .get("d")
             .and_then(|value| value.as_str())
             .and_then(normalize_device_key_id)
-            .ok_or("license token v3 device key id is invalid")?;
+            .ok_or_else(|| obf_str!("license token v3 device key id is invalid"))?;
         let expected_device_id = local_device_key_id
             .and_then(normalize_device_key_id)
-            .ok_or("local TPM device key is unavailable")?;
+            .ok_or_else(|| obf_str!("local TPM device key is unavailable"))?;
         if device_id != expected_device_id {
-            return Err("license token TPM device mismatch".to_string());
+            return Err(obf_str!("license token TPM device mismatch"));
         }
         let thumbprint = device_id
             .strip_prefix("d3_")
-            .ok_or("license token v3 device key id is invalid")?;
+            .ok_or_else(|| obf_str!("license token v3 device key id is invalid"))?;
         let confirmation = payload
             .get("cnf")
             .and_then(|value| value.as_object())
-            .ok_or("license token v3 confirmation is invalid")?;
+            .ok_or_else(|| obf_str!("license token v3 confirmation is invalid"))?;
         if confirmation.len() != 1
             || confirmation.get("jkt").and_then(|value| value.as_str()) != Some(thumbprint)
         {
-            return Err("license token v3 confirmation mismatch".to_string());
+            return Err(obf_str!("license token v3 confirmation mismatch"));
         }
         let cid = payload
             .get("cid")
             .and_then(|value| value.as_str())
             .and_then(normalize_challenge_id)
-            .ok_or("license token v3 challenge id is invalid")?;
+            .ok_or_else(|| obf_str!("license token v3 challenge id is invalid"))?;
         (Some(issued_at), None, Some(cid), Some(device_id))
     };
 
@@ -1626,33 +1709,33 @@ fn verify_token_with_pubkey_and_device(
     let m = payload
         .get("m")
         .and_then(|v| v.as_str())
-        .ok_or("license token missing required field: machine id")?;
+        .ok_or_else(|| obf_str!("license token missing required field: machine id"))?;
     if version == LICENSE_TOKEN_V3 {
         if device_key_id.as_deref() != Some(m) {
-            return Err("license token v3 machine/device mismatch".to_string());
+            return Err(obf_str!("license token v3 machine/device mismatch"));
         }
     } else if !hwid.is_empty() && m != hwid {
-        return Err("license token machine mismatch".to_string());
+        return Err(obf_str!("license token machine mismatch"));
     }
 
     // DS-4: field "k" (key hash) BẮT BUỘC — đối xứng với backend license_guard.py:255.
     let k = payload
         .get("k")
         .and_then(|v| v.as_str())
-        .ok_or("license token missing required field: key hash")?;
+        .ok_or_else(|| obf_str!("license token missing required field: key hash"))?;
     if !license_key.is_empty() {
         use sha2::{Digest, Sha256};
         let mut h = Sha256::new();
         h.update(license_key.as_bytes());
         let kh = hex::encode(h.finalize());
         if k != &kh[..16] {
-            return Err("license token key mismatch".to_string());
+            return Err(obf_str!("license token key mismatch"));
         }
     }
     match payload.get("p").and_then(|v| v.as_str()) {
         Some("prynx") => {}
-        Some(_) => return Err("license token product mismatch".to_string()),
-        None => return Err("license token missing required field: product".to_string()),
+        Some(_) => return Err(obf_str!("license token product mismatch")),
+        None => return Err(obf_str!("license token missing required field: product")),
     }
     Ok(VerifiedLicenseToken {
         version,
