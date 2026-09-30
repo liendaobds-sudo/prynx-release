@@ -1898,7 +1898,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                     || groupingStrategy === 'cluster_tile'
                     || groupingStrategy === 'none'
                         ? groupingStrategy
-                        : 'maximize_area',
+                        : 'free_gang',
                 );
                 s.setAlign(preset.nup.align as NupSettings['align']);
                 s.setClusterMode(preset.nup.clusterMode); s.setClusterCount(preset.nup.clusterCount);

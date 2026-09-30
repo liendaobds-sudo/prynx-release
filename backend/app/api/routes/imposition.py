@@ -1598,7 +1598,7 @@ class PreviewLayoutRequest(BaseModel):
     # default cũ giữ nghĩa "Chia đều diện tích", không âm thầm đổi thành free gang.
     grouping_strategy: Literal[
         "free_gang", "maximize_area", "strict_ratio", "cluster_tile", "none"
-    ] = "maximize_area"
+    ] = "free_gang"
     cluster_sizing_mode: str = "dims"
     cluster_combine_mode: str = "replicate_mixed"
     cluster_nesting: bool = True

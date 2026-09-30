@@ -16,11 +16,11 @@ import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
 import {
     BOX_GROUPS,
-    BOX_VARIANTS,
     BoxGroup,
     BoxVariant,
     countByGroup,
     variantDielineSvg,
+    getAvailableVariants,
     variantMatchesQuery,
 } from '../../lib/dieline/variants';
 import { variantThumbOverride } from './variantThumbs';
@@ -147,7 +147,8 @@ export default function DielineGallery({ onSelect }: DielineGalleryProps) {
 
     // Catalog ~21 mục: lọc thẳng, không cần memo hoá phức tạp hay virtual list.
     const counts = countByGroup();
-    const visible = BOX_VARIANTS.filter(
+    const available = getAvailableVariants();
+    const visible = available.filter(
         (v) => (group === 'all' || v.groups.includes(group)) && variantMatchesQuery(v, query),
     );
 
@@ -185,7 +186,7 @@ export default function DielineGallery({ onSelect }: DielineGalleryProps) {
                 <GroupSidebar
                     active={group}
                     counts={counts}
-                    total={BOX_VARIANTS.length}
+                    total={available.length}
                     onPick={setGroup}
                 />
 

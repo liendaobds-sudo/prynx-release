@@ -111,7 +111,7 @@ exports[`useImposerSettingsStore — characterization (golden) > default state (
   "gapY": 0,
   "gridStrategy": "optimal_auto",
   "gripperMargin": 0,
-  "groupingStrategy": "maximize_area",
+  "groupingStrategy": "free_gang",
   "gutterMargin": 0,
   "impositionUnit": "sticker",
   "interleave": "normal",

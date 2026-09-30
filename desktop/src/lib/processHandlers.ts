@@ -368,8 +368,8 @@ export async function runProcessEngine(
                 // PARITY (audit 2026-08-29 MAP-NEST-04): Tem bế và CNC giữ nguyên
                 // hai intent `free_gang`/`maximize_area`; guillotine chỉ nhận contract cũ.
                 groupingStrategy: (isDieCut || isCnc)
-                    ? settings.groupingStrategy || 'maximize_area'
-                    : (settings.groupingStrategy === 'cluster_tile' ? 'cluster_tile' : 'maximize_area'),
+                    ? settings.groupingStrategy || 'free_gang'
+                    : (settings.groupingStrategy === 'cluster_tile' ? 'cluster_tile' : 'free_gang'),
                 // ═══ Cluster layout (chia cụm trên tờ giấy) ═══
                 clusterMode: settings.clusterMode || 'none',
                 clusterCount: settings.clusterCount || 2,

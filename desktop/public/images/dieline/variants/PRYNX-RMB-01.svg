@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 120" width="320" height="120">
+  <rect width="320" height="120" fill="#ffffff"/>
+  <g transform="translate(91.044, 91.966) scale(0.228, -0.228)">
+    <path d="M 60,60 L 280,60 L 280,220 L 60,220 L 60,60 Z" fill="none" stroke="#dc2626" stroke-width="3.942" stroke-linecap="round" stroke-dasharray="4,2.5"/>
+    <path d="M 60,60 L 60,0 L 280,0 L 280,60 L 340,60 L 340,220 L 280,220 L 280,280 L 60,280 L 60,220 L 0,220 L 0,60 L 60,60 Z" fill="none" stroke="#111827" stroke-width="4.818" stroke-linecap="round"/>
+    <path d="M 120,48 C 120,50.761 117.761,53 115,53 C 112.239,53 110,50.761 110,48 C 110,45.239 112.239,43 115,43 C 117.761,43 120,45.239 120,48 Z" fill="none" stroke="#111827" stroke-width="4.818" stroke-linecap="round"/>
+    <path d="M 230,48 C 230,50.761 227.761,53 225,53 C 222.239,53 220,50.761 220,48 C 220,45.239 222.239,43 225,43 C 227.761,43 230,45.239 230,48 Z" fill="none" stroke="#111827" stroke-width="4.818" stroke-linecap="round"/>
+    <path d="M 365,-81.5 L 589,-81.5 L 589,-46.5" fill="none" stroke="#111827" stroke-width="4.818" stroke-linecap="round"/>
+    <path d="M 589,-46.5 L 365,-46.5" fill="none" stroke="#dc2626" stroke-width="3.942" stroke-linecap="round" stroke-dasharray="4,2.5"/>
+    <path d="M 365,-46.5 L 365,-81.5" fill="none" stroke="#111827" stroke-width="4.818" stroke-linecap="round"/>
+    <path d="M 426,-69.5 C 426,-66.739 423.761,-64.5 421,-64.5 C 418.239,-64.5 416,-66.739 416,-69.5 C 416,-72.261 418.239,-74.5 421,-74.5 C 423.761,-74.5 426,-72.261 426,-69.5 Z" fill="none" stroke="#111827" stroke-width="4.818" stroke-linecap="round"/>
+    <path d="M 538,-69.5 C 538,-66.739 535.761,-64.5 533,-64.5 C 530.239,-64.5 528,-66.739 528,-69.5 C 528,-72.261 530.239,-74.5 533,-74.5 C 535.761,-74.5 538,-72.261 538,-69.5 Z" fill="none" stroke="#111827" stroke-width="4.818" stroke-linecap="round"/>
+    <path d="M 589,-41.5 L 589,122.5" fill="none" stroke="#111827" stroke-width="4.818" stroke-linecap="round"/>
+    <path d="M 589,122.5 L 365,122.5" fill="none" stroke="#dc2626" stroke-width="3.942" stroke-linecap="round" stroke-dasharray="4,2.5"/>
+    <path d="M 365,122.5 L 365,-41.5" fill="none" stroke="#111827" stroke-width="4.818" stroke-linecap="round"/>
+    <path d="M 589,127.5 L 589,192.5" fill="none" stroke="#111827" stroke-width="4.818" stroke-linecap="round"/>
+    <path d="M 589,192.5 L 365,192.5" fill="none" stroke="#dc2626" stroke-width="3.942" stroke-linecap="round" stroke-dasharray="4,2.5"/>
+    <path d="M 365,192.5 L 365,127.5" fill="none" stroke="#111827" stroke-width="4.818" stroke-linecap="round"/>
+    <path d="M 589,197.5 L 589,361.5 L 365,361.5 L 365,197.5" fill="none" stroke="#111827" stroke-width="4.818" stroke-linecap="round"/>
+  </g>
+</svg>

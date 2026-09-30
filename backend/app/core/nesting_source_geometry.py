@@ -8,6 +8,8 @@ SourcePageToCanonical đúng một lần. Không có nhánh fallback theo bbox.
 from __future__ import annotations
 
 import math
+from collections import OrderedDict
+import threading
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -423,6 +425,17 @@ def _default_document_opener(path: str) -> Any:
     return pdf_lib.open(path)
 
 
+_STICKER_GEOMETRY_CACHE: OrderedDict[tuple[str, int], ResolvedSourceGeometry] = OrderedDict()
+_STICKER_GEOMETRY_LOCK = threading.Lock()
+_MAX_STICKER_GEOMETRY_CACHE = 512
+
+
+def clear_sticker_geometry_cache() -> None:
+    """Dùng cho test hoặc khi thu hồi bộ nhớ."""
+    with _STICKER_GEOMETRY_LOCK:
+        _STICKER_GEOMETRY_CACHE.clear()
+
+
 def resolve_sticker_source_geometry(
     pin: PinnedNestingSource,
     page_index: int,
@@ -433,6 +446,15 @@ def resolve_sticker_source_geometry(
     """Resolve đúng một contour Sticker từ trang snapshot, không fallback bbox."""
 
     metadata = _validate_page_metadata(pin, page_index)
+    use_cache = polygon_extractor is None and document_opener is None
+    cache_key = (getattr(pin, "content_hash", "") or str(getattr(pin, "snapshot_path", "")), page_index)
+    if use_cache and cache_key[0]:
+        with _STICKER_GEOMETRY_LOCK:
+            cached = _STICKER_GEOMETRY_CACHE.get(cache_key)
+            if cached is not None:
+                _STICKER_GEOMETRY_CACHE.move_to_end(cache_key)
+                return cached
+
     if polygon_extractor is None:
         from app.workers.nup_diecut import extract_page_die_cut_polygon
 
@@ -456,11 +478,17 @@ def resolve_sticker_source_geometry(
             document.close()
         except Exception:
             pass
-    return ResolvedSourceGeometry(
+    result = ResolvedSourceGeometry(
         page_index=page_index,
         source_kind="sticker",
         polygon=resolved,
     )
+    if use_cache and cache_key[0]:
+        with _STICKER_GEOMETRY_LOCK:
+            _STICKER_GEOMETRY_CACHE[cache_key] = result
+            if len(_STICKER_GEOMETRY_CACHE) > _MAX_STICKER_GEOMETRY_CACHE:
+                _STICKER_GEOMETRY_CACHE.popitem(last=False)
+    return result
 
 
 def resolve_cnc_source_geometry(

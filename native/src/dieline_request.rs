@@ -46,6 +46,13 @@ const NUMERIC_PARAMS: &[&str] = &[
     "WNH",
     "HTH",
     "ABD",
+    // [RIGID-MAGNETIC 2026-09-30] Hộp cứng nam châm carton lạnh.
+    "rigidLip",
+    "rigidFlapH",
+    "rigidTurnIn",
+    "rigidMagnetD",
+    "rigidMagnetOffset",
+    "rigidMagnetCount",
 ];
 const BOOLEAN_PARAMS: &[&str] = &[
     "lockTab",
@@ -131,6 +138,7 @@ pub fn validate_request_json(request_json: &str) -> Result<Value, String> {
             "double_tray",
             "hanging_window",
             "flip_top_tuck",
+            "rigid_magnetic",
         ],
     )?;
     one_of(

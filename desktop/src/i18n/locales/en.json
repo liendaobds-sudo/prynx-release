@@ -986,7 +986,11 @@
 
     "hgb_solid_name": "Hanging box, no window",
 
-    "hgb_solid_desc": "Retail hanging box — solid front for full-coverage print"
+    "hgb_solid_desc": "Retail hanging box — solid front for full-coverage print",
+
+    "rmb_std_name": "Rigid Magnetic Box",
+
+    "rmb_std_desc": "Book-style magnetic box — rigid board inner tray with magnetic closure book cover"
 
   },
 

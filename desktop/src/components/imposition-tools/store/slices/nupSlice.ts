@@ -146,7 +146,7 @@ export const createNupSlice: ImposerSlice<NupSlice> = (set) => ({
                 : Math.min(2, Math.max(0.1, Number(v.thickness) || DEFAULT_CUT_BORDER_CONFIG.thickness)),
         },
     })),
-    groupingStrategy: 'maximize_area',
+    groupingStrategy: 'free_gang',
     setGroupingStrategy: (v) => set({ groupingStrategy: v }),
     clusterCombineMode: 'replicate_mixed',
     setClusterCombineMode: (v) => set({ clusterCombineMode: v }),

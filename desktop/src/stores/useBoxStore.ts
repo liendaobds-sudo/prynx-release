@@ -51,7 +51,8 @@ function isStandingBoxType(boxType: BoxParams['boxType']): boolean {
     return boxType !== 'pizza'
         && boxType !== 'tray'
         && boxType !== 'double_tray'
-        && boxType !== 'flip_top_tuck';
+        && boxType !== 'flip_top_tuck'
+        && boxType !== 'rigid_magnetic';
 }
 
 let generationTimer: ReturnType<typeof setTimeout> | null = null;

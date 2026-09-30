@@ -51,7 +51,7 @@ import { useTranslation } from 'react-i18next';
 /** Mảnh ĐỨNG YÊN của hộp 2 mảnh khi model có `nesting`: vỏ hộp diêm
  *  (sleeve_*) hoặc khay đáy hộp âm dương (base_*). Mảnh còn lại (khay diêm /
  *  nắp lid_*) trượt theo vector nesting cuối hoạt ảnh. [DOUBLE-TRAY 2026-07-26] */
-const isStaticPieceName = (name: string) => name.startsWith('sleeve_') || name.startsWith('base_');
+const isStaticPieceName = (name: string) => name.startsWith('sleeve_') || name.startsWith('base_') || name.startsWith('tray_');
 /** Toàn bộ gấp hoàn tất trước khi bắt đầu lồng/chụp hai mảnh. */
 const NEST_START = 0.8;
 
@@ -184,6 +184,9 @@ function artworkPartForPanel(
     // [DOUBLE-TRAY FIX 2026-07-27 §DT3D-003] Contract split: base=tray, lid=sleeve.
     if (boxType === 'double_tray') {
         return panelName.startsWith('base_') ? 'tray' : 'sleeve';
+    }
+    if (boxType === 'rigid_magnetic') {
+        return panelName.startsWith('tray_') ? 'tray' : 'sleeve';
     }
     return isStaticPieceName(panelName) ? 'sleeve' : 'tray';
 }
@@ -441,7 +444,8 @@ function BoxScene() {
     const outerFaceNegativeZ = params.boxType === 'pizza'
         || params.boxType === 'tray'
         || params.boxType === 'double_tray'
-        || params.boxType === 'flip_top_tuck';
+        || params.boxType === 'flip_top_tuck'
+        || params.boxType === 'rigid_magnetic';
 
     // Khi có `nesting`, dồn toàn bộ GẬP vào [0, NEST_START], rồi dùng đoạn
     // [NEST_START, 1] để chạy choreography lắp khay/nắp. Hộp khác giữ nguyên (foldT =

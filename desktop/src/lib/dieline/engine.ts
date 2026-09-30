@@ -13,6 +13,8 @@ import { generateDoubleTray, splitDoubleTrayDieline } from './DoubleTray';
 import { generateHangingWindowBox } from './HangingWindowBox';
 // [FLIP-TOP-TUCK 2026-08-02 §FTT.2] Hộp nắp lật tự khóa từ khuon-01.svg
 import { generateFlipTopTuckBox } from './FlipTopTuckBox';
+// [RIGID-MAGNETIC 2026-09-30] Hộp cứng nam châm carton lạnh
+import { generateRigidMagneticBox, splitRigidMagneticDieline } from './RigidMagneticBox';
 import { validateParams } from './validateParams';
 import { attachWarnings } from './attachWarnings';
 import { NestingConfig, NestingResult } from './nestingTypes';
@@ -47,6 +49,8 @@ function dispatchGenerator(params: BoxParams): DielineModel {
             return generateHangingWindowBox(params);
         case 'flip_top_tuck':
             return generateFlipTopTuckBox(params);
+        case 'rigid_magnetic':
+            return generateRigidMagneticBox(params);
         case 'rte':
         default:
             return generateReverseTuckEnd(params);
@@ -55,16 +59,21 @@ function dispatchGenerator(params: BoxParams): DielineModel {
 
 /** Các loại hộp 2 mảnh dùng chung hạ tầng nesting khay/vỏ (tray/sleeve).
  *  [DOUBLE-TRAY 2026-07-26] Tổng quát hóa gate cũ (hard-code 'tray'):
- *  double_tray dùng khe tray = mảnh ĐÁY, khe sleeve = mảnh NẮP. */
+ *  double_tray dùng khe tray = mảnh ĐÁY, khe sleeve = mảnh NẮP.
+ *  [RIGID-MAGNETIC 2026-09-30] Hộp cứng dùng khe tray = Khay trong, khe sleeve = Bìa ngoài. */
 function isTwoPieceBoxType(boxType: BoxParams['boxType']): boolean {
-    return boxType === 'tray' || boxType === 'double_tray';
+    return boxType === 'tray' || boxType === 'double_tray' || boxType === 'rigid_magnetic';
 }
 
-/** Tách model 2 mảnh theo loại hộp: khay+vỏ (tray) hoặc đáy+nắp (double_tray). */
+/** Tách model 2 mảnh theo loại hộp: khay+vỏ (tray), đáy+nắp (double_tray), hoặc khay+bìa (rigid_magnetic). */
 function splitTwoPieceDieline(dieline: DielineModel) {
-    return dieline.params.boxType === 'double_tray'
-        ? splitDoubleTrayDieline(dieline)
-        : splitTrayDieline(dieline);
+    if (dieline.params.boxType === 'double_tray') {
+        return splitDoubleTrayDieline(dieline);
+    }
+    if (dieline.params.boxType === 'rigid_magnetic') {
+        return splitRigidMagneticDieline(dieline);
+    }
+    return splitTrayDieline(dieline);
 }
 
 /**

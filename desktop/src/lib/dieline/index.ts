@@ -16,6 +16,8 @@ export type { HangingWindowDims } from './HangingWindowBox';
 // [FLIP-TOP-TUCK 2026-08-02 §FTT.2] Generator + kích thước dẫn xuất PRYNX-FTT-01
 export { generateFlipTopTuckBox, flipTopTuckDims } from './FlipTopTuckBox';
 export type { FlipTopTuckDims } from './FlipTopTuckBox';
+// [RIGID-MAGNETIC 2026-09-30] Generator + hàm tách mảnh PRYNX-RMB-01
+export { generateRigidMagneticBox, splitRigidMagneticDieline } from './RigidMagneticBox';
 export { downloadPDF } from './exportPDF';
 export * from './types';
 export * from './utils';

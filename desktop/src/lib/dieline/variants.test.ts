@@ -32,6 +32,8 @@ import {
     variantsInGroup,
     variantDielineSvg,
     variantMatchesQuery,
+    isVariantAvailable,
+    getAvailableVariants,
 } from './variants';
 import { generateDieline } from './engine';
 import { validateParams } from './validateParams';
@@ -200,6 +202,7 @@ describe('variants — tầng 1: toàn vẹn catalog', () => {
             double_tray: true,
             hanging_window: true,
             flip_top_tuck: true,
+            rigid_magnetic: true,
         };
         const covered = new Set(BOX_VARIANTS.map(v => v.boxType));
         for (const boxType of Object.keys(ALL_BOX_TYPES) as BoxParams['boxType'][]) {
@@ -406,4 +409,30 @@ describe('variants — tầng 4: biến thể cùng boxType phải khác hình t
             }
         }
     }
+});
+
+// ─── Tầng 5 — Kiểm soát cờ devOnly ────────────────────────────
+
+describe('variants — tầng 5: biến thể devOnly bị ẩn ở bản build production', () => {
+    it('PRYNX-RMB-01 có devOnly = true', () => {
+        const rmb = getVariant('rmb_std');
+        expect(rmb).toBeDefined();
+        expect(rmb?.devOnly).toBe(true);
+        expect(isVariantAvailable(rmb!, false)).toBe(false);
+        expect(isVariantAvailable(rmb!, true)).toBe(true);
+    });
+
+    it('ở bản release (isDev=false), rmb_std bị loại khỏi getAvailableVariants và countByGroup', () => {
+        const prodVariants = getAvailableVariants(false);
+        expect(prodVariants.some(v => v.id === 'rmb_std')).toBe(false);
+
+        const prodCounts = countByGroup(false);
+        const devCounts = countByGroup(true);
+        expect(prodCounts.khay_hai_manh).toBe(devCounts.khay_hai_manh - 1);
+    });
+
+    it('ở bản dev (isDev=true), rmb_std xuất hiện bình thường', () => {
+        const devVariants = getAvailableVariants(true);
+        expect(devVariants.some(v => v.id === 'rmb_std')).toBe(true);
+    });
 });

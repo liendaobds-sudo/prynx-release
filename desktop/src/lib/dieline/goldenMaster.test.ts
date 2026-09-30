@@ -30,6 +30,7 @@ import { generateDoubleTray } from './DoubleTray';
 // [HANGING-WINDOW 2026-07-27] Hộp treo có cửa sổ — khoá baseline hình học
 import { generateHangingWindowBox } from './HangingWindowBox';
 import { generateFlipTopTuckBox } from './FlipTopTuckBox';
+import { generateRigidMagneticBox } from './RigidMagneticBox';
 
 /** Dung sai kích thước theo Requirement 4.6 */
 const DIM_TOLERANCE = 0.001; // mm
@@ -117,6 +118,24 @@ const FIXTURES: { name: string; generate: (p: BoxParams) => DielineModel; params
             L: 200, W: 200, D: 60, T: 0.5, C: 0.5,
         }),
     },
+    {
+        // [RIGID-MAGNETIC 2026-09-30] Hộp cứng nam châm carton lạnh chuẩn quà tặng
+        name: 'rigid_magnetic (Hộp cứng nam châm carton lạnh)',
+        generate: generateRigidMagneticBox,
+        params: make({
+            boxType: 'rigid_magnetic',
+            L: 220,
+            W: 160,
+            D: 60,
+            T: 2.0,
+            C: 0.5,
+            rigidLip: 2,
+            rigidFlapH: 35,
+            rigidTurnIn: 15,
+            rigidMagnetD: 10,
+            rigidMagnetOffset: 12,
+        }),
+    },
 ];
 
 /** Dựng mảng chuỗi SVG `d` từ model qua module dùng chung. */
@@ -159,6 +178,7 @@ describe('golden-master: ổn định giá trị kích thước (computeEnvelope
         // chung (không phụ thuộc loại hộp) nên baseline giống các mẫu còn lại.
         'hanging_window (Hộp treo có cửa sổ)': { FH: 50, SF: 13 },
         'flip_top_tuck (Hộp nắp lật tự khóa)': { FH: 50, SF: 13 },
+        'rigid_magnetic (Hộp cứng nam châm carton lạnh)': { FH: 50, SF: 13 },
     };
 
     for (const fx of FIXTURES) {

@@ -351,6 +351,18 @@ export function expectedFlatArea(params: BoxParams): number {
                 + lidFront + baseSides + cornerLocks;
         }
 
+        case 'rigid_magnetic': {
+            // [RIGID-MAGNETIC 2026-08-04] Hộp cứng nam châm: Khay + Bìa cứng gập
+            const lip = params.rigidLip > 0 ? params.rigidLip : 5;
+            const flapH = params.rigidFlapH > 0 ? params.rigidFlapH : 40;
+            const trayArea = L * W + 2 * L * D + 2 * W * D;
+            const bookW = L + 2 * lip;
+            const spineH = D + 2 * T + 1;
+            const bookH = flapH + 2 * (W + lip) + spineH;
+            const bookArea = bookW * bookH;
+            return trayArea + bookArea;
+        }
+
         default:
             return NaN;
     }

@@ -271,7 +271,7 @@ export function unsupportedTrueShapeReason(
   const taskMode = String(intent.taskMode || '').trim().toLowerCase();
   const isStepRepeat = taskMode === 'step_repeat' || taskMode === 'sr' || layoutType === 'repeat';
   const grouping = String(
-    intent.groupingStrategy || (isStepRepeat ? 'none' : 'maximize_area'),
+    intent.groupingStrategy || (isStepRepeat ? 'none' : 'free_gang'),
   ).trim().toLowerCase();
   // PARITY (audit 2026-08-29 MAP-NEST-04): N-up có hai contract độc lập.
   // S&R một mẫu không chia dải và chỉ nhận none/free_gang.

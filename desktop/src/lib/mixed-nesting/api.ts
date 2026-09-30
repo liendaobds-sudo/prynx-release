@@ -495,13 +495,20 @@ export async function waitForNestingPreviewJob(
   jobId: string,
   options: NestingPreviewPollOptions = {},
 ): Promise<NestingPreviewJobStatus> {
-  const intervalMs = options.intervalMs ?? NESTING_PREVIEW_POLL_INTERVAL_MS;
+  const baseInterval = options.intervalMs;
   const sleep = options.sleep ?? sleepNestingPreviewPoll;
+  let attempt = 0;
   for (;;) {
     options.signal?.throwIfAborted();
     const status = await getNestingPreviewJobStatus(jobId, options.signal);
     const keepPolling = options.onStatus?.(status);
     if (status.terminal || keepPolling === false) return status;
+    // PERF (audit 2026-09-30 §ADAPTIVE-POLL): Thăm dò thích ứng (80ms -> 120ms -> 200ms -> 300ms)
+    // để bắt kết quả ngay khi backend tính xong, giảm độ trễ phản hồi.
+    const intervalMs = baseInterval ?? (
+      attempt === 0 ? 80 : attempt === 1 ? 120 : attempt === 2 ? 200 : 300
+    );
+    attempt++;
     await sleep(intervalMs, options.signal);
   }
 }

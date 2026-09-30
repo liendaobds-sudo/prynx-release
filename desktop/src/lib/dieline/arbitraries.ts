@@ -344,6 +344,37 @@ export function arbBoxParams(boxType: GeneratorBoxType): fc.Arbitrary<BoxParams>
                 });
         }
 
+        case 'rigid_magnetic': {
+            return fc
+                .record({
+                    lw: arbLW(80, 500, 60, 400, true),
+                    D: arbBiasedInt(20, 150),
+                    T: arbT(),
+                    C: arbT(),
+                    rigidLip: arbBiasedInt(1, 5),
+                    rigidFlapH: arbAutoSize(25, 60),
+                    rigidTurnIn: arbBiasedInt(10, 25),
+                    rigidMagnetD: fc.constantFrom(8, 10, 12, 15),
+                    rigidMagnetOffset: arbBiasedInt(8, 20),
+                    rigidMagnetCount: fc.constantFrom(0, 1, 2),
+                })
+                .map(r =>
+                    buildValid('rigid_magnetic', {
+                        L: r.lw.L,
+                        W: r.lw.W,
+                        D: r.D,
+                        T: r.T,
+                        C: r.C,
+                        rigidLip: r.rigidLip,
+                        rigidFlapH: r.rigidFlapH,
+                        rigidTurnIn: r.rigidTurnIn,
+                        rigidMagnetD: r.rigidMagnetD,
+                        rigidMagnetOffset: r.rigidMagnetOffset,
+                        rigidMagnetCount: r.rigidMagnetCount,
+                    }),
+                );
+        }
+
         default: {
             // Bảo đảm exhaustiveness ở compile-time
             const _exhaustive: never = boxType;

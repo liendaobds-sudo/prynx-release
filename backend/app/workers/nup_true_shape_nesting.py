@@ -54,7 +54,7 @@ from app.core.nesting_imposition_bundle import (
     DUPLEX_REGISTRATION_STROKE_WIDTH_MM,
 )
 from app.schemas.mixed_nesting import MAX_SHEETS_LIMIT
-from app.core.nesting_order_plan import require_fulfilled_manifest
+from app.core.nesting_order_plan import require_fulfilled_manifest, NestingOrderError
 
 logger = logging.getLogger(__name__)
 
@@ -533,7 +533,7 @@ def _duplex_registration_obstacles(
 def _production_grouping_intent(settings: Mapping[str, Any]) -> str:
     grouping = str(
         settings.get("groupingStrategy")
-        or ("none" if _is_step_repeat(settings) else "maximize_area")
+        or ("none" if _is_step_repeat(settings) else "free_gang")
     ).strip().lower()
     return "maximize_area" if grouping == "maximize_area" else "free_gang"
 
@@ -1458,12 +1458,18 @@ def run_true_shape_nesting(
             job.tool,
             stored.manifest_id,
         )
-        # M72.A (2026-09-19): manifest hợp lệ hình học vẫn có thể thiếu SL.
-        # Chặn trước writer để không tạo artifact thiếu từ phiên preview đã lưu.
+        # M72.A/EXPORT (audit 2026-09-30): Người dùng có toàn quyền quyết định xuất file
+        # (kể cả in thử 1 con/tờ hay còn thiếu tem). Ghi cảnh báo thay vì tự ý chặn xuất file.
         if job.tool == "sticker_imposer" and job.layout_intent == "quantity_fulfillment":
-            require_fulfilled_manifest(
-                {part.part_id: part.quantity for part in job.parts}, stored.manifest,
-            )
+            try:
+                require_fulfilled_manifest(
+                    {part.part_id: part.quantity for part in job.parts}, stored.manifest,
+                )
+            except NestingOrderError as err:
+                logger.warning(
+                    "[NEST_EXPORT] Đơn hàng chưa đủ SL khi xuất file: %s. Tiếp tục xuất theo quyết định của người dùng.",
+                    err,
+                )
         render_started = time.perf_counter()
         render = render_stored_production_nesting(
             stored,
@@ -1568,11 +1574,18 @@ def run_true_shape_nesting(
         job.max_sheets,
         lookup.reused,
     )
-    # M72.A (2026-09-19): cùng chốt SL cho đường không có preview/manifest đã lưu.
+    # M72.A/EXPORT (audit 2026-09-30): Người dùng có toàn quyền quyết định xuất file
+    # (kể cả in thử 1 con/tờ hay còn thiếu tem). Ghi cảnh báo thay vì tự ý chặn xuất file.
     if job.tool == "sticker_imposer" and job.layout_intent == "quantity_fulfillment":
-        require_fulfilled_manifest(
-            {part.part_id: part.quantity for part in job.parts}, solved_manifest,
-        )
+        try:
+            require_fulfilled_manifest(
+                {part.part_id: part.quantity for part in job.parts}, solved_manifest,
+            )
+        except NestingOrderError as err:
+            logger.warning(
+                "[NEST_EXPORT] Đơn hàng chưa đủ SL khi xuất file: %s. Tiếp tục xuất theo quyết định của người dùng.",
+                err,
+            )
     render_started = time.perf_counter()
     render = render_production_nesting_session(
         lookup.session,

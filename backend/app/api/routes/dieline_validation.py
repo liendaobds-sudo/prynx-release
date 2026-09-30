@@ -19,6 +19,8 @@ NUMERIC_PARAMS = {
     # DEFAULT_PARAMS. Không thể làm hỏng caller cũ: runtimeValidation trong engine
     # vốn đã bắt buộc mọi khoá của DEFAULT_PARAMS.
     "ABD",
+    # [RIGID-MAGNETIC 2026-09-30] Hộp cứng nam châm carton lạnh.
+    "rigidLip", "rigidFlapH", "rigidTurnIn", "rigidMagnetD", "rigidMagnetOffset", "rigidMagnetCount",
 }
 BOOLEAN_PARAMS = {
     "lockTab", "handleHoles", "envWindow", "pizzaVent", "pizzaFrontLock", "pizzaCornerLock",
@@ -31,7 +33,7 @@ ENUM_PARAMS: dict[str, set[str]] = {
     # "params.boxType không hợp lệ." dù engine TS/bundle sidecar đã hỗ trợ.
     # Enum này là BẢN SAO của ENUM_VALUES trong desktop/src/lib/dieline/runtimeValidation.ts
     # — thêm loại hộp mới phải sửa ĐỦ HAI ĐẦU.
-    "boxType": {"rte", "slb", "auto_bottom", "gable", "paper_bag", "cup_sleeve", "pizza", "envelope", "tray", "double_tray", "hanging_window", "flip_top_tuck"},
+    "boxType": {"rte", "slb", "auto_bottom", "gable", "paper_bag", "cup_sleeve", "pizza", "envelope", "tray", "double_tray", "hanging_window", "flip_top_tuck", "rigid_magnetic"},
     "panelOrder": {"WLWL", "LWLW"},
     "handleShape": {"oval", "roundRect"},
     "handleY": {"bottom", "center"},

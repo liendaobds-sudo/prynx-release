@@ -1,4 +1,4 @@
-﻿// ============================================================
+// ============================================================
 // Box Variant Catalog — Thư viện biến thể khuôn bế
 // [VARIANT 2026-07-29]
 //
@@ -110,6 +110,8 @@ export interface BoxVariant {
     /** Số đo khởi đầu; người dùng sửa tự do. Bỏ trống = dùng mặc định
      *  theo boxType trong `applyBoxTypeDefaults`. */
     preset?: Partial<BoxParams>;
+    /** Biến thể chỉ bật trong môi trường dev / thử nghiệm, ẩn ở bản build production */
+    devOnly?: boolean;
 }
 
 // ─── Catalog ─────────────────────────────────────────────────
@@ -411,6 +413,22 @@ export const BOX_VARIANTS: readonly BoxVariant[] = [
         lockedParams: { hgbWindow: false },
         preset: { L: 80, W: 30, D: 140, T: 0.5, C: 0.5, G: 15, TH: 15 },
     },
+    // ── Hộp cứng nam châm carton lạnh (Rigid Magnetic Box) ──
+    {
+        id: 'rmb_std',
+        code: 'PRYNX-RMB-01',
+        boxType: 'rigid_magnetic',
+        groups: ['khay_hai_manh'],
+        nameVi: 'Hộp cứng nam châm carton lạnh',
+        descVi: 'Hộp nắp gài nam châm — khay lọt lòng carton lạnh và bìa gập dạng sách hít nam châm',
+        aliases: [
+            'rigid magnetic box', 'hop cung nam cham', 'carton lanh',
+            'hop nap hit nam cham', 'hop qua tang cao cap', 'book box', 'clamshell box',
+        ],
+        lockedParams: {},
+        preset: { L: 220, W: 160, D: 60, T: 2.0, C: 0.5, rigidLip: 2, rigidFlapH: 35, rigidTurnIn: 15, rigidMagnetD: 10, rigidMagnetOffset: 12 },
+        devOnly: true,
+    },
 ] as const;
 
 // ─── Tra cứu ─────────────────────────────────────────────────
@@ -460,21 +478,38 @@ export function isDeviated(variantId: string | null, params: BoxParams): boolean
         .some(k => params[k] !== v.lockedParams[k]);
 }
 
+/** Kiểm tra biến thể có khả dụng trong môi trường hiện tại không (ẩn devOnly ở bản build release) */
+export function isVariantAvailable(
+    v: BoxVariant,
+    isDev = Boolean(import.meta.env?.DEV || import.meta.env?.MODE === 'test'),
+): boolean {
+    if (v.devOnly && !isDev) return false;
+    return true;
+}
+
+/** Danh sách biến thể khả dụng theo môi trường */
+export function getAvailableVariants(
+    isDev = Boolean(import.meta.env?.DEV || import.meta.env?.MODE === 'test'),
+): BoxVariant[] {
+    return BOX_VARIANTS.filter(v => isVariantAvailable(v, isDev));
+}
+
 /** Đếm biến thể mỗi nhóm cho sidebar. Tổng các nhóm LỚN HƠN tổng "Tất cả"
  *  là ĐÚNG — nhóm chồng lấn có chủ ý. */
-export function countByGroup(): Record<BoxGroup, number> {
+export function countByGroup(isDev = Boolean(import.meta.env?.DEV || import.meta.env?.MODE === 'test')): Record<BoxGroup, number> {
     const counts = Object.fromEntries(
         BOX_GROUPS.map(g => [g.id, 0]),
     ) as Record<BoxGroup, number>;
     for (const v of BOX_VARIANTS) {
+        if (!isVariantAvailable(v, isDev)) continue;
         for (const g of v.groups) counts[g] += 1;
     }
     return counts;
 }
 
 /** Biến thể thuộc một nhóm. */
-export function variantsInGroup(group: BoxGroup): BoxVariant[] {
-    return BOX_VARIANTS.filter(v => v.groups.includes(group));
+export function variantsInGroup(group: BoxGroup, isDev = Boolean(import.meta.env?.DEV || import.meta.env?.MODE === 'test')): BoxVariant[] {
+    return BOX_VARIANTS.filter(v => v.groups.includes(group) && isVariantAvailable(v, isDev));
 }
 
 /** Khớp biến thể với từ khoá: bỏ dấu, tách nhiều từ rời (mọi từ đều phải

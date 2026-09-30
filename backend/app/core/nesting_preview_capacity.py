@@ -110,9 +110,7 @@ def settings_from_preview_request(req: Any) -> dict[str, Any]:
         "cncDuplexMarks": bool(getattr(req, "cnc_duplex_marks", False)),
         "taskMode": getattr(req, "task_mode", "nup"),
         "layoutType": getattr(req, "layout_type", None),
-        # PARITY (audit 2026-08-29 MAP-NEST-04): preview/export phải giữ đúng
-        # intent; `maximize_area` không được biến thành free gang vì mapper làm rơi field.
-        "groupingStrategy": getattr(req, "grouping_strategy", None) or "maximize_area",
+        "groupingStrategy": getattr(req, "grouping_strategy", None) or "free_gang",
         "page_sheet_mode": bool(getattr(req, "page_sheet_mode", False)),
         "sheetWidth": _mm(getattr(req, "sheet_w", 0)),
         "sheetHeight": _mm(getattr(req, "sheet_h", 0)),
@@ -557,39 +555,73 @@ def build_nesting_preview(
     # M72.D: gang đủ SL phải xem được mọi BỐ CỤC, không chỉ tờ 0.
     # Dùng recipe lossless của writer để 8 bố cục x 100 lần vẫn chỉ gửi 8 hình.
     if job.tool == "sticker_imposer" and job.layout_intent == "quantity_fulfillment":
-        from app.core.nesting_order_plan import require_fulfilled_manifest
+        from app.core.nesting_order_plan import require_fulfilled_manifest, NestingOrderError
         from app.workers.nesting_imposition_render import production_sheet_recipes
 
         requested = {part.part_id: part.quantity for part in job.parts}
-        require_fulfilled_manifest(requested, manifest)
-        recipes = production_sheet_recipes(
-            manifest, render_bundle=bundle, render_bundle_hash=production.render_bundle_hash,
-        )
-        sheets = []
-        for sheet_index, run_count in recipes:
-            sheet_cells = cells if sheet_index == 0 else _project_sheet_cells(
-                job, session, sheet_index=sheet_index,
+        try:
+            require_fulfilled_manifest(requested, manifest)
+            recipes = production_sheet_recipes(
+                manifest, render_bundle=bundle, render_bundle_hash=production.render_bundle_hash,
             )
-            sheets.append({
-                "cells": sheet_cells,
-                "totalItems": len(sheet_cells),
-                "overallWidth": response["overallWidth"],
-                "overallHeight": response["overallHeight"],
-                "physicalSheetIndex": sheet_index,
-                "runCount": run_count,
-                "absPlacement": True,
-                "coordinateSpace": "sheet_abs_pt",
-            })
-        response.update(
-            sheets=sheets,
-            totalItems=len(cells),
-            orderSummary={
-                "templateCount": len(recipes),
-                "physicalSheetCount": sum(runs for _, runs in recipes),
-                "requestedCount": sum(requested.values()),
-                "placedCount": len(manifest["placements"]),
-            },
-        )
+            sheets = []
+            for sheet_index, run_count in recipes:
+                sheet_cells = cells if sheet_index == 0 else _project_sheet_cells(
+                    job, session, sheet_index=sheet_index,
+                )
+                sheets.append({
+                    "cells": sheet_cells,
+                    "totalItems": len(sheet_cells),
+                    "overallWidth": response["overallWidth"],
+                    "overallHeight": response["overallHeight"],
+                    "physicalSheetIndex": sheet_index,
+                    "runCount": run_count,
+                    "absPlacement": True,
+                    "coordinateSpace": "sheet_abs_pt",
+                })
+            response.update(
+                sheets=sheets,
+                totalItems=len(cells),
+                orderSummary={
+                    "templateCount": len(recipes),
+                    "physicalSheetCount": sum(runs for _, runs in recipes),
+                    "requestedCount": sum(requested.values()),
+                    "placedCount": len(manifest.get("placements") or []),
+                },
+            )
+        except NestingOrderError as err:
+            # PREVIEW (audit 2026-09-30): Preview không được crash khi đơn hàng chưa đủ SL.
+            # Vẫn hiển thị các ô/tờ đã xếp được và thêm cảnh báo (warning) để người dùng
+            # nhìn thấy bố cục trực quan và biết cần điều chỉnh khổ giấy hoặc thiết lập.
+            logger.warning("[NEST_PREVIEW] Đơn hàng chưa đủ SL trên preview: %s", err)
+            placements = manifest.get("placements") or []
+            sheet_count = max(1, session_sheet_count(session))
+            sheets = []
+            for sheet_idx in range(sheet_count):
+                sheet_cells = cells if sheet_idx == 0 else _project_sheet_cells(
+                    job, session, sheet_index=sheet_idx,
+                )
+                sheets.append({
+                    "cells": sheet_cells,
+                    "totalItems": len(sheet_cells),
+                    "overallWidth": response["overallWidth"],
+                    "overallHeight": response["overallHeight"],
+                    "physicalSheetIndex": sheet_idx,
+                    "runCount": 1,
+                    "absPlacement": True,
+                    "coordinateSpace": "sheet_abs_pt",
+                })
+            response.update(
+                sheets=sheets,
+                totalItems=len(cells),
+                orderSummary={
+                    "templateCount": sheet_count,
+                    "physicalSheetCount": sheet_count,
+                    "requestedCount": sum(requested.values()),
+                    "placedCount": len(placements),
+                },
+                warnings=[str(err)],
+            )
     if trace_enabled:
         runtime_diagnostics = session.solved.runtime_diagnostics
         native_phase_timings = runtime_diagnostics.get("phaseTimings")

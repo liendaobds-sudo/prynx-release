@@ -158,3 +158,72 @@ def test_zero_overrides_do_not_switch_fulfillment_into_autofill(tmp_path):
     request = _request(2, 1).model_copy(update={"target_quantities_by_page": {"0": 0, "1": 0}})
     with pytest.raises(ValueError, match="Không có mẫu nào"):
         build_nesting_preview(request, source_path=source)
+
+
+def test_partial_order_preview_does_not_crash_and_returns_warning(tmp_path, monkeypatch):
+    from app.core.nesting_order_plan import NestingOrderError
+
+    source = _source(tmp_path / "13-khuon.pdf", 13)
+    request = _request(13, 1)
+
+    def fake_require_fulfilled(requested, manifest):
+        raise NestingOrderError(
+            "Đơn hàng chưa đủ: mới xếp 1/13 tem, còn thiếu 12 tem. "
+            "Chưa thể xuất file sản xuất; hãy tiếp tục tính hoặc kiểm tra khổ giấy và thiết lập xếp."
+        )
+
+    monkeypatch.setattr(
+        "app.core.nesting_order_plan.require_fulfilled_manifest", fake_require_fulfilled
+    )
+    preview = build_nesting_preview(request, source_path=source)
+    assert preview["success"] is True
+    assert "warnings" in preview
+    assert len(preview["warnings"]) == 1
+    assert "mới xếp 1/13 tem, còn thiếu 12 tem" in preview["warnings"][0]
+    assert preview["orderSummary"]["requestedCount"] == 13
+    assert len(preview["sheets"]) >= 1
+    assert len(preview["cells"]) >= 1
+
+def test_13_parts_default_free_gang_places_all(tmp_path):
+    source = _source(tmp_path / "13-items.pdf", 13)
+    # Không khai grouping_strategy để kiểm tra giá trị mặc định là free_gang
+    request = PreviewLayoutRequest(
+        usable_w=300*MM, usable_h=400*MM, sheet_w=320*MM, sheet_h=420*MM,
+        margin_left=10*MM, margin_right=10*MM, margin_top=10*MM, margin_bottom=10*MM,
+        item_w=50*MM, item_h=50*MM, gap_x=2*MM, gap_y=2*MM, bleed=0,
+        strategy="true_shape_nesting", task_mode="nup", layout_type="sequential",
+        is_die_cut=True, target_quantity=1,
+        detected_shapes_by_page={str(i): "CUSTOM" for i in range(13)},
+        pont_type="none", separate_cut_page=True, export_unique_sheets=True,
+    )
+    preview = build_nesting_preview(request, source_path=source)
+    assert preview["success"] is True
+    assert preview.get("warnings") is None or len(preview.get("warnings")) == 0
+    assert preview["orderSummary"]["placedCount"] == 13
+    assert preview["orderSummary"]["requestedCount"] == 13
+    assert len(preview["sheets"]) == 1
+
+
+def test_export_does_not_block_when_quantity_unfulfilled(tmp_path, monkeypatch):
+    from app.core.nesting_order_plan import NestingOrderError
+
+    source = _source(tmp_path / "export-unfulfilled.pdf", 13)
+    request = _request(13, 1)
+
+    # Dựng preview để có session trong store
+    build_nesting_preview(request, source_path=source)
+
+    # Giả lập require_fulfilled_manifest bị thiếu SL
+    def fake_require_fulfilled(requested, manifest):
+        raise NestingOrderError("Đơn hàng chưa đủ SL test")
+
+    monkeypatch.setattr(
+        "app.workers.nup_true_shape_nesting.require_fulfilled_manifest", fake_require_fulfilled
+    )
+
+    output = tmp_path / "export-allowed.pdf"
+    settings = settings_from_preview_request(request)
+    report = run_true_shape_nesting(source, str(output), settings)
+    assert Path(output).exists()
+    assert Path(output).stat().st_size > 0
+

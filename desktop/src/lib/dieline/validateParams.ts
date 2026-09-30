@@ -62,6 +62,13 @@ const LIMITS = {
     WNW: { min: 0, max: 600 },
     WNH: { min: 0, max: 600 },
     HTH: { min: 0, max: HGB_TAB_H_MAX },
+    // [RIGID-MAGNETIC 2026-09-30] Hộp cứng nam châm carton lạnh
+    rigidLip: { min: 0, max: 20 },
+    rigidFlapH: { min: 0, max: 300 },
+    rigidTurnIn: { min: 5, max: 50 },
+    rigidMagnetD: { min: 5, max: 30 },
+    rigidMagnetOffset: { min: 5, max: 50 },
+    rigidMagnetCount: { min: 0, max: 5 },
 } as const;
 
 type NumericKey = keyof typeof LIMITS;
@@ -97,8 +104,8 @@ export function validateParams(
         }
     }
 
-    // --- 2. Ràng buộc: W ≤ L (các loại khay/nắp lật cho phép L, W độc lập) ---
-    if (p.W > p.L && p.boxType !== 'pizza' && p.boxType !== 'tray' && p.boxType !== 'double_tray' && p.boxType !== 'flip_top_tuck') {
+    // --- 2. Ràng buộc: W ≤ L (các loại khay/nắp lật/hộp cứng cho phép L, W độc lập) ---
+    if (p.W > p.L && p.boxType !== 'pizza' && p.boxType !== 'tray' && p.boxType !== 'double_tray' && p.boxType !== 'flip_top_tuck' && p.boxType !== 'rigid_magnetic') {
         if (changedKey === 'W') {
             // Nếu user đang chỉnh W → tự động tăng L lên bằng W
             p.L = clamp(p.W, LIMITS.L.min, LIMITS.L.max);

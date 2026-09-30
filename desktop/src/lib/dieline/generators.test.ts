@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { generateReverseTuckEnd } from './ReverseTuckEnd';
 import { generateSnapLockBottom } from './SnapLockBottom';
+import { generateRigidMagneticBox, splitRigidMagneticDieline } from './RigidMagneticBox';
 import { DEFAULT_PARAMS, BoxParams, DielineModel } from './types';
 
 // Helper to create params with overrides
@@ -1244,3 +1245,97 @@ describe('generateFlipTopTuckBox', () => {
         expect(large.boundingBox.height).toBeGreaterThan(small.boundingBox.height);
     });
 });
+
+describe('RigidMagneticBox (PRYNX-RMB-01)', () => {
+    const P = {
+        boxType: 'rigid_magnetic' as const,
+        L: 220,
+        W: 160,
+        D: 60,
+        T: 2.0,
+        rigidLip: 2,
+        rigidFlapH: 35,
+        rigidTurnIn: 15,
+        rigidMagnetD: 10,
+        rigidMagnetOffset: 12,
+    };
+
+    it('sinh model hợp lệ với đúng 9 panel (5 khay trong + 4 bìa ngoài)', () => {
+        const model = generateRigidMagneticBox(make(P));
+        assertValidDieline(model);
+        expect(model.name).toContain('Hộp cứng nam châm');
+        expect(model.standardCode).toBe('RIGID-BOOK-MAG');
+        expect(model.panels).toHaveLength(9);
+
+        const names = model.panels.map(p => p.name);
+        expect(names).toEqual([
+            'tray_bottom',
+            'tray_front',
+            'tray_right',
+            'tray_back',
+            'tray_left',
+            'cover_flap',
+            'cover_top',
+            'cover_spine',
+            'cover_bottom',
+        ]);
+    });
+
+    it('cây động học cha-con 3D đúng chuẩn cho cả khay và bìa', () => {
+        const model = generateRigidMagneticBox(make(P));
+        const byName = new Map(model.panels.map(p => [p.name, p]));
+
+        // Khay lọt lòng: đáy là gốc, 4 vách gập 90°
+        expect(byName.get('tray_bottom')!.parent).toBeNull();
+        for (const wall of ['tray_front', 'tray_right', 'tray_back', 'tray_left']) {
+            const p = byName.get(wall)!;
+            expect(p.parent).toBe('tray_bottom');
+            expect(p.foldAngle).toBe(90);
+            expect(p.pivotEdge).toBeDefined();
+        }
+
+        // Bìa ngoài dạng sách: đáy là gốc, gáy gập 90°, nắp gập 90°, tai gập 90°
+        expect(byName.get('cover_bottom')!.parent).toBeNull();
+        expect(byName.get('cover_spine')!.parent).toBe('cover_bottom');
+        expect(byName.get('cover_spine')!.foldAngle).toBe(90);
+        expect(byName.get('cover_top')!.parent).toBe('cover_spine');
+        expect(byName.get('cover_top')!.foldAngle).toBe(90);
+        expect(byName.get('cover_flap')!.parent).toBe('cover_top');
+        expect(byName.get('cover_flap')!.foldAngle).toBe(90);
+    });
+
+    it('lỗ nam châm tự động: 2 viên khi L >= 180, 1 viên khi L < 180', () => {
+        const large = generateRigidMagneticBox(make({ ...P, L: 220 }));
+        const tfLarge = large.panels.find(p => p.name === 'tray_front')!;
+        const cfLarge = large.panels.find(p => p.name === 'cover_flap')!;
+        expect(tfLarge.holes).toHaveLength(2);
+        expect(cfLarge.holes).toHaveLength(2);
+
+        const small = generateRigidMagneticBox(make({ ...P, L: 140 }));
+        const tfSmall = small.panels.find(p => p.name === 'tray_front')!;
+        const cfSmall = small.panels.find(p => p.name === 'cover_flap')!;
+        expect(tfSmall.holes).toHaveLength(1);
+        expect(cfSmall.holes).toHaveLength(1);
+    });
+
+    it('splitRigidMagneticDieline tách đúng 2 cụm khay (5 panel) và bìa (4 panel)', () => {
+        const model = generateRigidMagneticBox(make(P));
+        const split = splitRigidMagneticDieline(model);
+        expect(split).not.toBeNull();
+        expect(split!.tray.panels).toHaveLength(5);
+        expect(split!.sleeve.panels).toHaveLength(4);
+        expect(split!.tray.panels.every(p => p.name.startsWith('tray_'))).toBe(true);
+        expect(split!.sleeve.panels.every(p => p.name.startsWith('cover_'))).toBe(true);
+        expect(split!.tray.boundingBox.width).toBeLessThan(model.boundingBox.width);
+        expect(split!.sleeve.boundingBox.width).toBeLessThan(model.boundingBox.width);
+    });
+
+    it('DielineNesting định vị bìa ngoài khớp dưới đáy khay', () => {
+        const model = generateRigidMagneticBox(make(P));
+        expect(model.nesting).toBeDefined();
+        expect(model.nesting!.z).toBeCloseTo(-P.T, 1);
+        expect(Number.isFinite(model.nesting!.x)).toBe(true);
+        expect(Number.isFinite(model.nesting!.y)).toBe(true);
+    });
+});
+

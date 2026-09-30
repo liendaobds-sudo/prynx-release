@@ -222,3 +222,24 @@ export const FTT_CENTER_SHOULDER_RATIO = 1 / 10;
 export const FTT_FRONT_LIP_TAPER_DEG = 10;
 /** Bán kính bo mép trước thấp = D/6 (mẫu 10 mm). */
 export const FTT_FRONT_LIP_RADIUS_RATIO = 1 / 6;
+
+// --- Rigid Magnetic Box (Hộp cứng nam châm carton lạnh) ---
+/** Độ nhô mép bìa mặc định so với thân khay (mm) */
+export const RMB_DEFAULT_LIP_MM = 2.0;
+/** Độ rộng mép bẻ giấy áo bọc quanh carton lạnh mặc định (mm) */
+export const RMB_DEFAULT_TURN_IN_MM = 15.0;
+/** Chiều cao tai nắp gài nam châm mặc định khi chọn tự động (mm) */
+export const RMB_DEFAULT_FLAP_H_MM = 35.0;
+/** Khe hở gáy carton lạnh giữa các tấm bìa = tỷ lệ này × T (mm) */
+export const RMB_SPINE_GAP_RATIO = 2.0;
+/** Bổ sung khe hở gáy tối thiểu (mm) */
+export const RMB_SPINE_GAP_BASE_MM = 1.0;
+/** Đường kính lỗ khoét nam châm mặc định (mm) */
+export const RMB_MAGNET_DEFAULT_D_MM = 10.0;
+/** Khoảng cách tâm lỗ nam châm từ mép ngoài tai gập mặc định (mm) */
+export const RMB_MAGNET_DEFAULT_OFFSET_MM = 12.0;
+/** Ngưỡng chiều dài L để tự động chuyển từ 1 nam châm (giữa) sang 2 nam châm (2 bên) (mm) */
+export const RMB_AUTO_MAGNET_L_THRESHOLD = 180.0;
+/** Khoảng cách hiển thị giữa cụm Khay và cụm Bìa trên bản vẽ phẳng 2D (mm) */
+export const RMB_DISPLAY_GAP = 25.0;
+

@@ -32,6 +32,7 @@ import { generateDoubleTray } from './DoubleTray';
 // [HANGING-WINDOW 2026-07-27] Hộp treo có cửa sổ
 import { generateHangingWindowBox } from './HangingWindowBox';
 import { generateFlipTopTuckBox } from './FlipTopTuckBox';
+import { generateRigidMagneticBox } from './RigidMagneticBox';
 // ─── Dispatch boxType → generator ───────────────────────────
 const GENERATORS: Record<GeneratorBoxType, (p: BoxParams) => DielineModel> = {
     rte: generateReverseTuckEnd,
@@ -47,6 +48,7 @@ const GENERATORS: Record<GeneratorBoxType, (p: BoxParams) => DielineModel> = {
     // [HANGING-WINDOW 2026-07-27] Đăng ký generator hộp treo có cửa sổ
     hanging_window: generateHangingWindowBox,
     flip_top_tuck: generateFlipTopTuckBox,
+    rigid_magnetic: generateRigidMagneticBox,
 };
 
 const ALL_TYPES: GeneratorBoxType[] = [

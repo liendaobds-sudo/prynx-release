@@ -161,7 +161,7 @@ export interface BoxParams {
     /** Vị trí tai dán: 'left' hoặc 'right', mặc định 'left' */
     glueSide: 'left' | 'right';
     /** Loại hộp: 'rte' = Reverse Tuck End, 'slb' = Snap-Lock Bottom, 'auto_bottom' = Hộp đáy dán tự động, 'gable' = Gable Box, 'paper_bag' = Túi giấy SOS, 'cup_sleeve' = Bọc ly, 'pizza' = Pizza Box FEFCO 0426, 'envelope' = Bì thư, 'tray' = Hộp diêm / Khay, 'double_tray' = Hộp âm dương (khay + nắp chụp), 'hanging_window' = Hộp treo có cửa sổ (nắp gài + tai treo euro), 'flip_top_tuck' = Hộp nắp lật tự khóa, gài mặt trước */
-    boxType: 'rte' | 'slb' | 'auto_bottom' | 'gable' | 'paper_bag' | 'cup_sleeve' | 'pizza' | 'envelope' | 'tray' | 'double_tray' | 'hanging_window' | 'flip_top_tuck';
+    boxType: 'rte' | 'slb' | 'auto_bottom' | 'gable' | 'paper_bag' | 'cup_sleeve' | 'pizza' | 'envelope' | 'tray' | 'double_tray' | 'hanging_window' | 'flip_top_tuck' | 'rigid_magnetic';
     /** Thứ tự panel: 'WLWL' = Hông→Mặt→Hông→Lưng, 'LWLW' = Mặt→Hông→Lưng→Hông */
     panelOrder: 'WLWL' | 'LWLW';
     /** Chiều cao phần tay cầm vượt khỏi cạnh trên thân hộp (mm), mặc định 40 */
@@ -292,6 +292,19 @@ export interface BoxParams {
     pizzaFrontLock: boolean;
     /** Bật/tắt chấu khóa góc (xếp chồng / tăng cứng) */
     pizzaCornerLock: boolean;
+    // ── Rigid Magnetic Box (Hộp cứng nam châm carton lạnh) params ──
+    /** Độ nhô mép bìa so với khay (mm), mặc định 2 */
+    rigidLip: number;
+    /** Chiều cao tai nắp gài nam châm (mm), 0 = tự động (min(50, max(25, D * 0.6))) */
+    rigidFlapH: number;
+    /** Chiều rộng mép bẻ giấy áo bọc quanh bìa (turn-in, mm), mặc định 15 */
+    rigidTurnIn: number;
+    /** Đường kính lỗ khoét nam châm (mm), mặc định 10 */
+    rigidMagnetD: number;
+    /** Khoảng cách tâm nam châm từ mép ngoài tai gập (mm), mặc định 12 */
+    rigidMagnetOffset: number;
+    /** Số lượng nam châm: 0 = tự động theo L (<180mm: 1 viên; >=180mm: 2 viên), 1 hoặc 2 */
+    rigidMagnetCount: number;
 }
 
 /** Giá trị mặc định cho BoxParams */
@@ -357,6 +370,12 @@ export const DEFAULT_PARAMS: BoxParams = {
     pizzaVentD: 0,
     pizzaFrontLock: true,
     pizzaCornerLock: true,
+    rigidLip: 2,
+    rigidFlapH: 0,
+    rigidTurnIn: 15,
+    rigidMagnetD: 10,
+    rigidMagnetOffset: 12,
+    rigidMagnetCount: 0,
 };
 
 /** Thông tin metadata của loại hộp (để build thư viện) */

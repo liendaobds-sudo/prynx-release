@@ -14,6 +14,7 @@ import {
     isDeviated,
     isParamLocked,
     isSectionLocked,
+    isVariantAvailable,
 } from '../../lib/dieline/variants';
 import MockupArtworkPanel from './MockupArtworkPanel';
 import { useTranslation } from 'react-i18next';
@@ -86,6 +87,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
     const isDoubleTray = params.boxType === 'double_tray'; // [DOUBLE-TRAY 2026-07-26]
     const isHangingWindow = params.boxType === 'hanging_window'; // [HANGING-WINDOW 2026-07-27]
     const isFlipTopTuck = params.boxType === 'flip_top_tuck'; // [FLIP-TOP-TUCK 2026-08-02 §FTT.4]
+    const isRigidMagnetic = params.boxType === 'rigid_magnetic'; // [RIGID-MAGNETIC 2026-08-04]
     // [HANGING-WINDOW 2026-07-27] Hộp treo dùng chung thân/mí keo/thứ tự mặt với RTE
     // nên vào cùng nhóm "hộp truyền thống" để hiện toggle vị trí tai dán & thứ tự mặt.
     const isBox = isRTE || isSLB || isAutoBottom || isGable || isPizza || isTray || isHangingWindow; // Traditional box types
@@ -124,7 +126,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                         <option value="">{t('dieline.param:chua_chon_mau_khuon')}</option>
                     )}
                     {BOX_GROUPS.map((g) => {
-                        const items = BOX_VARIANTS.filter((v) => v.groups[0] === g.id);
+                        const items = BOX_VARIANTS.filter((v) => isVariantAvailable(v) && v.groups[0] === g.id);
                         if (items.length === 0) return null;
                         return (
                             <optgroup key={g.id} label={tv(g.nameVi, 'dieline.variant')}>
@@ -614,8 +616,111 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
                 </div>
             )}
 
+            {/* ─── Rigid Magnetic Box (Hộp cứng nam châm) Params ─── [RIGID-MAGNETIC 2026-08-04] */}
+            {isRigidMagnetic && (
+                <div className="dt-params-section">
+                    <label className="dt-section-label">{t('dieline.param:kich_thuoc_chinh')}</label>
+                    <p className="dt-param-desc" style={{ marginBottom: '0.5rem', opacity: 0.7 }}>
+                        Khay lọt lòng (Dài L × Rộng W × Sâu D), bìa cứng carton lạnh dày T và mép thò bìa
+                    </p>
+                    <div className="dt-param-grid">
+                        {[
+                            { key: 'L' as const, label: 'Dài khay (L)', min: 30, max: 500, step: 1, unit: 'mm' },
+                            { key: 'W' as const, label: 'Rộng khay (W)', min: 20, max: 400, step: 1, unit: 'mm' },
+                            { key: 'D' as const, label: 'Sâu khay (D)', min: 10, max: 200, step: 1, unit: 'mm' },
+                            { key: 'T' as const, label: 'Dày carton lạnh (T)', min: 1, max: 5, step: 0.5, unit: 'mm' },
+                            { key: 'rigidLip' as const, label: 'Mép thò bìa ngoài', min: 1, max: 20, step: 0.5, unit: 'mm' },
+                            { key: 'rigidFlapH' as const, label: 'Bản nắp gập nam châm', min: 20, max: 150, step: 1, unit: 'mm' },
+                            { key: 'rigidTurnIn' as const, label: 'Mép gấp bọc bồi', min: 10, max: 30, step: 1, unit: 'mm' },
+                        ].map((cfg) => (
+                            <div key={cfg.key} className="dt-param-cell">
+                                <label className="dt-param-cell-label">{tv(cfg.label)}</label>
+                                <input
+                                    type="number"
+                                    defaultValue={params[cfg.key] as number}
+                                    key={`${cfg.key}-${params[cfg.key]}-${clampVersion}`}
+                                    min={cfg.min}
+                                    max={cfg.max}
+                                    step={cfg.step}
+                                    className="dt-param-input"
+                                    style={{ textAlign: 'right' }}
+                                    onBlur={(e) => {
+                                        const v = parseFloat(e.target.value);
+                                        if (!isNaN(v)) setParam(cfg.key, v);
+                                    }}
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter') {
+                                            const v = parseFloat((e.target as HTMLInputElement).value);
+                                            if (!isNaN(v)) setParam(cfg.key, v);
+                                            (e.target as HTMLInputElement).blur();
+                                        }
+                                    }}
+                                />
+                                <span className="dt-param-cell-unit">{cfg.unit}</span>
+                            </div>
+                        ))}
+                    </div>
+
+                    {/* Cụm thông số nam châm */}
+                    <div style={{ marginTop: '0.75rem' }}>
+                        <div className="dt-param-slider">
+                            <div className="dt-param-header">
+                                <label className="dt-param-label">Số lượng viên nam châm</label>
+                            </div>
+                            <div className="dt-glue-side-toggle">
+                                <button
+                                    className={`dt-glue-side-btn ${params.rigidMagnetCount === 1 ? 'active' : ''}`}
+                                    onClick={() => setParam('rigidMagnetCount', 1)}
+                                >
+                                    1 viên (ở giữa)
+                                </button>
+                                <button
+                                    className={`dt-glue-side-btn ${params.rigidMagnetCount === 2 ? 'active' : ''}`}
+                                    onClick={() => setParam('rigidMagnetCount', 2)}
+                                >
+                                    2 viên (hai bên)
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="dt-param-grid" style={{ marginTop: '0.5rem' }}>
+                            {[
+                                { key: 'rigidMagnetD' as const, label: 'Đường kính nam châm', min: 8, max: 25, step: 0.5, unit: 'mm' },
+                                { key: 'rigidMagnetOffset' as const, label: 'Cách mép nắp', min: 10, max: 50, step: 1, unit: 'mm' },
+                            ].map((cfg) => (
+                                <div key={cfg.key} className="dt-param-cell">
+                                    <label className="dt-param-cell-label">{tv(cfg.label)}</label>
+                                    <input
+                                        type="number"
+                                        defaultValue={params[cfg.key] as number}
+                                        key={`${cfg.key}-${params[cfg.key]}-${clampVersion}`}
+                                        min={cfg.min}
+                                        max={cfg.max}
+                                        step={cfg.step}
+                                        className="dt-param-input"
+                                        style={{ textAlign: 'right' }}
+                                        onBlur={(e) => {
+                                            const v = parseFloat(e.target.value);
+                                            if (!isNaN(v)) setParam(cfg.key, v);
+                                        }}
+                                        onKeyDown={(e) => {
+                                            if (e.key === 'Enter') {
+                                                const v = parseFloat((e.target as HTMLInputElement).value);
+                                                if (!isNaN(v)) setParam(cfg.key, v);
+                                                (e.target as HTMLInputElement).blur();
+                                            }
+                                        }}
+                                    />
+                                    <span className="dt-param-cell-unit">{cfg.unit}</span>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Main Params — 2×2 grid (box/bag types only) */}
-            {!isCupSleeve && !isEnvelope && !isTray && !isDoubleTray && (
+            {!isCupSleeve && !isEnvelope && !isTray && !isDoubleTray && !isRigidMagnetic && (
                 <div className="dt-params-section">
                     <label className="dt-section-label">{t('dieline.param:kich_thuoc_chinh')}</label>
                     <p className="dt-param-desc" style={{ marginBottom: '0.5rem', opacity: 0.7 }}>
@@ -815,7 +920,7 @@ export default function ParamPanel({ onBack }: { onBack?: () => void } = {}) {
             })()}
 
             {/* Advanced Toggle — not for cup sleeve */}
-            {!isCupSleeve && !isEnvelope && !isTray && !isDoubleTray && (
+            {!isCupSleeve && !isEnvelope && !isTray && !isDoubleTray && !isRigidMagnetic && (
                 <button
                     className="dt-advanced-toggle"
                     onClick={() => setShowAdvanced(!showAdvanced)}
