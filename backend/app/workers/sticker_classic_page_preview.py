@@ -269,6 +269,76 @@ def _cut_operations_svg(operations, width_pt, height_pt, preview_width, preview_
     return " ".join(commands)
 
 
+def _extract_contour_boxes(operations, width_pt, height_pt, preview_width, preview_height):
+    """Trích xuất bounding box (mm và preview px) của từng khuôn bế trên trang (bỏ qua lỗ)."""
+    loops = []
+    current_pts = []
+    for op, values in operations:
+        if op == "M":
+            if current_pts:
+                loops.append(current_pts)
+                current_pts = []
+            if len(values) >= 2:
+                current_pts.append((values[0], values[1]))
+        elif op in ("L", "C"):
+            if len(values) >= 2:
+                current_pts.append((values[-2], values[-1]))
+        elif op == "Z":
+            if current_pts:
+                loops.append(current_pts)
+                current_pts = []
+    if current_pts:
+        loops.append(current_pts)
+
+    raw_boxes = []
+    for pts in loops:
+        if not pts:
+            continue
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        w_pt = max_x - min_x
+        h_pt = max_y - min_y
+        if w_pt < 1.0 or h_pt < 1.0:
+            continue
+        raw_boxes.append((min_x, min_y, max_x, max_y, w_pt, h_pt))
+
+    sticker_boxes = []
+    for i, b1 in enumerate(raw_boxes):
+        is_hole = False
+        for j, b2 in enumerate(raw_boxes):
+            if i != j:
+                if (b1[0] >= b2[0] - 0.5 and b1[2] <= b2[2] + 0.5 and
+                    b1[1] >= b2[1] - 0.5 and b1[3] <= b2[3] + 0.5):
+                    if (b1[4] * b1[5]) < (b2[4] * b2[5]):
+                        is_hole = True
+                        break
+        if not is_hole:
+            sticker_boxes.append(b1)
+
+    sx = preview_width / width_pt
+    sy = preview_height / height_pt
+    result = []
+    for idx, (min_x, min_y, max_x, max_y, w_pt, h_pt) in enumerate(sticker_boxes):
+        w_mm = round(w_pt * 25.4 / 72.0, 1)
+        h_mm = round(h_pt * 25.4 / 72.0, 1)
+        x_px = min_x * sx
+        y_px = (height_pt - max_y) * sy
+        w_px = w_pt * sx
+        h_px = h_pt * sy
+        result.append({
+            "id": idx + 1,
+            "width_mm": w_mm,
+            "height_mm": h_mm,
+            "x_px": round(x_px, 1),
+            "y_px": round(y_px, 1),
+            "width_px": round(w_px, 1),
+            "height_px": round(h_px, 1),
+        })
+    return result
+
+
 def _pdf_cut_svg(page, width_pt, height_pt, preview_width, preview_height):
     operations, count = _pdf_cut_operations(page)
     return _cut_operations_svg(operations, width_pt, height_pt, preview_width, preview_height), count
@@ -350,15 +420,45 @@ def _render_canonical_classic_page(source_path, page_number, preview_size, geome
                     "changed": any(item["changed"] for item in summaries),
                 }
             quality["simplification"] = deepcopy(stats)
+        bounding_boxes = []
+        if isinstance(result[1], list) and len(result[1]) > 0 and isinstance(result[1][0], dict) and result[1][0].get("boxes"):
+            sx = preview_size[0] / width
+            sy = preview_size[1] / height
+            for idx, b in enumerate(result[1][0]["boxes"]):
+                w_pt = float(b.get("w_pt", 0.0))
+                h_pt = float(b.get("h_pt", 0.0))
+                x_pt = float(b.get("x_pt", 0.0))
+                y_pt = float(b.get("y_pt", 0.0))
+                bounding_boxes.append({
+                    "id": idx + 1,
+                    "width_mm": round(float(b.get("w_mm", w_pt * 25.4 / 72.0)), 1),
+                    "height_mm": round(float(b.get("h_mm", h_pt * 25.4 / 72.0)), 1),
+                    "x_px": round(x_pt * sx, 1),
+                    "y_px": round((height - (y_pt + h_pt)) * sy, 1),
+                    "width_px": round(w_pt * sx, 1),
+                    "height_px": round(h_pt * sy, 1),
+                })
+        if not bounding_boxes:
+            bounding_boxes = _extract_contour_boxes(operations, width, height, *preview_size)
+        quality["bounding_boxes"] = deepcopy(bounding_boxes)
+        effective_base_entry = cached_dieline if cached_dieline is not None else (entry if 'entry' in locals() else None)
+        if effective_base_entry is not None and "bounding_boxes" not in effective_base_entry:
+            effective_base_entry["bounding_boxes"] = deepcopy(bounding_boxes)
         baseline = {
             "operations": operations, "count": count,
             "quality": quality, "memo": deepcopy(memo),
+            "base_dieline_entry": deepcopy(effective_base_entry),
+            "bounding_boxes": deepcopy(bounding_boxes),
         }
     check_preview_cancelled()
     _remember_preview(entries, baseline_key, baseline, _preview_cache_limit())
     outer_memo = current_simplify_memo()
     if outer_memo is not None:
         outer_memo.update(deepcopy(baseline["memo"]))
+        if baseline.get("base_dieline_entry"):
+            outer_memo["__base_dieline_entry__"] = deepcopy(baseline["base_dieline_entry"])
+        if baseline.get("operations"):
+            outer_memo["__operations__"] = deepcopy(baseline["operations"])
     svg = _cut_operations_svg(baseline["operations"], width, height, *preview_size)
     log_cutline("CLASSIC_PREVIEW", "SVG_DONE", f"Dựng SVG hoàn tất page={page_number}", count=baseline["count"], svg_len=len(svg))
     return svg, baseline["count"], deepcopy(baseline["quality"])
@@ -474,13 +574,19 @@ def build_classic_page_preview(session, *, page_number, base_revision, edits,
             "preview_width_px": page.preview_width_px, "preview_height_px": page.preview_height_px,
             "paths": [{"instance_id": 1, "d": svg, "segment_count": count, "quality": quality}],
             "fingerprint": fingerprint, "segment_count": count, "quality": quality,
+            "bounding_boxes": quality.get("bounding_boxes") or [],
         }
         # PERF (audit 2026-09-10 §SIMPERF.3): một artifact mới nhất/trang,
         # chung lifetime session; gồm cả no-op, không ghi cache geometry ra đĩa.
+        base_dieline_entry = memo.get("__base_dieline_entry__")
+        operations = memo.get("__operations__")
         page.cutline_export_cache = {"kind": "whole-page-memo-v1", "key": key,
             "source_digest": digest, "geometry": deepcopy(geometry),
             "revision": base_revision, "page_number": page_number,
-            "memo": deepcopy(memo), "preview": deepcopy(result)}
+            "memo": deepcopy(memo),
+            "base_dieline_entry": deepcopy(base_dieline_entry),
+            "operations": deepcopy(operations),
+            "preview": deepcopy(result)}
         # Artifact còn được UI giữ fingerprint phải sống cùng revision/session.
         # RAM-gating chỉ loại working-set tùy chọn trong process render, không
         # làm mất tham chiếu A khi người dùng đang xem B rồi quay về A.

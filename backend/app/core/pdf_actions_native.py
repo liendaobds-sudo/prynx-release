@@ -2169,6 +2169,66 @@ def _isolated_smask_candidates(pdf: pikepdf.Pdf) -> list[pikepdf.Stream]:
     return candidates
 
 
+def _unassociate_isolated_rgb_image_matte(image: pikepdf.Stream) -> bool:
+    """Khử `/Matte` trên ảnh RGB cô lập trước khi chuyển CMYK giữ SMask."""
+    smask = _deref(image.get("/SMask"))
+    if not isinstance(smask, pikepdf.Stream) or smask.get("/Matte") is None:
+        return True
+    try:
+        matte_values = [float(value) for value in smask.get("/Matte")]
+        if len(matte_values) != 3 or not all(
+            math.isfinite(value) and 0.0 <= value <= 1.0 for value in matte_values
+        ):
+            return False
+        from PIL import Image
+
+        source = pikepdf.PdfImage(image).as_pil_image().convert("RGB")
+        alpha = pikepdf.PdfImage(smask).as_pil_image().convert("L")
+        if source.size != alpha.size:
+            return False
+
+        try:
+            import numpy as np
+
+            pixels = np.asarray(source, dtype=np.float32) / 255.0
+            alpha_plane = np.asarray(alpha, dtype=np.float32)[..., None] / 255.0
+            matte = np.asarray(matte_values, dtype=np.float32).reshape(1, 1, 3)
+            pixels = np.divide(
+                pixels - (1.0 - alpha_plane) * matte,
+                alpha_plane,
+                out=np.zeros_like(pixels),
+                where=alpha_plane > 1.0e-9,
+            )
+            pixels = np.clip(pixels, 0.0, 1.0)
+            unassociated = Image.fromarray(
+                np.rint(pixels * 255.0).astype(np.uint8), "RGB"
+            )
+        except Exception:
+            src = source.tobytes()
+            mask = alpha.tobytes()
+            raw = bytearray(len(src))
+            for offset, mask_value in zip(range(0, len(src), 3), mask):
+                a = mask_value / 255.0
+                if a <= 1.0e-9:
+                    continue
+                for channel in range(3):
+                    stored = src[offset + channel] / 255.0
+                    value = (stored - (1.0 - a) * matte_values[channel]) / a
+                    raw[offset + channel] = int(
+                        round(max(0.0, min(1.0, value)) * 255.0)
+                    )
+            unassociated = Image.frombytes("RGB", source.size, bytes(raw))
+
+        out = unassociated.tobytes()
+        image.write(zlib.compress(bytes(out), 6), filter=pikepdf.Name("/FlateDecode"))
+        image["/Filter"] = pikepdf.Name("/FlateDecode")
+        del smask["/Matte"]
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("Khử Matte trên ảnh RGB thất bại: %s", exc)
+        return False
+
+
 def _flatten_isolated_rgb_image(
     image: pikepdf.Stream,
     rgb_profile: str,
@@ -2556,7 +2616,10 @@ def _flatten_isolated_rgb_vector_alpha(pdf: pikepdf.Pdf) -> int:
     return changed
 
 
-def _scan_convertibility(pdf: pikepdf.Pdf) -> list[str]:
+def _scan_convertibility(
+    pdf: pikepdf.Pdf,
+    allowed_smask_keys: set[tuple[int, int]] | None = None,
+) -> list[str]:
     """Lý do KHÔNG chuyển được bằng đường object-level (rỗng = chuyển được).
 
     Quét trước rồi mới sửa, vì chuyển nửa chừng rồi bỏ cuộc sẽ để lại file lai
@@ -2673,7 +2736,9 @@ def _scan_convertibility(pdf: pikepdf.Pdf) -> list[str]:
                         "[UNSUPPORTED_IMAGE_DECODE] SMask dùng /Decode không mặc định; "
                         "writer chưa thể bảo toàn alpha."
                     )
-                if d.get("/SMask") is not None or d.get("/Mask") is not None:
+                if (d.get("/SMask") is not None or d.get("/Mask") is not None) and not (
+                    allowed_smask_keys and _objkey(d) in allowed_smask_keys and d.get("/Mask") is None
+                ):
                     note(
                         "[LIVE_TRANSPARENCY_RGB] Ảnh RGB có SMask/Mask phải được flatten "
                         "trong blending space nguồn trước khi chuyển CMYK."
@@ -4518,6 +4583,7 @@ def convert_to_cmyk(
     vibrance_percent: float = 0,
     adjustment_stage: str = "pre_icc",
     gamut_mapping: str = "icc",
+    preserve_smask: bool = False,
 ) -> dict:
     """Chuyển nội dung RGB sang CMYK ở mức **object**, giữ nguyên phần còn lại.
 
@@ -4539,6 +4605,7 @@ def convert_to_cmyk(
         "images": 0,
         "flattened_images": 0,
         "flattened_vectors": 0,
+        "preserved_smask_images": 0,
         "warnings": [],
         "gamut_mapping": gamut_mapping,
         "adjustments": {
@@ -4649,7 +4716,7 @@ def convert_to_cmyk(
         # trắng có thể composite đúng trong RGB trước ICC mà không raster hóa
         # chữ/vector. Chỉ lane hẹp này được tự động mở; group, nền, Form, ảnh
         # dùng lại và color-key mask vẫn đi qua fail-closed scanner bên dưới.
-        flattened_images = _flatten_isolated_rgb_images(
+        flattened_images = 0 if preserve_smask else _flatten_isolated_rgb_images(
             pdf,
             rgb_profile,
             rendering_intent=rendering_intent,
@@ -4661,7 +4728,23 @@ def convert_to_cmyk(
                 f"Đã flatten {flattened_images} ảnh RGB có SMask trên nền giấy trắng "
                 "trước khi đổi CMYK."
             )
-        blockers = _scan_convertibility(pdf)
+        preserved_smask_keys: set[tuple[int, int]] = set()
+        if preserve_smask:
+            for cand in _isolated_smask_candidates(pdf):
+                if _unassociate_isolated_rgb_image_matte(cand):
+                    k = _objkey(cand)
+                    if k is not None:
+                        preserved_smask_keys.add(k)
+            result["preserved_smask_images"] = len(preserved_smask_keys)
+            if preserved_smask_keys:
+                result["warnings"].append(
+                    f"Đã giữ nguyên độ trong suốt (SMask) cho {len(preserved_smask_keys)} ảnh "
+                    "khi chuyển sang CMYK."
+                )
+        blockers = _scan_convertibility(
+            pdf,
+            allowed_smask_keys=preserved_smask_keys if preserve_smask else None,
+        )
         _raise_if_cancelled(cancel_check)
         if blockers:
             result["supported"] = False

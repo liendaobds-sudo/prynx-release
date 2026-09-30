@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { CircleDot, Square } from 'lucide-react';
+import { CircleDot, Square, Link, Unlink } from 'lucide-react';
 import { authenticatedFetch, getApiUrl, uploadPDF } from '../../lib/api';
 import { useWorkingPdf } from '../../hooks/useWorkingPdf';
 import { recipeRecorder, type RecipeOperationTicket } from '../../lib/recipe/RecipeRecorder';
@@ -19,6 +19,9 @@ import {
     buildStickerDielineFields,
     normalizeStickerBleedColorType,
     resolveStickerShapeMode,
+    cmykToHex,
+    hexToCmyk,
+    type CmykColor,
 } from './stickerToolPolicy';
 import { findToolByUniqueKey } from '../../lib/toolRegistry';
 import { useToolActivationGuard } from '../../hooks/useToolActivationGuard';
@@ -111,7 +114,7 @@ const STICKER_PREFERENCE_KEYS = [
     'productType', 'cutMode', 'offsetMm', 'cornerStyle', 'fillHoles', 'bleedMm',
     'removeWhiteBg', 'trimWhiteEdge', 'bleedColorType', 'bleedColorHex',
     'edgeBiteMm', 'edgeBiteVersion', 'mirrorEdgeBiteMm', 'cutFirstPageOnly', 'cropToSticker', 'bleedSides',
-    'cutlineDenoise', 'curveTension',
+    'cutlineDenoise', 'curveTension', 'thrucutEnabled', 'thrucutShape', 'thrucutMarginMm', 'thrucutMarginLinked', 'thrucutMarginTopMm', 'thrucutMarginBottomMm', 'thrucutMarginLeftMm', 'thrucutMarginRightMm', 'thrucutRadiusMm', 'thrucutSpotName', 'thrucutColor', 'thrucutCmyk', 'showDimensions',
 ] as const;
 // AUDIT (2026-08-16 §BX.F15): trước đây là `let` toàn cục nên tab thứ hai không bao giờ
 // log được cảnh báo storage — vi phạm bất biến "không dùng cờ boolean toàn cục" trong
@@ -274,6 +277,7 @@ export default function StickerTool({
         viewerPageOrder,
         viewerPageRotations,
         viewerPageInstanceIds,
+        viewerActivePagePhysical,
         setClassicCutlineViewerPreview,
         clearClassicCutlineViewerPreview,
     } = useWorkspaceStore();
@@ -339,6 +343,104 @@ export default function StickerTool({
     // mặc định thu khổ theo kết quả; người dùng vẫn có thể bỏ tick để giữ khổ nguồn.
     const [cropToSticker, setCropToSticker] = useState<boolean>(() =>
         readStickerBoolean('cropToSticker', DEFAULT_CROP_TO_STICKER)
+    );
+    // Bế 2 dao: Demi trong + Đứt ngoài (KissCut + ThruCut)
+    const [thrucutEnabled, setThrucutEnabled] = useState<boolean>(() =>
+        readStickerBoolean('thrucutEnabled', false)
+    );
+    const [thrucutShape, setThrucutShape] = useState<'rounded_rect' | 'ellipse' | 'contour_offset'>(() =>
+        readStickerEnum('thrucutShape', 'rounded_rect', ['rounded_rect', 'ellipse', 'contour_offset']) as 'rounded_rect' | 'ellipse' | 'contour_offset'
+    );
+    const [thrucutMarginMm, setThrucutMarginMm] = useState<number>(() =>
+        readStickerNumber('thrucutMarginMm', 3.0, 0.5, 30)
+    );
+    const [thrucutMarginLinked, setThrucutMarginLinked] = useState<boolean>(() =>
+        readStickerBoolean('thrucutMarginLinked', true)
+    );
+    const [thrucutMarginTopMm, setThrucutMarginTopMm] = useState<number>(() =>
+        readStickerNumber('thrucutMarginTopMm', 3.0, 0, 50)
+    );
+    const [thrucutMarginBottomMm, setThrucutMarginBottomMm] = useState<number>(() =>
+        readStickerNumber('thrucutMarginBottomMm', 3.0, 0, 50)
+    );
+    const [thrucutMarginLeftMm, setThrucutMarginLeftMm] = useState<number>(() =>
+        readStickerNumber('thrucutMarginLeftMm', 3.0, 0, 50)
+    );
+    const [thrucutMarginRightMm, setThrucutMarginRightMm] = useState<number>(() =>
+        readStickerNumber('thrucutMarginRightMm', 3.0, 0, 50)
+    );
+
+    const handleMarginUniformChange = (val: number) => {
+        const clamped = Math.max(0.5, Math.min(30, val));
+        setThrucutMarginMm(clamped);
+        setThrucutMarginTopMm(clamped);
+        setThrucutMarginBottomMm(clamped);
+        setThrucutMarginLeftMm(clamped);
+        setThrucutMarginRightMm(clamped);
+    };
+
+    const toggleMarginLink = () => {
+        if (!thrucutMarginLinked) {
+            const uniform = thrucutMarginTopMm || thrucutMarginMm;
+            setThrucutMarginMm(uniform);
+            setThrucutMarginTopMm(uniform);
+            setThrucutMarginBottomMm(uniform);
+            setThrucutMarginLeftMm(uniform);
+            setThrucutMarginRightMm(uniform);
+        }
+        setThrucutMarginLinked(!thrucutMarginLinked);
+    };
+    const [thrucutRadiusMm, setThrucutRadiusMm] = useState<number>(() =>
+        readStickerNumber('thrucutRadiusMm', 3.0, 0, 20)
+    );
+    const [showDimensions, setShowDimensions] = useState<boolean>(() =>
+        readStickerBoolean('showDimensions', true)
+    );
+    const [thrucutSpotName, setThrucutSpotName] = useState<string>(() => {
+        const raw = readStickerRaw('thrucutSpotName');
+        if (!raw) return 'ThruCut';
+        try {
+            const parsed = JSON.parse(raw);
+            return typeof parsed === 'string' && parsed.trim() ? parsed.trim() : 'ThruCut';
+        } catch {
+            return raw.replace(/^"|"$/g, '').trim() || 'ThruCut';
+        }
+    });
+    const [thrucutCmyk, setThrucutCmyk] = useState<CmykColor>(() => {
+        const raw = readStickerRaw('thrucutCmyk');
+        if (raw) {
+            try {
+                const parsed = JSON.parse(raw);
+                if (parsed && typeof parsed.c === 'number') {
+                    return {
+                        c: Math.min(100, Math.max(0, parsed.c)),
+                        m: Math.min(100, Math.max(0, parsed.m)),
+                        y: Math.min(100, Math.max(0, parsed.y)),
+                        k: Math.min(100, Math.max(0, parsed.k)),
+                    };
+                }
+            } catch {}
+        }
+        const oldHex = readStickerRaw('thrucutColor');
+        if (oldHex) {
+            try {
+                const parsedHex = JSON.parse(oldHex);
+                if (typeof parsedHex === 'string') return hexToCmyk(parsedHex);
+            } catch {
+                return hexToCmyk(oldHex);
+            }
+        }
+        return { c: 100, m: 0, y: 0, k: 0 };
+    });
+
+    const thrucutColor = useMemo(
+        () => cmykToHex(thrucutCmyk.c, thrucutCmyk.m, thrucutCmyk.y, thrucutCmyk.k),
+        [thrucutCmyk.c, thrucutCmyk.m, thrucutCmyk.y, thrucutCmyk.k]
+    );
+
+    const thrucutCmykString = useMemo(
+        () => `${thrucutCmyk.c},${thrucutCmyk.m},${thrucutCmyk.y},${thrucutCmyk.k}`,
+        [thrucutCmyk.c, thrucutCmyk.m, thrucutCmyk.y, thrucutCmyk.k]
     );
     // Hình học đường cắt: backend tự nhận (auto_safe). "Hình cắt sai?" → forceContour
     // ép giữ mép ảnh. KHÔNG lưu localStorage: mỗi file khác hình, mặc định luôn auto.
@@ -445,7 +547,19 @@ export default function StickerTool({
         writeStickerPreference('cropToSticker', cropToSticker);
         writeStickerPreference('bleedSides', bleedSides);
         writeStickerPreference('cutlineDenoise', cutlineDenoise);
-    }, [productType, cutMode, offsetMm, cornerStyle, curveTension, fillHoles, bleedMm, removeWhiteBg, bleedColorType, bleedColorHex, edgeBiteMm, mirrorEdgeBiteMm, cutFirstPageOnly, cropToSticker, bleedSides, cutlineDenoise]);
+        writeStickerPreference('thrucutEnabled', thrucutEnabled);
+        writeStickerPreference('thrucutShape', thrucutShape);
+        writeStickerPreference('thrucutMarginMm', thrucutMarginMm);
+        writeStickerPreference('thrucutMarginLinked', thrucutMarginLinked);
+        writeStickerPreference('thrucutMarginTopMm', thrucutMarginTopMm);
+        writeStickerPreference('thrucutMarginBottomMm', thrucutMarginBottomMm);
+        writeStickerPreference('thrucutMarginLeftMm', thrucutMarginLeftMm);
+        writeStickerPreference('thrucutMarginRightMm', thrucutMarginRightMm);
+        writeStickerPreference('thrucutRadiusMm', thrucutRadiusMm);
+        writeStickerPreference('thrucutSpotName', thrucutSpotName);
+        writeStickerPreference('thrucutCmyk', thrucutCmyk);
+        writeStickerPreference('thrucutColor', thrucutColor);
+    }, [productType, cutMode, offsetMm, cornerStyle, curveTension, fillHoles, bleedMm, removeWhiteBg, bleedColorType, bleedColorHex, edgeBiteMm, mirrorEdgeBiteMm, cutFirstPageOnly, cropToSticker, bleedSides, cutlineDenoise, thrucutEnabled, thrucutShape, thrucutMarginMm, thrucutMarginLinked, thrucutMarginTopMm, thrucutMarginBottomMm, thrucutMarginLeftMm, thrucutMarginRightMm, thrucutRadiusMm, thrucutSpotName, thrucutCmyk, thrucutColor]);
     
     // Process state
     const [isProcessing, setIsProcessing] = useState(false);
@@ -516,8 +630,8 @@ export default function StickerTool({
         canonicalPreviewExpected
         && (
             cutlinePreview.isPreparing
-            || (cutlinePreview.isUpdating && !cutlinePreview.preview)
-            || (canonicalPreviewStale && !cutlinePreview.preview)
+            || cutlinePreview.isUpdating
+            || !cutlinePreview.canonicalReference
         )
     );
     // QUALITY (audit 2026-09-10 §FAIR.5): chỉ PDF Alpha nhiều mảng đã nhận
@@ -527,11 +641,9 @@ export default function StickerTool({
         && !cutlinePreview.isPreparing && !cutlinePreview.isUpdating
     );
     const simplifyPreviewPending = cutlineSimplifyMm > 0 && (
-        cutlinePreview.isPreparing || cutlinePreview.isUpdating
-        || (!directSimplifyReady && (
-            !cutlinePreview.canonicalReference
-            || cutlinePreview.canonicalReference.simplifyMm !== cutlineSimplifyMm
-        ))
+        cutlinePreview.isPreparing
+        || cutlinePreview.isUpdating
+        || (!directSimplifyReady && !cutlinePreview.canonicalReference)
     );
     // UIUX (feedback 2026-08-19 §CUTPREVIEW.VIEWER1): preview classic phải phủ
     // trực tiếp lên trang Acrobat Viewer như chế độ nhiều tem. Workspace store là
@@ -554,6 +666,11 @@ export default function StickerTool({
             clearClassicCutlineViewerPreview(previewOwnerId);
             return;
         }
+        const pageWidthMm = viewerActivePagePhysical ? viewerActivePagePhysical.widthPt * (25.4 / 72) : 0;
+        const scale = (pageWidthMm > 0 && preview.preview_width_px)
+            ? preview.preview_width_px / pageWidthMm
+            : 1;
+
         setClassicCutlineViewerPreview({
             ownerId: previewOwnerId,
             preview,
@@ -561,6 +678,25 @@ export default function StickerTool({
             pageInstanceId: previewPageInstanceId,
             documentIdentity: previewDocumentIdentity,
             isUpdating: cutlinePreview.isUpdating,
+            showDimensions,
+            thrucut: thrucutEnabled ? {
+                enabled: true,
+                shape: thrucutShape,
+                marginMm: thrucutMarginMm,
+                marginTopMm: thrucutMarginLinked ? thrucutMarginMm : thrucutMarginTopMm,
+                marginBottomMm: thrucutMarginLinked ? thrucutMarginMm : thrucutMarginBottomMm,
+                marginLeftMm: thrucutMarginLinked ? thrucutMarginMm : thrucutMarginLeftMm,
+                marginRightMm: thrucutMarginLinked ? thrucutMarginMm : thrucutMarginRightMm,
+                radiusMm: thrucutRadiusMm,
+                color: thrucutColor,
+                spotName: thrucutSpotName,
+                marginPx: thrucutMarginMm * scale,
+                marginTopPx: (thrucutMarginLinked ? thrucutMarginMm : thrucutMarginTopMm) * scale,
+                marginBottomPx: (thrucutMarginLinked ? thrucutMarginMm : thrucutMarginBottomMm) * scale,
+                marginLeftPx: (thrucutMarginLinked ? thrucutMarginMm : thrucutMarginLeftMm) * scale,
+                marginRightPx: (thrucutMarginLinked ? thrucutMarginMm : thrucutMarginRightMm) * scale,
+                radiusPx: thrucutRadiusMm * scale,
+            } : null,
         });
     }, [
         classicPreviewEnabled,
@@ -573,6 +709,19 @@ export default function StickerTool({
         previewPageInstanceId,
         resolvedPreviewPage,
         setClassicCutlineViewerPreview,
+        showDimensions,
+        thrucutEnabled,
+        thrucutShape,
+        thrucutMarginMm,
+        thrucutMarginLinked,
+        thrucutMarginTopMm,
+        thrucutMarginBottomMm,
+        thrucutMarginLeftMm,
+        thrucutMarginRightMm,
+        thrucutRadiusMm,
+        thrucutColor,
+        thrucutSpotName,
+        viewerActivePagePhysical,
     ]);
 
     useEffect(() => () => {
@@ -657,6 +806,13 @@ export default function StickerTool({
         const formData = new FormData();
         if (localPath) formData.append('file_path', localPath);
         else formData.append('file_id', String(uploadRes!.id));
+        // PERF/QUALITY (audit 2026-08-21 §CANONICAL.5): backend snapshot đúng
+        // Alpha+Bézier của frame đang hiển thị và bỏ lượt detect/fit thứ hai.
+        // Override đổi hình học ngay trong cùng click nên không dùng frame cũ.
+        const canonicalReference = overrides
+            ? null
+            : cutlinePreview.canonicalReference;
+
         // AUDIT (2026-08-16 §BX.F01/F02): mọi field hình học đi qua MỘT builder thuần
         // dùng chung với recipe playback. Trước đây ba nơi tự dựng payload nên recipe
         // phát lại ra khuôn bế khác bản đã duyệt, và "Độ lẹm mép" vẫn được gửi khi ô
@@ -678,20 +834,26 @@ export default function StickerTool({
             bleedSides,
             forceContour: requestedForceContour,
             cutlineDenoise,
+            thrucutEnabled,
+            thrucutShape,
+            thrucutMarginMm,
+            thrucutMarginTopMm: thrucutMarginLinked ? thrucutMarginMm : thrucutMarginTopMm,
+            thrucutMarginBottomMm: thrucutMarginLinked ? thrucutMarginMm : thrucutMarginBottomMm,
+            thrucutMarginLeftMm: thrucutMarginLinked ? thrucutMarginMm : thrucutMarginLeftMm,
+            thrucutMarginRightMm: thrucutMarginLinked ? thrucutMarginMm : thrucutMarginRightMm,
+            thrucutRadiusMm,
+            thrucutSpotName,
+            thrucutColorHex: thrucutColor,
+            thrucutColorCmyk: thrucutCmykString,
             // Lượt "Giữ mép ảnh" thay đổi nguồn hình học nên không tái dùng
             // Simplify/canonical của lượt auto trước đó.
-            cutlineSimplifyMm: overrides ? 0 : cutlineSimplifyMm,
+            // Đồng bộ 100% với canonicalReference để tránh lệch cache giữa preview và execute.
+            cutlineSimplifyMm: overrides ? 0 : (canonicalReference ? canonicalReference.simplifyMm : cutlineSimplifyMm),
             ...(!overrides && cutlineSimplifyAuto ? { cutlineSimplifyAuto: true } : {}),
         });
         for (const [field, value] of Object.entries(dielineFields)) {
             formData.append(field, value);
         }
-        // PERF/QUALITY (audit 2026-08-21 §CANONICAL.5): backend snapshot đúng
-        // Alpha+Bézier của frame đang hiển thị và bỏ lượt detect/fit thứ hai.
-        // Override đổi hình học ngay trong cùng click nên không dùng frame cũ.
-        const canonicalReference = overrides
-            ? null
-            : cutlinePreview.canonicalReference;
         if (canonicalReference) {
             formData.append('cutline_preview_session_id', canonicalReference.sessionId);
             formData.append('cutline_preview_page_number', String(canonicalReference.pageNumber));
@@ -950,8 +1112,14 @@ export default function StickerTool({
     }, [bleedMm, bleedColorType]);
 
     const section3Badge = useMemo(() => {
-        return `Bo ${Math.round(curveTension)}% • Khử ${cutlineDenoise}%`;
-    }, [curveTension, cutlineDenoise]);
+        const parts: string[] = [];
+        if (thrucutEnabled) {
+            parts.push(t('preprocess.sticker:be_2_dao_badge'));
+        }
+        parts.push(`Bo ${Math.round(curveTension)}%`);
+        parts.push(`Khử ${cutlineDenoise}%`);
+        return parts.join(' • ');
+    }, [thrucutEnabled, curveTension, cutlineDenoise, t]);
 
     return (
         <div className="flex flex-col gap-4">
@@ -1136,6 +1304,23 @@ export default function StickerTool({
                                         />
                                     </div>
                                 )}
+                            </div>
+                        )}
+
+                        {cutMode !== 'none' && (
+                            <div className="mt-2.5 pt-2 border-t border-slate-200/60 dark:border-zinc-700/60 flex items-center justify-between">
+                                <label className="flex items-center gap-2 cursor-pointer select-none">
+                                    <input
+                                        type="checkbox"
+                                        checked={showDimensions}
+                                        onChange={(e) => setShowDimensions(e.target.checked)}
+                                        className="h-4 w-4 rounded border-slate-300 text-teal-600 accent-teal-600 focus:ring-teal-500"
+                                    />
+                                    <span className="text-[11.5px] font-semibold text-slate-700 dark:text-zinc-300 flex items-center gap-1.5">
+                                        <span>📐</span>
+                                        <span>{t('preprocess.sticker:hien_kich_thuoc_khuon')}</span>
+                                    </span>
+                                </label>
                             </div>
                         )}
                     </ToolAccordionCard>
@@ -1430,6 +1615,318 @@ export default function StickerTool({
                                             disabled={isProcessing}
                                             className="block w-full accent-teal-600 dark:accent-teal-400 disabled:opacity-50"
                                         />
+                                    </div>
+
+                                    {/* 3. Bế 2 dao: Demi trong + Đứt ngoài */}
+                                    <div className="py-2.5 first:pt-0" data-testid="sticker-thrucut-control">
+                                        <label
+                                            className={`w-full min-h-[36px] rounded-lg border px-3 py-1.5 flex items-center gap-2 cursor-pointer select-none transition-all ${
+                                                thrucutEnabled
+                                                    ? 'border-indigo-500 bg-indigo-500/10 text-indigo-700 dark:text-indigo-300'
+                                                    : 'border-slate-300 bg-white hover:border-slate-400 hover:bg-slate-50 text-slate-700 dark:border-zinc-600 dark:bg-zinc-900 dark:hover:border-zinc-500 dark:hover:bg-zinc-800 dark:text-zinc-300'
+                                            }`}
+                                        >
+                                            <input
+                                                type="checkbox"
+                                                checked={thrucutEnabled}
+                                                onChange={(event) => setThrucutEnabled(event.target.checked)}
+                                                className="peer sr-only"
+                                            />
+                                            <span
+                                                aria-hidden="true"
+                                                className={`h-[18px] w-[18px] shrink-0 rounded border-2 flex items-center justify-center transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-indigo-500 peer-focus-visible:ring-offset-2 dark:peer-focus-visible:ring-offset-zinc-900 ${
+                                                    thrucutEnabled
+                                                        ? 'border-indigo-600 bg-indigo-600 text-white'
+                                                        : 'border-slate-400 bg-white dark:border-zinc-500 dark:bg-zinc-950'
+                                                }`}
+                                            >
+                                                {thrucutEnabled && (
+                                                    <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="2.5">
+                                                        <path d="M3 8.25 6.5 11.5 13 4.5" strokeLinecap="round" strokeLinejoin="round" />
+                                                    </svg>
+                                                )}
+                                            </span>
+                                            <span className="min-w-0 flex-1 text-[11px] font-bold leading-tight">
+                                                {t('preprocess.sticker:be_2_dao')}
+                                            </span>
+                                            <span
+                                                role="note"
+                                                tabIndex={0}
+                                                aria-label={t('preprocess.sticker:be_2_dao_desc')}
+                                                onClick={(event) => event.preventDefault()}
+                                                onKeyDown={(event) => {
+                                                    if (event.key === 'Enter' || event.key === ' ') {
+                                                        event.preventDefault();
+                                                    }
+                                                }}
+                                                className="relative group/help ml-auto flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-current/25 bg-black/5 text-[10px] font-bold leading-none text-current/70 hover:bg-black/10 dark:bg-white/10 dark:hover:bg-white/15 cursor-help"
+                                            >
+                                                ?
+                                                <span
+                                                    role="tooltip"
+                                                    className="pointer-events-none absolute bottom-full right-0 z-[100] mb-2 w-max max-w-[280px] rounded-lg bg-slate-800 px-3 py-2.5 text-left text-[12px] font-normal leading-relaxed text-white opacity-0 shadow-xl transition-all invisible group-hover/help:visible group-hover/help:opacity-100 group-focus-within/help:visible group-focus-within/help:opacity-100 dark:bg-zinc-700 whitespace-normal break-words"
+                                                >
+                                                    {t('preprocess.sticker:be_2_dao_desc')}
+                                                    <span
+                                                        aria-hidden="true"
+                                                        className="absolute top-full right-2 -mt-1 h-2 w-2 rotate-45 bg-slate-800 dark:bg-zinc-700"
+                                                    />
+                                                </span>
+                                            </span>
+                                        </label>
+
+                                        {thrucutEnabled && (
+                                            <div className="mt-2.5 flex flex-col gap-2.5 rounded-lg border border-indigo-200/80 bg-indigo-50/40 p-2.5 dark:border-indigo-900/40 dark:bg-indigo-950/20">
+                                                {/* Kiểu khung bế đứt */}
+                                                <div>
+                                                    <label className="mb-1 block text-[11px] font-semibold text-slate-700 dark:text-zinc-300">
+                                                        {t('preprocess.sticker:kieu_khung_be_dut')}
+                                                    </label>
+                                                    <div className="grid grid-cols-3 gap-1">
+                                                        <button
+                                                            type="button"
+                                                            disabled={isProcessing}
+                                                            onClick={() => setThrucutShape('rounded_rect')}
+                                                            className={`h-7 rounded border px-1 text-[10px] font-bold transition-all ${
+                                                                thrucutShape === 'rounded_rect'
+                                                                    ? 'border-indigo-500 bg-indigo-600 text-white shadow-sm'
+                                                                    : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800'
+                                                            }`}
+                                                        >
+                                                            {t('preprocess.sticker:khung_chu_nhat_bo_goc')}
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            disabled={isProcessing}
+                                                            onClick={() => setThrucutShape('ellipse')}
+                                                            className={`h-7 rounded border px-1 text-[10px] font-bold transition-all ${
+                                                                thrucutShape === 'ellipse'
+                                                                    ? 'border-indigo-500 bg-indigo-600 text-white shadow-sm'
+                                                                    : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800'
+                                                            }`}
+                                                        >
+                                                            {t('preprocess.sticker:khung_oval')}
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            disabled={isProcessing}
+                                                            onClick={() => setThrucutShape('contour_offset')}
+                                                            className={`h-7 rounded border px-1 text-[10px] font-bold transition-all ${
+                                                                thrucutShape === 'contour_offset'
+                                                                    ? 'border-indigo-500 bg-indigo-600 text-white shadow-sm'
+                                                                    : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-100 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800'
+                                                            }`}
+                                                        >
+                                                            {t('preprocess.sticker:khung_no_deu')}
+                                                        </button>
+                                                    </div>
+                                                </div>
+
+                                                {/* Lề ngoài (margin) & Bo góc (radius) */}
+                                                <div>
+                                                    {thrucutMarginLinked ? (
+                                                    <div className="grid grid-cols-2 gap-2">
+                                                        <div>
+                                                            <div className="mb-1 flex items-center gap-1.5 min-h-[22px]">
+                                                                <label htmlFor="thrucut-margin" className="text-[11px] font-semibold text-slate-700 dark:text-zinc-300">
+                                                                    {t('preprocess.sticker:le_ngoai_mm')}
+                                                                </label>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={toggleMarginLink}
+                                                                    title={t('preprocess.sticker:tach_4_canh_hint', 'Đang khóa đều 4 cạnh. Bấm để chỉnh riêng từng cạnh')}
+                                                                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-semibold transition-colors cursor-pointer bg-indigo-100 text-indigo-700 hover:bg-indigo-200 dark:bg-indigo-900/40 dark:text-indigo-300"
+                                                                >
+                                                                    <Link className="h-3 w-3" />
+                                                                    <span>{t('preprocess.sticker:deu_4_canh', 'Đều 4 cạnh')}</span>
+                                                                </button>
+                                                            </div>
+                                                            <input
+                                                                id="thrucut-margin"
+                                                                type="number"
+                                                                min={0.5}
+                                                                max={30}
+                                                                step={0.5}
+                                                                value={thrucutMarginMm}
+                                                                disabled={isProcessing}
+                                                                onChange={(e) => handleMarginUniformChange(Number(e.target.value))}
+                                                                className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs font-semibold tabular-nums text-slate-800 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-200"
+                                                            />
+                                                        </div>
+
+                                                        {thrucutShape === 'rounded_rect' && (
+                                                            <div>
+                                                                <div className="mb-1 flex items-center min-h-[22px]">
+                                                                    <label htmlFor="thrucut-radius" className="text-[11px] font-semibold text-slate-700 dark:text-zinc-300">
+                                                                        {t('preprocess.sticker:bo_goc_ngoai_mm')}
+                                                                    </label>
+                                                                </div>
+                                                                <input
+                                                                    id="thrucut-radius"
+                                                                    type="number"
+                                                                    min={0}
+                                                                    max={20}
+                                                                    step={0.5}
+                                                                    value={thrucutRadiusMm}
+                                                                    disabled={isProcessing}
+                                                                    onChange={(e) => setThrucutRadiusMm(Number(e.target.value))}
+                                                                    className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs font-semibold tabular-nums text-slate-800 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-200"
+                                                                />
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                ) : (
+                                                        <div className="space-y-2">
+                                                            <div className="grid grid-cols-4 gap-1.5">
+                                                                <div>
+                                                                    <label className="mb-0.5 block text-[10px] text-center text-slate-500 dark:text-zinc-400">{t('preprocess.sticker:side_top', 'Trên')}</label>
+                                                                    <input
+                                                                        type="number"
+                                                                        min={0}
+                                                                        max={50}
+                                                                        step={0.5}
+                                                                        value={thrucutMarginTopMm}
+                                                                        disabled={isProcessing}
+                                                                        onChange={(e) => setThrucutMarginTopMm(Number(e.target.value))}
+                                                                        className="w-full rounded border border-slate-300 bg-white px-1 py-1 text-xs text-center font-semibold tabular-nums text-slate-800 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-200"
+                                                                    />
+                                                                </div>
+                                                                <div>
+                                                                    <label className="mb-0.5 block text-[10px] text-center text-slate-500 dark:text-zinc-400">{t('preprocess.sticker:side_bottom', 'Dưới')}</label>
+                                                                    <input
+                                                                        type="number"
+                                                                        min={0}
+                                                                        max={50}
+                                                                        step={0.5}
+                                                                        value={thrucutMarginBottomMm}
+                                                                        disabled={isProcessing}
+                                                                        onChange={(e) => setThrucutMarginBottomMm(Number(e.target.value))}
+                                                                        className="w-full rounded border border-slate-300 bg-white px-1 py-1 text-xs text-center font-semibold tabular-nums text-slate-800 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-200"
+                                                                    />
+                                                                </div>
+                                                                <div>
+                                                                    <label className="mb-0.5 block text-[10px] text-center text-slate-500 dark:text-zinc-400">{t('preprocess.sticker:side_left', 'Trái')}</label>
+                                                                    <input
+                                                                        type="number"
+                                                                        min={0}
+                                                                        max={50}
+                                                                        step={0.5}
+                                                                        value={thrucutMarginLeftMm}
+                                                                        disabled={isProcessing}
+                                                                        onChange={(e) => setThrucutMarginLeftMm(Number(e.target.value))}
+                                                                        className="w-full rounded border border-slate-300 bg-white px-1 py-1 text-xs text-center font-semibold tabular-nums text-slate-800 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-200"
+                                                                    />
+                                                                </div>
+                                                                <div>
+                                                                    <label className="mb-0.5 block text-[10px] text-center text-slate-500 dark:text-zinc-400">{t('preprocess.sticker:side_right', 'Phải')}</label>
+                                                                    <input
+                                                                        type="number"
+                                                                        min={0}
+                                                                        max={50}
+                                                                        step={0.5}
+                                                                        value={thrucutMarginRightMm}
+                                                                        disabled={isProcessing}
+                                                                        onChange={(e) => setThrucutMarginRightMm(Number(e.target.value))}
+                                                                        className="w-full rounded border border-slate-300 bg-white px-1 py-1 text-xs text-center font-semibold tabular-nums text-slate-800 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-200"
+                                                                    />
+                                                                </div>
+                                                            </div>
+
+                                                            {thrucutShape === 'rounded_rect' && (
+                                                                <div className="pt-1 border-t border-indigo-200/50 dark:border-indigo-900/30">
+                                                                    <div className="mb-1 flex items-center min-h-[20px]">
+                                                                        <label htmlFor="thrucut-radius-unlinked" className="text-[11px] font-semibold text-slate-700 dark:text-zinc-300">
+                                                                            {t('preprocess.sticker:bo_goc_ngoai_mm')}
+                                                                        </label>
+                                                                    </div>
+                                                                    <input
+                                                                        id="thrucut-radius-unlinked"
+                                                                        type="number"
+                                                                        min={0}
+                                                                        max={20}
+                                                                        step={0.5}
+                                                                        value={thrucutRadiusMm}
+                                                                        disabled={isProcessing}
+                                                                        onChange={(e) => setThrucutRadiusMm(Number(e.target.value))}
+                                                                        className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs font-semibold tabular-nums text-slate-800 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-200"
+                                                                    />
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    )}
+                                                </div>
+
+
+
+                                                    <div>
+                                                        <div className="flex items-center justify-between mb-1">
+                                                            <span className="text-[11px] font-semibold text-slate-700 dark:text-zinc-300">
+                                                                {t('preprocess.sticker:mau_dai_dien_cmyk', 'Màu đường cắt ngoài')}
+                                                            </span>
+                                                            <div className="flex items-center gap-1.5">
+                                                                <span className="text-[10px] text-slate-400 font-mono">{thrucutColor.toUpperCase()}</span>
+                                                                <div
+                                                                    className="h-4 w-6 rounded border border-slate-300 shadow-inner dark:border-zinc-600"
+                                                                    style={{ backgroundColor: thrucutColor }}
+                                                                    title={`Màu xem trước: C:${thrucutCmyk.c}% M:${thrucutCmyk.m}% Y:${thrucutCmyk.y}% K:${thrucutCmyk.k}%`}
+                                                                />
+                                                            </div>
+                                                        </div>
+
+                                                        {/* 4 ô nhập C, M, Y, K (%) */}
+                                                        <div className="grid grid-cols-4 gap-1.5">
+                                                            <div>
+                                                                <span className="block text-[10px] font-bold text-cyan-600 dark:text-cyan-400 mb-0.5">C (%)</span>
+                                                                <input
+                                                                    type="number"
+                                                                    min={0}
+                                                                    max={100}
+                                                                    value={thrucutCmyk.c}
+                                                                    disabled={isProcessing}
+                                                                    onChange={(e) => setThrucutCmyk(prev => ({ ...prev, c: Math.min(100, Math.max(0, Number(e.target.value))) }))}
+                                                                    className="w-full rounded border border-slate-300 bg-white px-1 py-0.5 text-center text-xs font-semibold tabular-nums text-slate-800 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-200"
+                                                                />
+                                                            </div>
+                                                            <div>
+                                                                <span className="block text-[10px] font-bold text-pink-600 dark:text-pink-400 mb-0.5">M (%)</span>
+                                                                <input
+                                                                    type="number"
+                                                                    min={0}
+                                                                    max={100}
+                                                                    value={thrucutCmyk.m}
+                                                                    disabled={isProcessing}
+                                                                    onChange={(e) => setThrucutCmyk(prev => ({ ...prev, m: Math.min(100, Math.max(0, Number(e.target.value))) }))}
+                                                                    className="w-full rounded border border-slate-300 bg-white px-1 py-0.5 text-center text-xs font-semibold tabular-nums text-slate-800 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-200"
+                                                                />
+                                                            </div>
+                                                            <div>
+                                                                <span className="block text-[10px] font-bold text-amber-500 dark:text-amber-400 mb-0.5">Y (%)</span>
+                                                                <input
+                                                                    type="number"
+                                                                    min={0}
+                                                                    max={100}
+                                                                    value={thrucutCmyk.y}
+                                                                    disabled={isProcessing}
+                                                                    onChange={(e) => setThrucutCmyk(prev => ({ ...prev, y: Math.min(100, Math.max(0, Number(e.target.value))) }))}
+                                                                    className="w-full rounded border border-slate-300 bg-white px-1 py-0.5 text-center text-xs font-semibold tabular-nums text-slate-800 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-200"
+                                                                />
+                                                            </div>
+                                                            <div>
+                                                                <span className="block text-[10px] font-bold text-slate-700 dark:text-zinc-300 mb-0.5">K (%)</span>
+                                                                <input
+                                                                    type="number"
+                                                                    min={0}
+                                                                    max={100}
+                                                                    value={thrucutCmyk.k}
+                                                                    disabled={isProcessing}
+                                                                    onChange={(e) => setThrucutCmyk(prev => ({ ...prev, k: Math.min(100, Math.max(0, Number(e.target.value))) }))}
+                                                                    className="w-full rounded border border-slate-300 bg-white px-1 py-0.5 text-center text-xs font-semibold tabular-nums text-slate-800 dark:border-zinc-600 dark:bg-zinc-900 dark:text-zinc-200"
+                                                                />
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                        )}
                                     </div>
                                 </div>
                             </section>

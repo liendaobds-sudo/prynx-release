@@ -56,9 +56,15 @@ export interface UseNativeGpuViewportReturn {
 type Lease = { viewId: string; generation: number; closed: boolean; ready: boolean };
 interface SurfaceSize { width: number; height: number; dpr: number }
 interface NativeSurfaceProof extends SurfaceSize { epoch: number }
+// PERF (audit 2026-09-30 §LOG.DEBUG): Không console.debug object trong hot-loop camera/interaction/status GPU.
+// Bật cờ __PRYNX_GPU_DEBUG__ = true trên window khi cần debug sâu sự kiện viewport.
+const isGpuDebugVerbose = (): boolean =>
+  typeof window !== 'undefined'
+  && (window as unknown as { __PRYNX_GPU_DEBUG__?: boolean }).__PRYNX_GPU_DEBUG__ === true;
+
 export function matchesNativeSurfaceProof(value: unknown, expected: SurfaceSize | null, minimumEpoch: number): value is NativeSurfaceProof {
   if (!expected || !value || typeof value !== 'object') {
-    if (import.meta.env.DEV) console.debug('[GPU_PROOF_REJECT] missing expected or value', { expected, value });
+    if (import.meta.env.DEV && isGpuDebugVerbose()) console.debug('[GPU_PROOF_REJECT] missing expected or value', { expected, value });
     return false;
   }
   const proof = value as Partial<NativeSurfaceProof>;
@@ -66,7 +72,7 @@ export function matchesNativeSurfaceProof(value: unknown, expected: SurfaceSize 
   const sizeOk = proof.width === expected.width && proof.height === expected.height;
   const dprOk = typeof proof.dpr === 'number' && Number.isFinite(proof.dpr) && Math.abs(proof.dpr - expected.dpr) < .001;
   if (!epochOk || !sizeOk || !dprOk) {
-    if (import.meta.env.DEV) console.debug('[GPU_PROOF_MISMATCH]', { epochOk, sizeOk, dprOk, proof, expected, minimumEpoch });
+    if (import.meta.env.DEV && isGpuDebugVerbose()) console.debug('[GPU_PROOF_MISMATCH]', { epochOk, sizeOk, dprOk, proof, expected, minimumEpoch });
     return false;
   }
   return true;
@@ -213,7 +219,8 @@ export function useNativeGpuViewport(options: UseNativeGpuViewportOptions = {}):
     transitionEvents.forEach(name=>document.addEventListener(name,transition,true));
     const unlisteners: Array<() => void> = [];
     void listen<{ viewId: string; generation: number; revision: number; camera: unknown; cameraVersion?: number; userInitiatedZoom?: boolean }>('ppe-native-camera', event => {
-      if (import.meta.env.DEV) {
+      // PERF (audit 2026-09-30 §LOG.DEBUG): Không console.debug camera event per-tick chuột trừ khi bật __PRYNX_GPU_DEBUG__
+      if (import.meta.env.DEV && isGpuDebugVerbose()) {
         console.debug('[GPU_CAMERA_EVENT]', {
           rev: event.payload.revision,
           currRev: sceneRevision.current,
@@ -229,7 +236,7 @@ export function useNativeGpuViewport(options: UseNativeGpuViewportOptions = {}):
     }).then(stop => { if (lease.closed) stop(); else unlisteners.push(stop); }).catch(report);
     void listen<{ viewId: string; generation: number; revision: number; event: NativeInteractionEvent }>('ppe-native-interaction', event => {
       const value = event.payload;
-      if (import.meta.env.DEV) {
+      if (import.meta.env.DEV && isGpuDebugVerbose()) {
         console.debug('[GPU_INTERACTION_EVENT]', value.event);
       }
       if (active.current !== lease || lease.closed || value.viewId !== lease.viewId || value.generation !== lease.generation
@@ -238,7 +245,7 @@ export function useNativeGpuViewport(options: UseNativeGpuViewportOptions = {}):
     }).then(stop => { if (lease.closed) stop(); else unlisteners.push(stop); }).catch(report);
     void listen<{ viewId: string; generation: number; revision: number; error: string | null; contentReady?: boolean; surface?: NativeSurfaceProof }>('ppe-native-status', event => {
       const value = event.payload;
-      if (import.meta.env.DEV) {
+      if (import.meta.env.DEV && isGpuDebugVerbose()) {
         console.debug('[GPU_STATUS_EVENT]', {
           rev: value.revision,
           expectedRev: sceneRevision.current,
@@ -253,7 +260,7 @@ export function useNativeGpuViewport(options: UseNativeGpuViewportOptions = {}):
         closed: lease.closed, error: value.error });
       if (value.viewId !== lease.viewId || value.generation !== lease.generation || lease.closed
         || value.revision !== sceneRevision.current) {
-        if (import.meta.env.DEV && value.revision !== sceneRevision.current) {
+        if (import.meta.env.DEV && isGpuDebugVerbose() && value.revision !== sceneRevision.current) {
           console.debug('[GPU_STATUS_DROPPED_STALE_REV]', { eventRev: value.revision, currentRev: sceneRevision.current });
         }
         return;
@@ -262,7 +269,7 @@ export function useNativeGpuViewport(options: UseNativeGpuViewportOptions = {}):
       // COLOR (audit 2026-09-27 §V27.C3): proof của surface cũ không được
       // giành quyền sau resize; thiếu boolean/proof không phải ACK hợp lệ.
       if (value.surface && value.surface.epoch < lastSurfaceEpoch) {
-        if (import.meta.env.DEV) {
+        if (import.meta.env.DEV && isGpuDebugVerbose()) {
           console.debug('[GPU_STATUS_DROPPED_OLD_EPOCH]', { epoch: value.surface.epoch, lastSurfaceEpoch });
         }
         return;
@@ -272,7 +279,7 @@ export function useNativeGpuViewport(options: UseNativeGpuViewportOptions = {}):
         presentedRevision.current = value.revision;
         setIsPresented(true);
       } else {
-        if (import.meta.env.DEV) {
+        if (import.meta.env.DEV && isGpuDebugVerbose()) {
           console.debug('[GPU_STATUS_NOT_READY]', {
             contentReady: value.contentReady,
             proofMatch: matchesNativeSurfaceProof(value.surface, expectedSurface, minimumSurfaceEpoch)
@@ -334,7 +341,7 @@ export function useNativeGpuViewport(options: UseNativeGpuViewportOptions = {}):
       }
       if (opened && shouldShow !== shown) {
         const requestedRevision = sceneRevision.current;
-        if (import.meta.env.DEV) {
+        if (import.meta.env.DEV && isGpuDebugVerbose()) {
           console.debug('[GPU_VISIBILITY_TRANSITION]', {
             from: shown,
             to: shouldShow,

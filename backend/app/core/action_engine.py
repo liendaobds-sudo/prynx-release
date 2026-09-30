@@ -471,6 +471,7 @@ class ActionEngine:
                     contrast_percent=params.get("contrast_percent", 0),
                     vibrance_percent=params.get("vibrance_percent", 0),
                     adjustment_stage=params.get("adjustment_stage", "pre_icc"),
+                    preserve_smask=params.get("preserve_smask", False),
                 )
         except Exception as exc:  # noqa: BLE001
             if cancel_event is not None and cancel_event.is_set():

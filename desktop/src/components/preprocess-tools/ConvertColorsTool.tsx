@@ -49,6 +49,7 @@ interface ColorTransformOptions extends ColorAdjustments {
   rendering_intent: OutputPreviewRenderingIntent;
   preserve_black: boolean;
   black_point_compensation: boolean;
+  preserve_smask: boolean;
   gamut_mapping: ColorGamutMapping;
 }
 
@@ -113,6 +114,7 @@ interface PreviewSettings extends ColorAdjustments {
   rendering_intent: OutputPreviewRenderingIntent;
   preserve_black: boolean;
   black_point_compensation: boolean;
+  preserve_smask: boolean;
   gamut_mapping: ColorGamutMapping;
 }
 
@@ -161,6 +163,7 @@ function colorTransformOptions(settings: PreviewSettings): ColorTransformOptions
     rendering_intent: settings.rendering_intent,
     preserve_black: settings.preserve_black,
     black_point_compensation: settings.black_point_compensation,
+    preserve_smask: settings.preserve_smask,
     gamut_mapping: settings.mode === 'cmyk' ? settings.gamut_mapping : 'icc',
     brightness_lstar: settings.brightness_lstar,
     contrast_percent: settings.contrast_percent,
@@ -176,6 +179,7 @@ function colorTransformOptionsKey(options: ColorTransformOptions): string {
     options.rendering_intent,
     options.preserve_black,
     options.black_point_compensation,
+    options.preserve_smask,
     options.gamut_mapping,
     options.adjustment_stage,
     options.brightness_lstar,
@@ -196,6 +200,7 @@ function previewContextKey(settings: PreviewSettings): string {
     options.rendering_intent,
     options.preserve_black,
     options.black_point_compensation,
+    options.preserve_smask,
     options.gamut_mapping,
     options.adjustment_stage,
   ]);
@@ -377,6 +382,7 @@ export default function ConvertColorsTool({ tabId, pdfFile, onFileFixed }: Props
   const [mode, setMode] = useState<'cmyk' | 'grayscale'>('cmyk');
   const [includeSpot, setIncludeSpot] = useState(false);
   const [preserveBlack, setPreserveBlack] = useState(true);
+  const [preserveSmask, setPreserveSmask] = useState(false);
   // PERF (audit 2026-09-29): mặc định dùng chuẩn ICC (Relative+BPC) của ngành in
   // để đạt tốc độ tức thì (~170ms thay vì ~2950ms của adaptive_vivid). Nút ưu tiên
   // rực màu vẫn có sẵn khi người dùng chủ động chọn.
@@ -447,6 +453,7 @@ export default function ConvertColorsTool({ tabId, pdfFile, onFileFixed }: Props
     rendering_intent: renderingIntent,
     preserve_black: preserveBlack,
     black_point_compensation: BLACK_POINT_COMPENSATION,
+    preserve_smask: preserveSmask,
     gamut_mapping: gamutMapping,
     brightness_lstar: brightnessLstar,
     contrast_percent: contrastPercent,
@@ -1022,6 +1029,20 @@ export default function ConvertColorsTool({ tabId, pdfFile, onFileFixed }: Props
                   <strong>{t('preprocess.convertColors:giu_chu_va_net_den_k_thuan')}</strong>
                   <span className="mt-0.5 block text-[10px] text-slate-400">
                     {t('preprocess.convertColors:giu_den_chong_lech_vien')}
+                  </span>
+                </span>
+              </label>
+              <label className="flex cursor-pointer items-start gap-2">
+                <input
+                  type="checkbox"
+                  checked={preserveSmask}
+                  onChange={event => setPreserveSmask(event.target.checked)}
+                  className="mt-0.5 h-3.5 w-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                />
+                <span className="text-[11px] text-slate-600 dark:text-zinc-300">
+                  <strong>{t('preprocess.convertColors:giu_do_trong_suot_smask')}</strong>
+                  <span className="mt-0.5 block text-[10px] text-slate-400">
+                    {t('preprocess.convertColors:giu_do_trong_suot_smask_desc')}
                   </span>
                 </span>
               </label>

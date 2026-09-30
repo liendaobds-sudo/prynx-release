@@ -111,7 +111,7 @@ export interface DieCutSettings extends BaseSettings {
     cutType?: 'default' | 'one_dao';
     fillBlockGap?: number;
     
-    pontType?: 'none' | 'corner' | '5mm' | 'custom';
+    pontType?: 'none' | 'corner' | '5mm' | 'custom' | string;
     pontConfig?: {
         shape: 'circle' | 'l_inverted' | 'l_corner';
         size: number;

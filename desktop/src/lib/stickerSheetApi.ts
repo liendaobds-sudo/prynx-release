@@ -170,6 +170,16 @@ export interface StickerCutlinePreviewPath {
     quality?: StickerCutlinePreviewQuality | null;
 }
 
+export interface StickerCutlineBoundingBox {
+    id: number;
+    width_mm: number;
+    height_mm: number;
+    x_px: number;
+    y_px: number;
+    width_px: number;
+    height_px: number;
+}
+
 export interface StickerCutlinePreview {
     classic_whole_page?: boolean;
     page_number: number;
@@ -180,6 +190,7 @@ export interface StickerCutlinePreview {
     fingerprint: string;
     segment_count: number;
     quality?: StickerCutlinePreviewQuality | null;
+    bounding_boxes?: StickerCutlineBoundingBox[];
 }
 
 export type StickerCutlinePreviewJobStatus =

@@ -345,21 +345,38 @@ def artwork_bbox(page: Any, *, raster_dpi_fallback: int = 72) -> Optional[Rect]:
         has_image = False
         if hasattr(page, "_page"):
             try:
-                res = page._page.get("/Resources")
-                if res is not None and "/XObject" in res:
-                    xobjs = res["/XObject"]
+                def _scan_res(resources, seen=None):
+                    nonlocal has_large_form, has_image
+                    if seen is None:
+                        seen = set()
+                    if resources is None or "/XObject" not in resources:
+                        return
+                    xobjs = resources["/XObject"]
                     for _k in xobjs.keys():
-                        _xo = xobjs[_k]
-                        _st = str(_xo.get("/Subtype", ""))
-                        if "/Form" in _st and "/BBox" in _xo:
-                            _fb = [float(_v) for _v in _xo["/BBox"]]
-                            _fw, _fh = _fb[2] - _fb[0], _fb[3] - _fb[1]
-                            if _fw > 10 and _fh > 10:
-                                xs0.append(_fb[0]); ys0.append(_fb[1])
-                                xs1.append(_fb[2]); ys1.append(_fb[3])
-                                has_large_form = True
-                        elif "/Image" in _st:
-                            has_image = True
+                        try:
+                            _xo = xobjs[_k]
+                            identity = getattr(_xo, 'objgen', None)
+                            if identity and identity in seen:
+                                continue
+                            if identity:
+                                seen.add(identity)
+                            _st = str(_xo.get("/Subtype", ""))
+                            if "/Form" in _st and "/BBox" in _xo:
+                                _fb = [float(_v) for _v in _xo["/BBox"]]
+                                _fw, _fh = _fb[2] - _fb[0], _fb[3] - _fb[1]
+                                if _fw > 10 and _fh > 10:
+                                    xs0.append(_fb[0]); ys0.append(_fb[1])
+                                    xs1.append(_fb[2]); ys1.append(_fb[3])
+                                    has_large_form = True
+                                if "/Resources" in _xo:
+                                    _scan_res(_xo["/Resources"], seen)
+                            elif "/Image" in _st:
+                                has_image = True
+                        except Exception:
+                            pass
+
+                res = getattr(page._page, "Resources", None) or page._page.get("/Resources")
+                _scan_res(res)
             except Exception:
                 pass
 

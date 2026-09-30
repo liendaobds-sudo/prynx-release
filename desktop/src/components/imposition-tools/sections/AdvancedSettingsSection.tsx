@@ -596,13 +596,12 @@ export default function AdvancedSettingsSection({
                             }
 
                             // Xác định giá trị hiển thị trên dropdown:
-                            // Nếu đang là custom và cấu hình khớp với một preset thì chọn preset đó
                             let currentSelectVal: string = s.pontType;
-                            if (s.pontType === 'custom') {
+                            if (typeof s.pontType === 'string' && s.pontType.startsWith('preset_')) {
+                                currentSelectVal = s.pontType;
+                            } else if (s.pontType === 'custom') {
                                 const matched = savedPresets.find(p => p.config && JSON.stringify(p.config) === JSON.stringify(s.pontConfig));
                                 currentSelectVal = matched ? ('preset_' + matched.name) : 'custom';
-                            } else if (s.pontType.startsWith('preset_')) {
-                                currentSelectVal = s.pontType;
                             }
 
                             return (
@@ -625,7 +624,7 @@ export default function AdvancedSettingsSection({
                                                     s.setPontType('custom');
                                                     s.setShowPontModal(true);
                                                 } else if (val.startsWith('preset_')) {
-                                                    s.setPontType('custom');
+                                                    s.setPontType(val);
                                                     const p = savedPresets.find((x) => 'preset_' + x.name === val);
                                                     if (p && p.config) {
                                                         s.setPontConfig({ ...DEFAULT_PONT_CONFIG, ...p.config });

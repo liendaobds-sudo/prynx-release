@@ -108,3 +108,16 @@ class DownsampleImageResponse(BaseModel):
     has_icc: bool = False
     message: Optional[str] = None
 
+
+class ImageToPdfResponse(BaseModel):
+    """Kết quả `POST /api/pdf-tools/image-to-pdf`."""
+
+    success: bool
+    pdf_path: str
+    filename: str
+    width_pt: float
+    height_pt: float
+    dpi: list[float]
+    size_bytes: int
+    format: str
+

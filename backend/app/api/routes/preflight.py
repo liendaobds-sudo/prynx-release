@@ -1493,6 +1493,7 @@ async def preview_convert_colors(req: ConvertColorsPreviewRequest):
             rendering_intent=req.rendering_intent,
             preserve_black=req.preserve_black,
             black_point_compensation=req.black_point_compensation,
+            preserve_smask=req.preserve_smask,
             gamut_mapping=req.gamut_mapping,
             adjustment_stage=req.adjustment_stage,
             brightness_lstar=req.brightness_lstar,
@@ -1610,6 +1611,7 @@ async def convert_colors(req: ConvertColorsRequest):
                             black_point_compensation=req.black_point_compensation,
                             gamut_mapping=req.gamut_mapping,
                             adjustment_stage=req.adjustment_stage,
+                            preserve_smask=req.preserve_smask,
                             **adjustment_options,
                         )
                     else:

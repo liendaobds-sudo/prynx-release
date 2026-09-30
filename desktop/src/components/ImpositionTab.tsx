@@ -142,6 +142,7 @@ import {
     isWorkspaceDocumentRevisionCurrent,
     useWorkspaceStore,
     workspaceDocumentIdentity,
+    type ClassicCutlineViewerPreview,
     type WorkspaceDocumentRevisionToken,
 } from '../stores/useWorkspaceStore';
 import { clearTileUrlCacheForFile } from '../lib/tileUrlCache';
@@ -231,9 +232,13 @@ function asRecipeParams(value: object): Record<string, unknown> {
 function ClassicCutlinePageOverlay({
     preview,
     isUpdating,
+    thrucut,
+    showDimensions,
 }: {
     preview: StickerCutlinePreview;
     isUpdating: boolean;
+    thrucut?: ClassicCutlineViewerPreview['thrucut'];
+    showDimensions?: boolean;
 }) {
     const displayZoom = useWorkspaceStore(state => state.viewerZoom);
     return (
@@ -246,6 +251,8 @@ function ClassicCutlinePageOverlay({
                 preview={preview}
                 selectedInstanceId={null}
                 displayZoom={displayZoom}
+                thrucut={thrucut}
+                showDimensions={showDimensions}
             />
         </div>
     );
@@ -4616,6 +4623,8 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                         <ClassicCutlinePageOverlay
                                             preview={classicCutlineOverlay.preview}
                                             isUpdating={classicCutlineOverlay.isUpdating}
+                                            thrucut={classicCutlineOverlay.thrucut}
+                                            showDimensions={classicCutlineOverlay.showDimensions}
                                         />
                                     ) : undefined}
                                     pageOverlayRenderer={activeDashboardTool === 'sticker'

@@ -1501,6 +1501,62 @@ def test_convert_flattens_isolated_rgb_smask_before_icc(tmp_path, with_matte):
         assert bytes(image.read_bytes()) == expected_cmyk
 
 
+def test_convert_preserves_isolated_rgb_smask_when_requested(tmp_path):
+    """Khi preserve_smask=True, ảnh RGB cô lập được chuyển sang DeviceCMYK nhưng giữ nguyên SMask."""
+    cmyk, srgb = _profiles()
+    pdf = pikepdf.Pdf.new()
+    mask = pikepdf.Stream(
+        pdf,
+        bytes([128]),
+        Type=pikepdf.Name("/XObject"),
+        Subtype=pikepdf.Name("/Image"),
+        Width=1,
+        Height=1,
+        BitsPerComponent=8,
+        ColorSpace=pikepdf.Name("/DeviceGray"),
+        Decode=pikepdf.Array([0, 1]),
+    )
+    image = pikepdf.Stream(
+        pdf,
+        bytes([255, 128, 128]),
+        Type=pikepdf.Name("/XObject"),
+        Subtype=pikepdf.Name("/Image"),
+        Width=1,
+        Height=1,
+        BitsPerComponent=8,
+        ColorSpace=pikepdf.Name("/DeviceRGB"),
+        Decode=pikepdf.Array([0, 1, 0, 1, 0, 1]),
+        SMask=pdf.make_indirect(mask),
+    )
+    page = pikepdf.Dictionary(
+        Type=pikepdf.Name("/Page"),
+        MediaBox=[0, 0, 100, 100],
+        Resources=pikepdf.Dictionary(
+            XObject=pikepdf.Dictionary(Im0=pdf.make_indirect(image))
+        ),
+        Contents=pdf.make_indirect(pikepdf.Stream(pdf, b"q 100 0 0 100 0 0 cm /Im0 Do Q\n")),
+    )
+    pdf.pages.append(pikepdf.Page(pdf.make_indirect(page)))
+    src = tmp_path / "preserve-smask-source.pdf"
+    pdf.save(str(src))
+    pdf.close()
+    out = tmp_path / "preserve-smask-output.pdf"
+
+    result = pdf_actions_native.convert_to_cmyk(
+        str(src), str(out), cmyk, srgb, preserve_smask=True
+    )
+    assert result["supported"], result
+    assert result["flattened_images"] == 0
+    assert result["preserved_smask_images"] == 1
+    assert result["images"] == 1
+
+    with pikepdf.open(str(out)) as opened:
+        converted_image = opened.pages[0].Resources.XObject.Im0
+        assert str(converted_image.ColorSpace) == "/DeviceCMYK"
+        assert converted_image.get("/SMask") is not None
+        assert str(converted_image.SMask.ColorSpace) == "/DeviceGray"
+
+
 def test_convert_keeps_nonisolated_rgb_smask_fail_closed(tmp_path):
     """Có nền vector thì không được đoán backdrop để flatten ảnh alpha."""
     cmyk, srgb = _profiles()

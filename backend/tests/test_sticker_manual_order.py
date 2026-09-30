@@ -51,7 +51,11 @@ def test_manual_shared_master_registers_artwork_not_just_cut(tmp_path):
         assert len(pdf.pages)==2
     pixels=_raster(str(output))
     black=(pixels[:,:,:3] < 100).all(axis=2).mean()
-    assert abs(black-3*80*80/(200*2.83465)**2)<.005
+    # OVAL20.01: Ô đen 40x40 giữ đúng scale 1.0 (không phóng to thành 80x80 của khuôn).
+    expected_black = 3 * 40 * 40 / (200 * 2.83465)**2
+    assert abs(black - expected_black) < .005, (
+        f"Tỉ lệ đen={black:.4f} lệch chuẩn {expected_black:.4f} (phải giữ scale 1:1, không phóng to)"
+    )
 
 def test_manual_repeat_tracks_virtual_thumbnail_pages(tmp_path):
     source=_source(tmp_path/"source.pdf",1)
@@ -77,4 +81,9 @@ def test_manual_repeat_keeps_shared_master_size_and_registration(tmp_path):
         assert len(pdf.pages)==5
     pixels=_raster(str(output),1)
     black=(pixels[:,:,:3] < 100).all(axis=2).mean()
-    assert abs(black-4*80*80/(200*2.83465)**2)<.005
+    # OVAL20.01: Trang 1 (off=5) có ô 40x40 sau clip khuôn master (10..90) còn 35x35 pt,
+    # 4 ô trên tờ 200x200mm chiếm tỉ lệ ~0.015 - 0.017. Bắt buộc giữ scale 1.0 (không phóng to thành 80x80).
+    expected_black = 4 * 35 * 35 / (200 * 2.83465)**2
+    assert abs(black - expected_black) < .005, (
+        f"Tỉ lệ đen={black:.4f} lệch chuẩn {expected_black:.4f} (phải giữ scale 1:1, không phóng to)"
+    )

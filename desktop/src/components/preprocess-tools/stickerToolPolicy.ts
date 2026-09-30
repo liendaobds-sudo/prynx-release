@@ -169,6 +169,17 @@ export interface StickerDielineFormInput {
     cutlineSimplifyMm?: unknown;
     /** Opt-in mới: backend tự chọn dung sai cho từng trang raster, giữ CUT/vector. */
     cutlineSimplifyAuto?: boolean;
+    thrucutEnabled?: boolean;
+    thrucutShape?: 'rounded_rect' | 'ellipse' | 'contour_offset';
+    thrucutMarginMm?: number;
+    thrucutMarginTopMm?: number;
+    thrucutMarginBottomMm?: number;
+    thrucutMarginLeftMm?: number;
+    thrucutMarginRightMm?: number;
+    thrucutRadiusMm?: number;
+    thrucutSpotName?: string;
+    thrucutColorHex?: string;
+    thrucutColorCmyk?: string;
 }
 
 /** SIMPLIFY (audit 2026-09-09 §NODE.C): cùng dung sai cho preview, xuất và recipe. */
@@ -266,5 +277,61 @@ export function buildStickerDielineFields(
         // cờ riêng để trang vector trong tài liệu hỗn hợp không bị áp mức của Alpha.
         ...(!isRectangle && cutMode !== 'none' && input.cutlineSimplifyAuto === true
             ? { cutline_simplify_auto: 'true' } : {}),
+        ...(!isRectangle && cutMode !== 'none' && input.thrucutEnabled ? {
+            thrucut_enabled: 'true',
+            thrucut_shape: input.thrucutShape || 'rounded_rect',
+            thrucut_margin_mm: String(clampStickerMm(input.thrucutMarginMm ?? 3.0, { min: 0.5, max: 30 })),
+            thrucut_margin_top_mm: String(clampStickerMm(input.thrucutMarginTopMm ?? input.thrucutMarginMm ?? 3.0, { min: 0, max: 50 })),
+            thrucut_margin_bottom_mm: String(clampStickerMm(input.thrucutMarginBottomMm ?? input.thrucutMarginMm ?? 3.0, { min: 0, max: 50 })),
+            thrucut_margin_left_mm: String(clampStickerMm(input.thrucutMarginLeftMm ?? input.thrucutMarginMm ?? 3.0, { min: 0, max: 50 })),
+            thrucut_margin_right_mm: String(clampStickerMm(input.thrucutMarginRightMm ?? input.thrucutMarginMm ?? 3.0, { min: 0, max: 50 })),
+            thrucut_radius_mm: String(clampStickerMm(input.thrucutRadiusMm ?? 3.0, { min: 0, max: 20 })),
+            thrucut_spot_name: (input.thrucutSpotName || 'ThruCut').trim(),
+            thrucut_color_hex: (input.thrucutColorCmyk || input.thrucutColorHex || '#00FFFF').trim(),
+        } : {}),
+    };
+}
+
+export interface CmykColor {
+    c: number;
+    m: number;
+    y: number;
+    k: number;
+}
+
+export function cmykToHex(c: number, m: number, y: number, k: number): string {
+    const cNorm = Math.min(100, Math.max(0, c)) / 100;
+    const mNorm = Math.min(100, Math.max(0, m)) / 100;
+    const yNorm = Math.min(100, Math.max(0, y)) / 100;
+    const kNorm = Math.min(100, Math.max(0, k)) / 100;
+    const r = Math.round(255 * (1 - cNorm) * (1 - kNorm));
+    const g = Math.round(255 * (1 - mNorm) * (1 - kNorm));
+    const b = Math.round(255 * (1 - yNorm) * (1 - kNorm));
+    const toHex = (n: number) => n.toString(16).padStart(2, '0');
+    return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+}
+
+export function hexToCmyk(hex: string): CmykColor {
+    const clean = (hex || '').replace('#', '').trim();
+    if (clean.length !== 6 && clean.length !== 3) {
+        return { c: 100, m: 0, y: 0, k: 0 };
+    }
+    const full = clean.length === 3 ? clean.split('').map(ch => ch + ch).join('') : clean;
+    const r = parseInt(full.substring(0, 2), 16) / 255;
+    const g = parseInt(full.substring(2, 4), 16) / 255;
+    const b = parseInt(full.substring(4, 6), 16) / 255;
+    if (Number.isNaN(r) || Number.isNaN(g) || Number.isNaN(b)) {
+        return { c: 100, m: 0, y: 0, k: 0 };
+    }
+    const k = 1 - Math.max(r, g, b);
+    if (k >= 0.999) return { c: 0, m: 0, y: 0, k: 100 };
+    const c = (1 - r - k) / (1 - k);
+    const m = (1 - g - k) / (1 - k);
+    const y = (1 - b - k) / (1 - k);
+    return {
+        c: Math.round(Math.max(0, Math.min(100, c * 100))),
+        m: Math.round(Math.max(0, Math.min(100, m * 100))),
+        y: Math.round(Math.max(0, Math.min(100, y * 100))),
+        k: Math.round(Math.max(0, Math.min(100, k * 100))),
     };
 }

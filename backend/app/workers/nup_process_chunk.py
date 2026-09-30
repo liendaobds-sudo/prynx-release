@@ -209,7 +209,6 @@ def _strip_color_from_stream(page_or_xobj, target_color):
                 cs_name = str(operands[0])
                 if cs_name not in ('/DeviceRGB', '/DeviceCMYK', '/DeviceGray', '/Pattern'):
                     current_stroke_color = 'SPOT'
-                    logger.debug(f"[_strip_color] Found SPOT stroke color space: {cs_name}", flush=True)
                 else:
                     current_stroke_color = None
         elif op in ('SCN', 'SC'):
@@ -223,11 +222,11 @@ def _strip_color_from_stream(page_or_xobj, target_color):
                 current_stroke_color = None
                 
         # If it's a stroke operation
+        # PERF (audit 2026-09-30 §LOG.DEBUG): không in log debug trong từng operator của hot-loop
         if op in ('S', 's', 'B', 'B*', 'b', 'b*'):
             match = False
             if current_stroke_color == 'SPOT':
                 match = True
-                logger.debug(f"[_strip_color] Stripping '{op}' because of SPOT color", flush=True)
             elif current_stroke_color and target_color and current_stroke_color != 'SPOT':
                 if len(current_stroke_color) == len(target_color):
                     match = True
@@ -235,8 +234,6 @@ def _strip_color_from_stream(page_or_xobj, target_color):
                         if abs(c1 - c2) > 0.01:
                             match = False
                             break
-                    if match:
-                        logger.debug(f"[_strip_color] Stripping '{op}' because of CMYK/RGB match", flush=True)
             
             if match:
                 stripped = True
@@ -1096,19 +1093,18 @@ def process_chunk(args):
                     # Trang nội dung rỗng → bỏ ô an toàn (không render, không sập).
                     continue
 
-                # OVAL20.01 (audit 2026-09-20): Nếu các trang VDP có cùng kích thước khổ trang
-                # với trang master (MediaBox/page.rect lệch <= 1pt) VÀ artwork bbox bao phủ trọn
-                # khuôn master (thiết kế tràn viền/full bleed cùng hệ toạ độ với master),
-                # kế thừa trực tiếp clip của khuôn master để giữ scale 1.0 và vị trí gốc.
+                # OVAL20.01 (audit 2026-09-20, fix hồi quy 2026-09-30): Nếu các trang VDP có cùng kích thước khổ trang
+                # với trang master (MediaBox/page.rect lệch <= 1pt), các trang thuộc cùng hệ toạ độ thiết kế VDP.
+                # Kế thừa trực tiếp clip của khuôn master để giữ scale 1.0 và vị trí gốc cho mọi trang.
+                # Tuyệt đối KHÔNG kiểm tra _bb.width >= _mdr.width vì các trang VDP chỉ mang text/nội dung in
+                # mà không có vector khuôn bế, việc ép _bb to bằng khuôn sẽ loại bỏ nhầm và gây phóng to 214%.
                 _is_same_as_master_size = False
                 if homogeneous_master_idx is not None and _hom_master_die and _hom_master_die.get('rect'):
                     try:
                         _mp = src_doc[homogeneous_master_idx]
                         _sp = src_doc[_src_idx]
                         if abs(_sp.rect.width - _mp.rect.width) <= 1.0 and abs(_sp.rect.height - _mp.rect.height) <= 1.0:
-                            _mdr = _hom_master_die['rect']
-                            if _bb.width >= (_mdr.width - 2.0) and _bb.height >= (_mdr.height - 2.0):
-                                _is_same_as_master_size = True
+                            _is_same_as_master_size = True
                     except Exception:
                         _is_same_as_master_size = False
 

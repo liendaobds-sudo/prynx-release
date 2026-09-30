@@ -446,6 +446,10 @@ class ConvertColorsRequest(BaseModel):
     rendering_intent: ColorRenderingIntent = "relative"
     preserve_black: bool = True
     black_point_compensation: bool = True
+    preserve_smask: bool = Field(
+        default=False,
+        description="Giữ lại mặt nạ trong suốt /SMask trên ảnh thay vì flatten lên nền trắng.",
+    )
     # COLOR (audit 2026-08-22 §COLOR.38): ICC intent và gamut mapping thích
     # nghi là hai quyết định riêng. Mặc định "icc" giữ nguyên artifact/API cũ.
     gamut_mapping: ColorGamutMapping = "icc"
@@ -517,6 +521,7 @@ class ConvertColorsPreviewRequest(BaseModel):
     rendering_intent: ColorRenderingIntent = "relative"
     preserve_black: bool = True
     black_point_compensation: bool = True
+    preserve_smask: bool = False
     gamut_mapping: ColorGamutMapping = "icc"
     adjustment_stage: ColorAdjustmentStage = "post_cmyk"
     brightness_lstar: int = Field(default=0, ge=-10, le=10)

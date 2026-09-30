@@ -143,6 +143,8 @@ from app.workers.cutline_geometry import (  # noqa: E402
     build_corner_locked_catmull_beziers,
     build_contour_path_stream,
     build_filleted_polygon_beziers,
+    build_thrucut_path_stream,
+    hex_to_cmyk_tint,
     _catmull_rom_bezier_segments,
     _catmull_rom_chord_deviation_bound,
     _sample_catmull_rom_ring,
@@ -8891,11 +8893,17 @@ def _n_pages_should_parallelize(
         )
         return False
     threshold = _STICKER_PARALLEL_MIN_PAGES
-    if (
+    hw_prof = get_sticker_hw_profile()
+    if hw_prof.get("tier") == "full" and hw_prof.get("max_workers", 1) > 1:
+        # PERF (audit 2026-09-30 §RAM-GATE): Máy mạnh (RAM >= 16GB, CPU >= 4 nhân)
+        # chạy hết công suất phần cứng: bất kể trang tem nhỏ hay lớn, từ 2 trang
+        # đã nên fan-out song song để tận dụng tối đa tất cả các nhân CPU, không ép
+        # chạy tuần tự 1 nhân lãng phí 4-16s.
+        threshold = _STICKER_PARALLEL_MIN_PAGES_LARGE
+    elif (
         page_area_pt2 is not None
         and page_area_pt2 >= _STICKER_LARGE_PAGE_PT2
-        and get_sticker_hw_profile().get("tier") == "full"
-        and get_sticker_hw_profile().get("max_workers", 1) > 1
+        and hw_prof.get("max_workers", 1) > 1
     ):
         threshold = _STICKER_PARALLEL_MIN_PAGES_LARGE
     return n_pages >= threshold
@@ -9077,6 +9085,13 @@ def _process_sticker_chunk(args: dict):
             ),
             alpha_path_overrides=args.get("alpha_path_overrides"),
             approved_contour_overrides=args.get("approved_contour_overrides"),
+            thrucut_enabled=args.get("thrucut_enabled", False),
+            thrucut_shape=args.get("thrucut_shape", "rounded_rect"),
+            thrucut_margin_mm=args.get("thrucut_margin_mm", 3.0),
+            thrucut_radius_mm=args.get("thrucut_radius_mm", 3.0),
+            thrucut_spot_name=args.get("thrucut_spot_name", "ThruCut"),
+            thrucut_color=args.get("thrucut_color", (1.0, 0.0, 0.0, 0.0)),
+            thrucut_color_hex=args.get("thrucut_color_hex", "#00FFFF"),
             _page_subset=args["page_indices"],
             _simplify_memo=args.get("simplify_memo"),
             _shared_simplify_memo=args.get("shared_simplify_memo"),
@@ -9156,7 +9171,46 @@ class StickerEngine:
         approved_contour_overrides: dict[int, dict] | None = None,
         _cutline_only: bool = False,
         _cached_page_dielines: dict | None = None,
+        thrucut_enabled: bool = False,
+        thrucut_shape: str = "rounded_rect",
+        thrucut_margin_mm: float = 3.0,
+        thrucut_margin_top_mm: float | None = None,
+        thrucut_margin_bottom_mm: float | None = None,
+        thrucut_margin_left_mm: float | None = None,
+        thrucut_margin_right_mm: float | None = None,
+        thrucut_radius_mm: float = 3.0,
+        thrucut_spot_name: str = "ThruCut",
+        thrucut_color: tuple = (1.0, 0.0, 0.0, 0.0),
+        thrucut_color_hex: str = "#00FFFF",
     ) -> tuple:
+        thrucut_enabled = bool(thrucut_enabled) and not rectangle_mode and cut_mode != "none"
+        thrucut_shape = str(thrucut_shape or "rounded_rect").strip().lower()
+        try:
+            thrucut_margin_mm = max(0.5, min(30.0, float(thrucut_margin_mm)))
+        except (TypeError, ValueError):
+            thrucut_margin_mm = 3.0
+
+        def _parse_thrucut_side(val, default):
+            if val is None:
+                return default
+            try:
+                return max(0.0, min(50.0, float(val)))
+            except (TypeError, ValueError):
+                return default
+
+        thrucut_margin_top_mm = _parse_thrucut_side(thrucut_margin_top_mm, thrucut_margin_mm)
+        thrucut_margin_bottom_mm = _parse_thrucut_side(thrucut_margin_bottom_mm, thrucut_margin_mm)
+        thrucut_margin_left_mm = _parse_thrucut_side(thrucut_margin_left_mm, thrucut_margin_mm)
+        thrucut_margin_right_mm = _parse_thrucut_side(thrucut_margin_right_mm, thrucut_margin_mm)
+        try:
+            thrucut_radius_mm = max(0.0, min(20.0, float(thrucut_radius_mm)))
+        except (TypeError, ValueError):
+            thrucut_radius_mm = 3.0
+        thrucut_spot_name = str(thrucut_spot_name or "ThruCut").strip() or "ThruCut"
+        if thrucut_color_hex:
+            thrucut_color = tuple(hex_to_cmyk_tint(thrucut_color_hex))
+        elif not isinstance(thrucut_color, (list, tuple)) or len(thrucut_color) != 4:
+            thrucut_color = (1.0, 0.0, 0.0, 0.0)
         # _page_subset: khi != None, CHỈ xử lý các trang có index trong list (theo
         # đúng thứ tự truyền vào) và lưu output ra output_path. Dùng cho worker song
         # song — mỗi tiến trình con xử lý một dải trang liền kề rồi trả file chunk.
@@ -9515,7 +9569,29 @@ class StickerEngine:
 
             cs_arr = pikepdf.Array([pikepdf.Name.Separation, pikepdf.Name.CutContour, pikepdf.Name.DeviceCMYK, func_dict])
             
+            thru_spot_name_clean = thrucut_spot_name.lstrip("/")
+            thru_spot_pdf_name = pikepdf.Name("/" + thru_spot_name_clean)
+            if thrucut_enabled:
+                tc, tm, ty, tk = thrucut_color
+                thru_func_dict = doc_out.make_indirect(pikepdf.Dictionary({
+                    '/FunctionType': 2,
+                    '/Domain': [0.0, 1.0],
+                    '/C0': [0.0, 0.0, 0.0, 0.0],
+                    '/C1': [float(tc), float(tm), float(ty), float(tk)],
+                    '/N': 1.0,
+                }))
+                thru_cs_arr = pikepdf.Array([pikepdf.Name.Separation, thru_spot_pdf_name, pikepdf.Name.DeviceCMYK, thru_func_dict])
+            else:
+                thru_cs_arr = None
+
             mm_to_pts = 2.83465
+            thrucut_margin_pts = thrucut_margin_mm * mm_to_pts if thrucut_enabled else 0.0
+            thrucut_margin_top_pts = thrucut_margin_top_mm * mm_to_pts if thrucut_enabled else 0.0
+            thrucut_margin_bottom_pts = thrucut_margin_bottom_mm * mm_to_pts if thrucut_enabled else 0.0
+            thrucut_margin_left_pts = thrucut_margin_left_mm * mm_to_pts if thrucut_enabled else 0.0
+            thrucut_margin_right_pts = thrucut_margin_right_mm * mm_to_pts if thrucut_enabled else 0.0
+            max_thrucut_margin_pts = max(thrucut_margin_top_pts, thrucut_margin_bottom_pts, thrucut_margin_left_pts, thrucut_margin_right_pts) if thrucut_enabled else 0.0
+            thrucut_radius_pts = thrucut_radius_mm * mm_to_pts if thrucut_enabled else 0.0
             # Lùi 0,15 mm để dao nằm trong vùng mực chắc chắn ở mép Alpha bán trong suốt.
             effective_offset_mm = offset_mm - (ALPHA_CONTOUR_INSET_MM if alpha_contour_mode else 0.0)
             offset_pts = effective_offset_mm * mm_to_pts
@@ -9633,7 +9709,9 @@ class StickerEngine:
                     continue
 
                 t_open_pdfium = 0.0
-                if not (_cached_page_dielines and page_idx in _cached_page_dielines):
+                _has_cached_dieline = bool(_cached_page_dielines and page_idx in _cached_page_dielines)
+                _can_fast_path_cached = _has_cached_dieline and (_cutline_only or bleed_mm <= 0.0)
+                if not _can_fast_path_cached:
                     debug_step = f"Rasterize Page {page_idx}"
                     _t0_pdfium = time.perf_counter()
                     with pdfium_guard():
@@ -9688,7 +9766,7 @@ class StickerEngine:
                     })
                     continue
 
-                if _cached_page_dielines and page_idx in _cached_page_dielines:
+                if _can_fast_path_cached:
                     _t0_fast = time.perf_counter()
                     cached_entry = _cached_page_dielines[page_idx]
                     base_dieline = cached_entry["base_dieline"]
@@ -9715,6 +9793,8 @@ class StickerEngine:
                         max_expansion_pts = max(0.0, bleed_pts)
                     else:
                         max_expansion_pts = max(0.0, total_offset, bleed_outer_offset)
+                        if thrucut_enabled:
+                            max_expansion_pts = max(max_expansion_pts, total_offset + max_thrucut_margin_pts)
 
                     if rectangle_mode:
                         exp_left = max_expansion_pts if bleed_side_l else 0.0
@@ -9993,6 +10073,18 @@ class StickerEngine:
 
                     _t0_stream = time.perf_counter()
                     page_content_stream = []
+                    if not _cutline_only:
+                        # PERF (audit 2026-09-30 §FAST.EXEC): Nhúng Form XObject trang gốc
+                        # nguyên bản 100% vector/màu in trước khi vẽ lớp dao bế.
+                        src_xobj = page_in_pike.as_form_xobject()
+                        src_xobj_name = page_out.add_resource(src_xobj, pikepdf.Name.XObject)
+                        art_shift_x = exp_left - crop_x0
+                        art_shift_y = exp_bottom - crop_y0
+                        page_content_stream.append("q")
+                        page_content_stream.append(f"1 0 0 1 {art_shift_x:.4f} {art_shift_y:.4f} cm")
+                        page_content_stream.append(f"{str(src_xobj_name)} Do")
+                        page_content_stream.append("Q")
+
                     if _cut_page_ok and draw_cut_contour and cut_mode != "none" and cut_poly is not None and not cut_poly.is_empty:
                         page_content_stream.append("q")
                         cut_origin_x = exp_left
@@ -10033,8 +10125,53 @@ class StickerEngine:
                         page_content_stream.append("S")
                         page_content_stream.append("Q")
 
+                        if thrucut_enabled and cut_poly is not None and not cut_poly.is_empty:
+                            from shapely.geometry import box as shapely_box
+                            thru_stream = []
+                            thru_poly = None
+                            if thrucut_shape == "contour_offset":
+                                buf_poly = cut_poly.buffer(thrucut_margin_pts)
+                                if not buf_poly.is_empty:
+                                    thru_poly = buf_poly
+                                    raw_bgeoms = list(buf_poly.geoms) if hasattr(buf_poly, 'geoms') else [buf_poly]
+                                    for bp in raw_bgeoms:
+                                        if bp.geom_type == 'Polygon' and not bp.is_empty:
+                                            b_coords = list(bp.exterior.coords)
+                                            if b_coords:
+                                                thru_stream.extend(build_contour_path_stream(b_coords, page_in_height, "preserve"))
+                                            for b_inter in bp.interiors:
+                                                b_icoords = list(b_inter.coords)
+                                                if b_icoords:
+                                                    thru_stream.extend(build_contour_path_stream(b_icoords, page_in_height, "preserve"))
+                            if not thru_stream:
+                                thru_stream, (tox0, toy0, tox1, toy1) = build_thrucut_path_stream(
+                                    cut_poly.bounds,
+                                    shape=thrucut_shape,
+                                    margin_pts=thrucut_margin_pts,
+                                    radius_pts=thrucut_radius_pts,
+                                    page_height=page_in_height,
+                                    margin_top_pts=thrucut_margin_top_pts,
+                                    margin_bottom_pts=thrucut_margin_bottom_pts,
+                                    margin_left_pts=thrucut_margin_left_pts,
+                                    margin_right_pts=thrucut_margin_right_pts,
+                                )
+                                thru_poly = shapely_box(tox0, toy0, tox1, toy1)
+
+                            if thru_stream:
+                                page_content_stream.append("q")
+                                page_content_stream.append(f"1 0 0 1 {cut_origin_x:.4f} {cut_origin_y:.4f} cm")
+                                page_content_stream.append(f"/{thru_spot_name_clean} CS")
+                                page_content_stream.append("1.0 SCN")
+                                page_content_stream.append("1.0 w")
+                                page_content_stream.extend(thru_stream)
+                                page_content_stream.append("S")
+                                page_content_stream.append("Q")
+                                if thru_poly is not None and not thru_poly.is_empty:
+                                    dieline_poly = thru_poly
+
                     full_content = "\n".join(page_content_stream).encode("ascii")
                     page_out.contents_add(pikepdf.Stream(doc_out, full_content))
+                    _stream_ms = (time.perf_counter() - _t0_stream) * 1000.0
 
                     if _cut_page_ok and draw_cut_contour and cut_mode != "none":
                         if "/Resources" not in page_out:
@@ -10042,6 +10179,8 @@ class StickerEngine:
                         if "/ColorSpace" not in page_out.Resources:
                             page_out.Resources.ColorSpace = pikepdf.Dictionary()
                         page_out.Resources.ColorSpace.CutContour = cs_arr
+                        if thrucut_enabled and thru_cs_arr is not None:
+                            page_out.Resources.ColorSpace[thru_spot_pdf_name] = thru_cs_arr
 
                     page_meta = {
                         "recon": recon_meta,
@@ -10527,14 +10666,39 @@ class StickerEngine:
                         # `px_per_mm` của khung render.
                         px_per_mm=_PT_PER_MM / max(1e-9, contour_pixel_to_pt),
                     )
-                    aa_mask_padded = np.pad(contour_mask, pad_width=1, mode='constant', constant_values=0)
-
-                    mask_prep_seconds = time.perf_counter() - _t0_mask
-                    debug_step = f"Find Contours Page {page_idx}"
-                    from skimage import measure
-                    contour_started = time.perf_counter()
-                    contours = measure.find_contours(aa_mask_padded, 127.5)
-                    contour_seconds = time.perf_counter() - contour_started
+                    if _has_cached_dieline:
+                        # PERF (audit 2026-09-30 §CACHED.FIND): Đã có base_dieline từ preview/cache,
+                        # bỏ qua hoàn toàn marching-squares find_contours (tiết kiệm 2-3s CPU).
+                        contours = []
+                        contour_seconds = 0.0
+                    else:
+                        mask_prep_seconds = time.perf_counter() - _t0_mask
+                        debug_step = f"Find Contours Page {page_idx}"
+                        from skimage import measure
+                        contour_started = time.perf_counter()
+                        # PERF (audit 2026-09-30 §ROI.OPT): Bounding Box ROI cho find_contours.
+                        # Hầu hết tem nhãn chỉ chiếm 10-50% diện tích trang (xung quanh là nền trắng).
+                        # Quét marching-squares trên ROI thu hẹp giúp tăng tốc 3-6 lần so với quét cả trang 8.7M px.
+                        h_mask, w_mask = contour_mask.shape[:2]
+                        total_px = h_mask * w_mask
+                        bx, by, bw, bh = cv2.boundingRect(contour_mask)
+                        if bw > 0 and bh > 0 and (bw * bh) < 0.85 * total_px:
+                            pad_roi = 4
+                            rx0 = max(0, bx - pad_roi)
+                            ry0 = max(0, by - pad_roi)
+                            rx1 = min(w_mask, bx + bw + pad_roi)
+                            ry1 = min(h_mask, by + bh + pad_roi)
+                            roi_mask = contour_mask[ry0:ry1, rx0:rx1]
+                            roi_padded = np.pad(roi_mask, pad_width=1, mode='constant', constant_values=0)
+                            roi_contours = measure.find_contours(roi_padded, 127.5)
+                            contours = [
+                                cnt + np.array([ry0, rx0], dtype=cnt.dtype)
+                                for cnt in roi_contours
+                            ]
+                        else:
+                            aa_mask_padded = np.pad(contour_mask, pad_width=1, mode='constant', constant_values=0)
+                            contours = measure.find_contours(aa_mask_padded, 127.5)
+                        contour_seconds = time.perf_counter() - contour_started
                 
                 # Hình học phải theo CROPBOX, KHÔNG phải MediaBox: pdfium render và
                 # page.as_form_xobject() đều dùng CropBox (đã verify). Khi file có
@@ -10566,6 +10730,8 @@ class StickerEngine:
                         cut_mode, bleed_pts, offset_pts
                     )
                     max_expansion_pts = max(0.0, _cut_edge, _outer_edge)
+                    if thrucut_enabled:
+                        max_expansion_pts = max(max_expansion_pts, _cut_edge + max_thrucut_margin_pts)
 
                 # Nở theo TỪNG cạnh. Xén vuông góc cho người dùng chọn cạnh nào
                 # được bù xén; mọi nhánh khác (bế tem, selection) nở đều như cũ.
@@ -10668,6 +10834,54 @@ class StickerEngine:
                             ",".join(bleed_sides_to_names(bleed_sides_resolved)) or "none",
                         )
                 
+                elif _has_cached_dieline and cut_mode != "none":
+                    # PERF (audit 2026-09-30 §CACHED.GEOM): base_dieline đã có từ preview/cache.
+                    # Lấy thẳng base_dieline, bỏ qua hoàn toàn việc dựng Shapely polygon từ contour
+                    # và unary_union (tiết kiệm 1-2s CPU).
+                    cached_entry = _cached_page_dielines[page_idx]
+                    base_dieline = cached_entry["base_dieline"]
+                    recon_meta = cached_entry["recon_meta"]
+                    cut_draw_style = cached_entry.get("cut_draw_style", corner_style)
+                    source_pixel_mm_page = cached_entry.get("source_pixel_mm_page", source_pixel_mm_page)
+                    any_dieline_found = True
+                    _recorded_base_dieline_entry = cached_entry
+
+                    total_offset, bleed_outer_offset = compute_cut_bleed_offsets(
+                        cut_mode, bleed_pts, offset_pts
+                    )
+                    if (alpha_source_contour or approved_contour_page) and preserve_contour:
+                        join_style = 1
+                    elif recon_meta.get("reconstructed") and recon_meta.get("kind") in ("circle", "ellipse", "rounded_rect"):
+                        join_style = 1
+                    elif recon_meta.get("reconstructed") and recon_meta.get("kind") in ("rect", "triangle"):
+                        join_style = 2
+                    else:
+                        join_style = 1 if corner_style == "round" else 2
+
+                    if total_offset != 0:
+                        dieline_poly = base_dieline.buffer(total_offset, join_style=join_style)
+                        if total_offset < 0:
+                            dieline_poly = dieline_poly.buffer(0.01, join_style=join_style)
+                    else:
+                        dieline_poly = base_dieline
+
+                    if bleed_outer_offset != 0:
+                        bleed_outer_poly = base_dieline.buffer(bleed_outer_offset, join_style=join_style)
+                    else:
+                        bleed_outer_poly = base_dieline
+
+                    if fill_holes:
+                        if dieline_poly.geom_type == 'MultiPolygon':
+                            dieline_poly = MultiPolygon([Polygon(p.exterior) for p in dieline_poly.geoms])
+                        elif dieline_poly.geom_type == 'Polygon':
+                            dieline_poly = Polygon(dieline_poly.exterior)
+                        if bleed_outer_poly.geom_type == 'MultiPolygon':
+                            bleed_outer_poly = MultiPolygon([Polygon(p.exterior) for p in bleed_outer_poly.geoms])
+                        elif bleed_outer_poly.geom_type == 'Polygon':
+                            bleed_outer_poly = Polygon(bleed_outer_poly.exterior)
+
+                    cut_poly = dieline_poly
+
                 elif cut_mode != "none" and len(contours) > 0:
                     _t0_geom = time.perf_counter()
                     debug_step = f"Process Contours Page {page_idx}"
@@ -12481,6 +12695,50 @@ class StickerEngine:
                             individual_cut_ops_by_geom.append("\n".join(single_isolated))
 
                     cut_ops.append("Q")
+
+                    if thrucut_enabled and cut_poly is not None and not getattr(cut_poly, 'is_empty', True):
+                        from shapely.geometry import box as shapely_box
+                        thru_stream = []
+                        thru_poly = None
+                        if thrucut_shape == "contour_offset":
+                            buf_poly = cut_poly.buffer(thrucut_margin_pts)
+                            if not getattr(buf_poly, 'is_empty', True):
+                                thru_poly = buf_poly
+                                raw_bgeoms = list(buf_poly.geoms) if hasattr(buf_poly, 'geoms') else [buf_poly]
+                                for bp in raw_bgeoms:
+                                    if bp.geom_type == 'Polygon' and not bp.is_empty:
+                                        b_coords = list(bp.exterior.coords)
+                                        if b_coords:
+                                            thru_stream.extend(build_contour_path_stream(b_coords, page_in_height, "preserve"))
+                                        for b_inter in bp.interiors:
+                                            b_icoords = list(b_inter.coords)
+                                            if b_icoords:
+                                                thru_stream.extend(build_contour_path_stream(b_icoords, page_in_height, "preserve"))
+                        if not thru_stream:
+                            thru_stream, (tox0, toy0, tox1, toy1) = build_thrucut_path_stream(
+                                cut_poly.bounds,
+                                shape=thrucut_shape,
+                                margin_pts=thrucut_margin_pts,
+                                radius_pts=thrucut_radius_pts,
+                                page_height=page_in_height,
+                                margin_top_pts=thrucut_margin_top_pts,
+                                margin_bottom_pts=thrucut_margin_bottom_pts,
+                                margin_left_pts=thrucut_margin_left_pts,
+                                margin_right_pts=thrucut_margin_right_pts,
+                            )
+                            thru_poly = shapely_box(tox0, toy0, tox1, toy1)
+
+                        if thru_stream:
+                            cut_ops.append("q")
+                            cut_ops.append(f"1 0 0 1 {cut_origin_x:.4f} {cut_origin_y:.4f} cm")
+                            cut_ops.append(f"/{thru_spot_name_clean} CS")
+                            cut_ops.append("1.0 SCN")
+                            cut_ops.append("1.0 w")
+                            cut_ops.extend(thru_stream)
+                            cut_ops.append("S")
+                            cut_ops.append("Q")
+                            if thru_poly is not None and not getattr(thru_poly, 'is_empty', True):
+                                dieline_poly = thru_poly
                 else:
                     artwork_ops = list(page_content_stream)
                     cut_ops = []
@@ -12518,6 +12776,8 @@ class StickerEngine:
                     if "/ColorSpace" not in page_out.Resources:
                         page_out.Resources.ColorSpace = pikepdf.Dictionary()
                     page_out.Resources.ColorSpace.CutContour = cs_arr
+                    if thrucut_enabled and thru_cs_arr is not None:
+                        page_out.Resources.ColorSpace[thru_spot_pdf_name] = thru_cs_arr
                 
                 page_meta = {
                     "recon": recon_meta,
@@ -13250,6 +13510,13 @@ class StickerEngine:
                 "approved_contour_overrides": kw.get(
                     "approved_contour_overrides"
                 ),
+                "thrucut_enabled": kw.get("thrucut_enabled", False),
+                "thrucut_shape": kw.get("thrucut_shape", "rounded_rect"),
+                "thrucut_margin_mm": kw.get("thrucut_margin_mm", 3.0),
+                "thrucut_radius_mm": kw.get("thrucut_radius_mm", 3.0),
+                "thrucut_spot_name": kw.get("thrucut_spot_name", "ThruCut"),
+                "thrucut_color": kw.get("thrucut_color", (1.0, 0.0, 0.0, 0.0)),
+                "thrucut_color_hex": kw.get("thrucut_color_hex", "#00FFFF"),
                 "simplify_memo": current_simplify_memo(),
                 # Tuple 4 bool — picklable, worker không phải parse lại chuỗi.
                 "bleed_sides": kw.get("bleed_sides"),

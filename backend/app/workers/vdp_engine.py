@@ -126,6 +126,23 @@ def _is_font_already_italic(font_path: str | None) -> bool:
     return False
 
 
+# PERF (audit 2026-09-30 §VDP.PERF): Cache family name từ file TTF/OTF để không
+# mở và parse lại cấu trúc file font trên đĩa hàng chục nghìn lần trong hot-loop.
+@functools.lru_cache(maxsize=512)
+def _get_font_family_name(font_path: str | None) -> str:
+    if not font_path or not os.path.exists(font_path):
+        return ""
+    try:
+        from fontTools.ttLib import TTFont as FTFont
+        with FTFont(font_path, fontNumber=0, lazy=True) as tt:
+            for rec in tt['name'].names:
+                if rec.nameID == 1:
+                    return rec.toUnicode()
+    except Exception:
+        pass
+    return ""
+
+
 def _find_variant_file(regular_path: str, variant: str):
     """Suy ra đường dẫn file font biến thể từ file Regular. Trả path nếu tồn tại."""
     d = os.path.dirname(regular_path)
@@ -472,11 +489,71 @@ class PdfiumVdpTextRenderer:
                 pass
 
 
-def _merge_overlay_direct(out_pdf, target_page_obj, overlay_bytes: bytes) -> None:
+def _normalize_cid_font_object(f_obj) -> None:
+    """[VDP-TYPE0-LIVE-TEXT] Bổ sung /FontFamily và chuẩn hoá CIDFontType2 chuẩn ISO 32000-1."""
+    try:
+        if f_obj.get('/Subtype') != '/Type0':
+            return
+        base_font = str(f_obj.get('/BaseFont', ''))
+        clean_name = re.sub(r'^[A-Z]{6}\+', '', base_font.lstrip('/'))
+        clean_name = re.sub(r'-Identity-[HV]$', '', clean_name)
+        font_file = _resolve_system_font(clean_name)
+        if font_file:
+            fam_name = _get_font_family_name(font_file)
+            if fam_name:
+                if '/DescendantFonts' in f_obj and len(f_obj.DescendantFonts) > 0:
+                    fd = f_obj.DescendantFonts[0].get('/FontDescriptor')
+                    if fd and '/FontFamily' not in fd:
+                        fd['/FontFamily'] = pikepdf.String(fam_name)
+                elif '/FontDescriptor' in f_obj:
+                    fd = f_obj['/FontDescriptor']
+                    if '/FontFamily' not in fd:
+                        fd['/FontFamily'] = pikepdf.String(fam_name)
+
+        if f_obj.get('/Subtype') == '/Type0' and '/DescendantFonts' in f_obj and len(f_obj.DescendantFonts) > 0:
+            df = f_obj.DescendantFonts[0]
+            fd = df.get('/FontDescriptor')
+            if fd and '/FontFile' in fd:
+                raw_ff = fd['/FontFile'].read_bytes()
+                if raw_ff.startswith(b'\x00\x01\x00\x00') or raw_ff.startswith(b'true'):
+                    df['/Subtype'] = pikepdf.Name('/CIDFontType2')
+                    df['/CIDToGIDMap'] = pikepdf.Name('/Identity')
+                    fd['/FontFile2'] = fd['/FontFile']
+                    del fd['/FontFile']
+                elif raw_ff.startswith(b'OTTO'):
+                    df['/Subtype'] = pikepdf.Name('/CIDFontType0')
+                    fd['/FontFile3'] = fd['/FontFile']
+                    del fd['/FontFile']
+    except Exception as _fe:
+        logger.warning("Lỗi chuẩn hoá CIDFont %s: %s", f_obj, _fe)
+
+
+def _copy_foreign_safe(dst_pdf, src_pdf, obj):
+    """PERF (audit 2026-09-30 §VDP.PERF): Chuyển đối tượng PDF sang tài liệu đích an toàn.
+    Xử lý cả indirect object lẫn direct object (Dictionary, Array, Stream, Primitive).
+    """
+    if obj is None:
+        return None
+    if getattr(obj, 'is_indirect', False):
+        return dst_pdf.copy_foreign(obj)
+    if isinstance(obj, (pikepdf.Name, pikepdf.String, int, float, bool, str, bytes)):
+        return obj
+    try:
+        ind = src_pdf.make_indirect(obj)
+        return dst_pdf.copy_foreign(ind)
+    except Exception:
+        return obj
+
+
+def _merge_overlay_direct(out_pdf, target_page_obj, overlay_bytes: bytes, resource_cache: dict | None = None) -> None:
     """[VDP-TYPE0-LIVE-TEXT] Ghép trực tiếp content stream và resources của overlay vào trang đích.
     KHÔNG bọc qua Form XObject (/NupXo... /Form) để Adobe Illustrator và CorelDRAW nhận diện
     toàn bộ chữ và hình học ở tầng cao nhất (top-level page contents), giữ nguyên Live Text
     và khả năng chọn/sửa văn bản bằng Type tool.
+
+    PERF (audit 2026-09-30 §VDP.PERF): Sử dụng copy_foreign và resource_cache để tái sử dụng
+    font indirect object duy nhất cho toàn bộ các trang trong chunk, triệt tiêu bloat phình file
+    và tăng tốc xuất bản gấp 10-20 lần.
     """
     if not overlay_bytes:
         return
@@ -484,76 +561,37 @@ def _merge_overlay_direct(out_pdf, target_page_obj, overlay_bytes: bytes) -> Non
     with pikepdf.open(io.BytesIO(overlay_bytes)) as ov_pdf:
         if len(ov_pdf.pages) == 0:
             return
-        out_pdf.pages.append(ov_pdf.pages[0])
-        temp_page = out_pdf.pages[-1]
-
-        target_res_keys = list(target_page_obj.get('/Resources', {}).keys()) if '/Resources' in target_page_obj else []
-        ov_res_keys = list(temp_page.Resources.keys()) if '/Resources' in temp_page else []
-        logger.debug(
-            "[VDP][MERGE] overlay_size=%d, target_resource_categories=%d, overlay_resource_categories=%d",
-            len(overlay_bytes), len(target_res_keys), len(ov_res_keys),
-        )
-        if '/Resources' in target_page_obj and '/ColorSpace' in target_page_obj.Resources:
-            logger.debug("[VDP][MERGE] target color-space count=%d", len(target_page_obj.Resources.ColorSpace.keys()))
-        if '/Resources' in temp_page and '/ColorSpace' in temp_page.Resources:
-            logger.debug("[VDP][MERGE] overlay color-space count=%d", len(temp_page.Resources.ColorSpace.keys()))
+        temp_page = ov_pdf.pages[0]
 
         # 1. Ghép resources (Font, XObject, ExtGState, ColorSpace...)
         if "/Resources" in temp_page:
             if "/Resources" not in target_page_obj:
                 target_page_obj["/Resources"] = pikepdf.Dictionary()
             res_dest = target_page_obj["/Resources"]
-            for cat, cat_dict in temp_page.Resources.items():
-                if cat not in res_dest:
-                    res_dest[cat] = cat_dict
-                elif isinstance(cat_dict, pikepdf.Dictionary):
-                    for k, v in cat_dict.items():
-                        if k not in res_dest[cat]:
-                            res_dest[cat][k] = v
-            # [VDP-TYPE0-LIVE-TEXT] Bổ sung /FontFamily và chuẩn hoá CIDFontType2 chuẩn ISO 32000-1:
-            # FPDFText_LoadFont của PDFium xuất DescendantFont Subtype=/CIDFontType0 và gán font vào /FontFile,
-            # nhưng file font nhúng thực tế lại là TrueType (magic \x00\x01\x00\x00 hoặc 'true').
-            # Trình hiển thị nghiêm ngặt (PPE / Print Engine, Acrobat, Poppler) sẽ coi là font hỏng và KHÔNG HIỆN CHỮ!
-            # Do đó phải chuẩn hoá: Subtype -> /CIDFontType2, thêm /CIDToGIDMap /Identity, và chuyển /FontFile -> /FontFile2.
-            if "/Font" in res_dest:
-                for f_key, f_obj in list(res_dest["/Font"].items()):
-                    try:
-                        base_font = str(f_obj.get('/BaseFont', ''))
-                        clean_name = re.sub(r'^[A-Z]{6}\+', '', base_font.lstrip('/'))
-                        clean_name = re.sub(r'-Identity-[HV]$', '', clean_name)
-                        font_file = _resolve_system_font(clean_name)
-                        if font_file and os.path.exists(font_file):
-                            from fontTools.ttLib import TTFont
-                            tt = TTFont(font_file)
-                            for rec in tt['name'].names:
-                                if rec.nameID == 1:
-                                    fam_name = rec.toUnicode()
-                                    if '/DescendantFonts' in f_obj and len(f_obj.DescendantFonts) > 0:
-                                        fd = f_obj.DescendantFonts[0].get('/FontDescriptor')
-                                        if fd and '/FontFamily' not in fd:
-                                            fd['/FontFamily'] = pikepdf.String(fam_name)
-                                    elif '/FontDescriptor' in f_obj:
-                                        fd = f_obj['/FontDescriptor']
-                                        if '/FontFamily' not in fd:
-                                            fd['/FontFamily'] = pikepdf.String(fam_name)
-                                    break
 
-                        if f_obj.get('/Subtype') == '/Type0' and '/DescendantFonts' in f_obj and len(f_obj.DescendantFonts) > 0:
-                            df = f_obj.DescendantFonts[0]
-                            fd = df.get('/FontDescriptor')
-                            if fd and '/FontFile' in fd:
-                                raw_ff = fd['/FontFile'].read_bytes()
-                                if raw_ff.startswith(b'\x00\x01\x00\x00') or raw_ff.startswith(b'true'):
-                                    df['/Subtype'] = pikepdf.Name('/CIDFontType2')
-                                    df['/CIDToGIDMap'] = pikepdf.Name('/Identity')
-                                    fd['/FontFile2'] = fd['/FontFile']
-                                    del fd['/FontFile']
-                                elif raw_ff.startswith(b'OTTO'):
-                                    df['/Subtype'] = pikepdf.Name('/CIDFontType0')
-                                    fd['/FontFile3'] = fd['/FontFile']
-                                    del fd['/FontFile']
-                    except Exception as _fe:
-                        logger.warning("Lỗi chuẩn hoá CIDFont %s: %s", f_key, _fe)
+            font_cache = resource_cache.setdefault("font_cache", {}) if resource_cache is not None else None
+
+            for cat, cat_val in temp_page.Resources.items():
+                if cat == "/Font" and font_cache is not None and isinstance(cat_val, pikepdf.Dictionary):
+                    if "/Font" not in res_dest:
+                        res_dest["/Font"] = pikepdf.Dictionary()
+                    for f_key, f_val in cat_val.items():
+                        base_font = str(f_val.get('/BaseFont', '')) if hasattr(f_val, 'get') else str(f_key)
+                        cache_key = (str(f_key), base_font)
+                        if cache_key in font_cache:
+                            res_dest["/Font"][f_key] = font_cache[cache_key]
+                        else:
+                            foreign_font = _copy_foreign_safe(out_pdf, ov_pdf, f_val)
+                            _normalize_cid_font_object(foreign_font)
+                            font_cache[cache_key] = foreign_font
+                            res_dest["/Font"][f_key] = foreign_font
+                else:
+                    if cat not in res_dest:
+                        res_dest[cat] = _copy_foreign_safe(out_pdf, ov_pdf, cat_val)
+                    elif isinstance(cat_val, pikepdf.Dictionary):
+                        for k, v in cat_val.items():
+                            if k not in res_dest[cat]:
+                                res_dest[cat][k] = _copy_foreign_safe(out_pdf, ov_pdf, v)
 
         # 2. Nối stream vẽ trực tiếp vào mảng /Contents
         ov_c = temp_page.get("/Contents")
@@ -566,22 +604,13 @@ def _merge_overlay_direct(out_pdf, target_page_obj, overlay_bytes: bytes) -> Non
                 new_contents = pikepdf.Array([new_contents])
                 target_page_obj["/Contents"] = new_contents
 
-            # Inspect stream before append
-            if len(new_contents) > 0:
-                try:
-                    last_s = new_contents[-1]
-                    s_bytes = last_s.read_bytes() if hasattr(last_s, 'read_bytes') else b''
-                    logger.debug("[VDP][MERGE] target stream count=%d, last stream bytes=%d", len(new_contents), len(s_bytes))
-                except Exception as _e:
-                    logger.debug("[VDP][MERGE] Could not read last target stream: %s", _e)
+            # PERF (audit 2026-09-30 §VDP.PERF): Copy foreign stream an toàn
+            if isinstance(ov_c, pikepdf.Array):
+                for sub_c in ov_c:
+                    new_contents.append(_copy_foreign_safe(out_pdf, ov_pdf, sub_c))
+            else:
+                new_contents.append(_copy_foreign_safe(out_pdf, ov_pdf, ov_c))
 
-            ov_bytes = ov_c.read_bytes() if hasattr(ov_c, 'read_bytes') else b''
-            logger.debug("[VDP][MERGE] appending overlay stream bytes=%d", len(ov_bytes))
-            new_contents.append(ov_c)
-            logger.debug("[VDP][MERGE] final target contents streams=%d", len(new_contents))
-
-        # 3. Xoá trang tạm khỏi out_doc
-        del out_pdf.pages[-1]
 
 
 # ─── #8 Định dạng dữ liệu trong placeholder: {Cot|upper}, {Gia|number:0}, ... ──
@@ -717,15 +746,20 @@ def _build_shape_clip(c, shape, x, y, w, h):
     return True
 
 
-def _draw_image_field(c, field, val, rl_x, rl_y, w, h):
-    """Vẽ ảnh biến đổi vào khung (rl_x, rl_y, w, h) theo fit + shape."""
-    from reportlab.lib.utils import ImageReader
+def _draw_image_field(c, field, val, rl_x, rl_y, w, h, image_cache: dict | None = None):
+    """PERF (audit 2026-09-30 §VDP.PERF): Vẽ ảnh biến đổi vào khung (rl_x, rl_y, w, h) theo fit + shape, có cache ImageReader."""
     img_path = _resolve_image_path(str(val) if val else '', field.get('imageBaseDir'), field.get('imagePath'))
     if not img_path or not os.path.exists(img_path):
         return False
     try:
-        ir = ImageReader(img_path)
-        iw, ih = ir.getSize()
+        if image_cache is not None and img_path in image_cache:
+            ir, iw, ih = image_cache[img_path]
+        else:
+            from reportlab.lib.utils import ImageReader
+            ir = ImageReader(img_path)
+            iw, ih = ir.getSize()
+            if image_cache is not None and iw > 0 and ih > 0:
+                image_cache[img_path] = (ir, iw, ih)
     except Exception:
         return False
     if iw <= 0 or ih <= 0:
@@ -1048,7 +1082,7 @@ def _draw_curved_text(c, field, text, rl_x, rl_y, w, h, font_name, fontsize, tex
     return True
 
 
-def render_one_record(c, fields, row, field_rects, pw, ph, field_font_variants, error_sink=None, skip_field_ids=None):
+def render_one_record(c, fields, row, field_rects, pw, ph, field_font_variants, error_sink=None, skip_field_ids=None, qr_cache=None, image_cache=None):
     """Vẽ TẤT CẢ field của một record lên canvas ReportLab ``c``.
 
     Tách dùng chung giữa ``process_chunk`` (sinh lô) và Preview_Service để bảo
@@ -1180,27 +1214,32 @@ def render_one_record(c, fields, row, field_rects, pw, ph, field_font_variants, 
                 # Màu chấm QR lấy từ qrStyle.dotColor (fallback fontColor).
                 qr_fg_hex = qr_style.get('dotColor') or field.get('fontColor') or '#000000'
 
-                import segno
                 # Mức sửa lỗi lấy từ UI (L/M/Q/H), fallback 'M' nếu không hợp lệ.
                 ec_raw = str(field.get('errorCorrection') or 'M').lower()
                 ec_level = ec_raw if ec_raw in ('l', 'm', 'q', 'h') else 'm'
-                qr = segno.make(val_str, error=ec_level)
-                matrix = qr.matrix
-                n = len(matrix)  # số module mỗi cạnh (chưa gồm lề trắng)
 
-                # Strip compression — KHÔNG cộng quiet zone vào ma trận;
-                # lề trắng được vẽ bằng inset vật lý (mm) bên dưới để khớp preview.
-                strips = []
-                for r, row_data in enumerate(matrix):
-                    col = 0
-                    while col < len(row_data):
-                        if row_data[col]:
-                            start_c = col
-                            while col < len(row_data) and row_data[col]:
+                # PERF (audit 2026-09-30 §VDP.PERF): Cache ma trận QR và strips để không mã hoá lại các mã giống nhau
+                qr_cache_key = (val_str, ec_level)
+                if qr_cache is not None and qr_cache_key in qr_cache:
+                    strips, n = qr_cache[qr_cache_key]
+                else:
+                    import segno
+                    qr = segno.make(val_str, error=ec_level)
+                    matrix = qr.matrix
+                    n = len(matrix)  # số module mỗi cạnh (chưa gồm lề trắng)
+                    strips = []
+                    for r, row_data in enumerate(matrix):
+                        col = 0
+                        while col < len(row_data):
+                            if row_data[col]:
+                                start_c = col
+                                while col < len(row_data) and row_data[col]:
+                                    col += 1
+                                strips.append((start_c, r, col - start_c, 1))
+                            else:
                                 col += 1
-                            strips.append((start_c, r, col - start_c, 1))
-                        else:
-                            col += 1
+                    if qr_cache is not None:
+                        qr_cache[qr_cache_key] = (strips, n)
 
                 if n > 0:
                     # Lề trắng (quiet zone) theo "Lề trắng (mm)" người dùng đặt.
@@ -1334,7 +1373,7 @@ def render_one_record(c, fields, row, field_rects, pw, ph, field_font_variants, 
                         c.restoreState()
             elif field['type'] == 'image':
                 # #3 Ảnh biến đổi: vẽ ảnh từ cột (hoặc ảnh tĩnh) theo fit + shape.
-                _drawn = _draw_image_field(c, field, val, rl_x, rl_y, f_rect['w'], f_rect['h'])
+                _drawn = _draw_image_field(c, field, val, rl_x, rl_y, f_rect['w'], f_rect['h'], image_cache=image_cache)
                 if not _drawn:
                     # Không tìm thấy ảnh → khung mảnh để biết vị trí (không phá output).
                     c.saveState()
@@ -1498,7 +1537,9 @@ def process_chunk(args) -> str:
         h_pts = field['height'] * MM_TO_PTS * CSS_TO_PT_FACTOR
         field_rects.append({'x': x_pts, 'y': y_pts, 'w': w_pts, 'h': h_pts})
     
+    # PERF (audit 2026-09-30 §VDP.PERF): In-memory cache cho QR strips và ImageReader trong cùng chunk
     qr_cache = {}
+    image_cache = {}
     
     # Register fonts once per chunk — đăng ký CẢ biến thể Bold/Italic thật nếu có
     # file font anh em cùng thư mục (#7). field_font_variants[id] = {variant: name}.
@@ -1535,6 +1576,8 @@ def process_chunk(args) -> str:
         _clean_template_dead_text_ops_and_fonts(cp, out_doc._pdf)
         cached_pages.append(cp)
         
+    # PERF (audit 2026-09-30 §VDP.PERF): Cache các Font Indirect Object dùng chung cho cả chunk
+    resource_cache = {"font_cache": {}}
     count = 0
     from reportlab.graphics.barcode import createBarcodeDrawing
     from reportlab.graphics import renderPDF
@@ -1693,7 +1736,7 @@ def process_chunk(args) -> str:
                 text_pdf_bytes = pdfium_renderer.build_pdf_bytes()
                 if count < 3:
                     logger.debug("[VDP][CHUNK] Record %d: merging text overlay bytes=%d", count, len(text_pdf_bytes))
-                _merge_overlay_direct(out_doc._pdf, page._page.obj, text_pdf_bytes)
+                _merge_overlay_direct(out_doc._pdf, page._page.obj, text_pdf_bytes, resource_cache=resource_cache)
         finally:
             pdfium_renderer.close()
 
@@ -1705,10 +1748,10 @@ def process_chunk(args) -> str:
         if remaining_fields:
             buf = io.BytesIO()
             c = canvas.Canvas(buf, pagesize=(pw, ph))
-            render_one_record(c, fields_dict, row, field_rects, pw, ph, field_font_variants, skip_field_ids=handled_by_pdfium)
+            render_one_record(c, fields_dict, row, field_rects, pw, ph, field_font_variants, skip_field_ids=handled_by_pdfium, qr_cache=qr_cache, image_cache=image_cache)
             c.showPage()
             c.save()
-            _merge_overlay_direct(out_doc._pdf, page._page.obj, buf.getvalue())
+            _merge_overlay_direct(out_doc._pdf, page._page.obj, buf.getvalue(), resource_cache=resource_cache)
 
         count += 1
         if progress_file and count % 50 == 0:
@@ -2154,81 +2197,71 @@ def run_vdp_engine(template_path: str, fields: List[VdpField], data: List[Dict[s
         kwargs['on_saving']()
     abort_if_requested()
 
-    import pypdfium2 as pdfium
-    # PERF (audit 2026-08-05 §PERF.2): VDP chạy trong executor thread; chỉ khóa
-    # quanh lời gọi PDFium, không giữ khóa lúc xóa chunk hay tối ưu bằng pikepdf.
-    with pdfium_guard():
-        final_doc = pdfium.PdfDocument.new()
+    import pikepdf
+    import os as _os, tempfile as _tempfile
+
+    # PERF (audit 2026-09-30 §VDP.PERF): Single-Pass Merge & Output
+    # Loại bỏ hoàn toàn pass trung gian lưu file qua pypdfium2. Ghép trực tiếp
+    # các chunk và nén output trong MỘT LẦN GHI ĐĨA DUY NHẤT bằng pikepdf.
+    _wm_license = kwargs.get('_license_key', '')
+    _wm_hwid = kwargs.get('_hwid', '')
+
+    _fd, _tmp = _tempfile.mkstemp(suffix=".pdf", dir=_os.path.dirname(output_path) or ".")
+    _os.close(_fd)
+
     try:
-        for chunk_pdf_path in chunk_paths:
-            abort_if_requested()
-            with pdfium_guard():
-                src_pdf = pdfium.PdfDocument(chunk_pdf_path)
-                try:
-                    final_doc.import_pages(src_pdf)
-                finally:
-                    src_pdf.close()
+        if len(chunk_paths) == 1:
+            # Fast-path 1 chunk: mở thẳng chunk duy nhất, không clone pages thừa
+            chunk_pdf_path = chunk_paths[0]
+            with pikepdf.Pdf.open(chunk_pdf_path) as pdf:
+                if _wm_license:
+                    try:
+                        from app.core.watermark import embed_watermark
+                        embed_watermark(pdf, _wm_license, _wm_hwid)
+                    except Exception as e:
+                        logger.error(f"VDP watermark failed: {e}")
+                pdf.save(
+                    _tmp,
+                    compress_streams=True,
+                    object_stream_mode=pikepdf.ObjectStreamMode.generate,
+                )
             try:
                 os.remove(chunk_pdf_path)
             except Exception:
                 pass
+        else:
+            with pikepdf.Pdf.new() as final_pdf:
+                for chunk_pdf_path in chunk_paths:
+                    abort_if_requested()
+                    with pikepdf.Pdf.open(chunk_pdf_path) as src_pdf:
+                        final_pdf.pages.extend(src_pdf.pages)
+                    try:
+                        os.remove(chunk_pdf_path)
+                    except Exception:
+                        pass
 
-        with pdfium_guard():
-            final_doc.save(output_path)
-    finally:
-        with pdfium_guard():
-            final_doc.close()
-    abort_if_requested()
+                if _wm_license:
+                    try:
+                        from app.core.watermark import embed_watermark
+                        embed_watermark(final_pdf, _wm_license, _wm_hwid)
+                    except Exception as e:
+                        logger.error(f"VDP watermark failed: {e}")
 
-    # #5 Tối ưu output: nén stream + object streams (gom object) trong CÙNG một
-    # pass pikepdf với watermark → giảm đáng kể dung lượng (trước đây deflate=False,
-    # pdfium lưu không nén). Lưu ý: đây là tối ưu thực dụng, KHÔNG phải PDF/VT đầy đủ.
-    _wm_license = kwargs.get('_license_key', '')
-    _wm_hwid = kwargs.get('_hwid', '')
-    try:
-        import pikepdf
-        import os as _os, tempfile as _tempfile
-        with pikepdf.Pdf.open(output_path, allow_overwriting_input=True) as pdf:
-            if _wm_license:
-                try:
-                    from app.core.watermark import embed_watermark
-                    embed_watermark(pdf, _wm_license, _wm_hwid)
-                except Exception as e:
-                    logger.error(f"VDP watermark failed: {e}")
+                final_pdf.save(
+                    _tmp,
+                    compress_streams=True,
+                    object_stream_mode=pikepdf.ObjectStreamMode.generate,
+                )
 
-            # [VDP-TYPE0-LIVE-TEXT] Chuẩn hoá toàn diện font Type0 thành CIDFontType2 theo chuẩn ISO 32000-1
-            for p in pdf.pages:
-                if "/Resources" in p and "/Font" in p.Resources:
-                    for fk, f_obj in list(p.Resources.Font.items()):
-                        try:
-                            if f_obj.get('/Subtype') == '/Type0' and '/DescendantFonts' in f_obj and len(f_obj.DescendantFonts) > 0:
-                                df = f_obj.DescendantFonts[0]
-                                fd = df.get('/FontDescriptor')
-                                if fd and '/FontFile' in fd:
-                                    raw_ff = fd['/FontFile'].read_bytes()
-                                    if raw_ff.startswith(b'\x00\x01\x00\x00') or raw_ff.startswith(b'true'):
-                                        df['/Subtype'] = pikepdf.Name('/CIDFontType2')
-                                        df['/CIDToGIDMap'] = pikepdf.Name('/Identity')
-                                        fd['/FontFile2'] = fd['/FontFile']
-                                        del fd['/FontFile']
-                                    elif raw_ff.startswith(b'OTTO'):
-                                        df['/Subtype'] = pikepdf.Name('/CIDFontType0')
-                                        fd['/FontFile3'] = fd['/FontFile']
-                                        del fd['/FontFile']
-                        except Exception:
-                            pass
-
-            # Ghi atomic: temp cùng thư mục rồi os.replace (tránh hỏng output nếu chết giữa chừng).
-            _fd, _tmp = _tempfile.mkstemp(suffix=".pdf", dir=_os.path.dirname(output_path) or ".")
-            _os.close(_fd)
-            pdf.save(
-                _tmp,
-                compress_streams=True,
-                object_stream_mode=pikepdf.ObjectStreamMode.generate,
-            )
         _os.replace(_tmp, output_path)
     except Exception as e:
-        logger.error(f"VDP optimize/watermark pass failed: {e}")
+        logger.error(f"VDP single-pass merge failed: {e}")
+        try:
+            if os.path.exists(_tmp):
+                os.remove(_tmp)
+        except Exception:
+            pass
+        raise
 
     abort_if_requested()
     logger.debug(

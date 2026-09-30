@@ -17,8 +17,8 @@ export interface MarksSlice {
     setDieOffsetMm: (v: number) => void;
     fillBlockGap: number;
     setFillBlockGap: (v: number) => void;
-    pontType: 'none' | 'corner' | '5mm' | 'custom';
-    setPontType: (v: 'none' | 'corner' | '5mm' | 'custom') => void;
+    pontType: 'none' | 'corner' | '5mm' | 'custom' | string;
+    setPontType: (v: 'none' | 'corner' | '5mm' | 'custom' | string) => void;
     bleed: number;
     setBleed: (v: number) => void;
     showBleedView: boolean;

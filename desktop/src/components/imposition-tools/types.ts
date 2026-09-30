@@ -230,7 +230,7 @@ export interface NupSettings {
     dieSizeMode?: 'die' | 'page';
     dieOffsetMm?: number;
     fillBlockGap?: number;
-    pontType?: 'none' | 'corner' | '5mm' | 'custom';
+    pontType?: 'none' | 'corner' | '5mm' | 'custom' | string;
     pontConfig?: PontConfig;
     spawnNewTab: boolean;
     separateCutPage?: boolean;

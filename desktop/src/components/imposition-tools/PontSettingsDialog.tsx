@@ -1,9 +1,10 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import type { PontConfig } from './types';
 import { toast } from '../ui/Toast';
 import { useTranslation } from 'react-i18next';
 import { getPontConfigValidationError } from './pontConfigValidation';
+import { inspectPontTemplate } from './pontTemplateApi';
 
 import { DEFAULT_PONT_CONFIG } from './pontConfigDefaults';
 
@@ -16,7 +17,8 @@ interface PontSettingsDialogProps {
     isOpen: boolean;
     onClose: () => void;
     config: PontConfig;
-    onSave: (cfg: PontConfig) => void;
+    onSave: (cfg: PontConfig, presetName?: string) => void;
+    currentPresetName?: string;
 }
 
 function readSavedPresets(): Preset[] {
@@ -46,39 +48,112 @@ function readSavedPresets(): Preset[] {
     }
 }
 
-function PontSettingsDialogContent({ onClose, config, onSave }: Omit<PontSettingsDialogProps, 'isOpen'>) {
+function PontSettingsDialogContent({ onClose, config, onSave, currentPresetName }: Omit<PontSettingsDialogProps, 'isOpen'>) {
     const { t } = useTranslation();
-    const [localCfg, setLocalCfg] = useState<PontConfig>(() => ({ ...DEFAULT_PONT_CONFIG, ...config }));
-    const [presetName, setPresetName] = useState('');
     const [presets, setPresets] = useState<Preset[]>(readSavedPresets);
+
+    // Tự động nhận diện preset ban đầu từ currentPresetName truyền vào từ ngoài dashboard
+    const initialPreset = currentPresetName ? presets.find(p => p.name === currentPresetName) : undefined;
+    const [selectedPresetName, setSelectedPresetName] = useState<string>(() => initialPreset ? initialPreset.name : (currentPresetName || ''));
+    const [isCreatingNew, setIsCreatingNew] = useState(false);
+    const [presetName, setPresetName] = useState<string>(() => initialPreset ? initialPreset.name : (currentPresetName || ''));
+
+    const [localCfg, setLocalCfg] = useState<PontConfig>(() => {
+        if (initialPreset && initialPreset.config) {
+            return { ...DEFAULT_PONT_CONFIG, ...initialPreset.config };
+        }
+        return { ...DEFAULT_PONT_CONFIG, ...config };
+    });
+
+    const [isInspecting, setIsInspecting] = useState(false);
+    const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+    const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        setIsInspecting(true);
+        try {
+            const res = await inspectPontTemplate(file);
+            if (res.success && res.config) {
+                setLocalCfg(res.config);
+                const cleanFileName = file.name.replace(/\.[^/.]+$/, '');
+                setPresetName(res.suggestedName || cleanFileName);
+                setSelectedPresetName('');
+                setIsCreatingNew(true);
+                toast.success(res.message || 'Đã trích xuất thông số boong thành công!');
+            }
+        } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : 'Lỗi khi trích xuất file mẫu.';
+            toast.error(msg);
+        } finally {
+            setIsInspecting(false);
+            if (e.target) {
+                e.target.value = '';
+            }
+        }
+    };
+
     const validationErrorKey = getPontConfigValidationError(localCfg);
     const validationError = validationErrorKey
         ? t(`imposition.pontSettingsDialog:${validationErrorKey}`)
         : '';
 
-    const savePreset = () => {
+    const handleSelectPreset = (e: React.ChangeEvent<HTMLSelectElement>) => {
+        const val = e.target.value;
+        if (val === '__new__') {
+            setIsCreatingNew(true);
+            setSelectedPresetName('');
+            setPresetName('');
+        } else if (val === '__custom__') {
+            setIsCreatingNew(false);
+            setSelectedPresetName('');
+            setPresetName('');
+        } else {
+            setIsCreatingNew(false);
+            setSelectedPresetName(val);
+            setPresetName(val);
+            const p = presets.find(x => x.name === val);
+            if (p && p.config) {
+                setLocalCfg({ ...DEFAULT_PONT_CONFIG, ...p.config });
+            }
+        }
+    };
+
+    const deleteCurrentPreset = () => {
+        const targetName = selectedPresetName || presetName;
+        if (!targetName) return;
+        const confirmMsg = t('imposition.pontSettingsDialog:xac_nhan_xoa_mau', { name: targetName });
+        if (!window.confirm(confirmMsg)) return;
+        const nextPresets = presets.filter(p => p.name !== targetName);
+        setPresets(nextPresets);
+        window.localStorage.setItem('ps_pont_presets', JSON.stringify(nextPresets));
+        setSelectedPresetName('');
+        setPresetName('');
+        setIsCreatingNew(false);
+        toast.success(t('imposition.pontSettingsDialog:da_xoa_mau', { name: targetName }));
+    };
+
+    const handleSaveAndApply = (e: React.MouseEvent) => {
+        e.stopPropagation();
         if (validationError) {
             toast.info(validationError);
             return;
         }
-        if (!presetName.trim()) {
-            toast.info(t('imposition.pontSettingsDialog:vui_long_nhap_ten_mau_truoc_khi_luu'));
-            return;
+        const finalName = presetName.trim();
+        if (isCreatingNew || finalName) {
+            if (!finalName) {
+                toast.info(t('imposition.pontSettingsDialog:vui_long_nhap_ten_mau_truoc_khi_luu'));
+                return;
+            }
+            const updatedPresets = [...presets.filter(p => p.name !== finalName), { name: finalName, config: localCfg }];
+            setPresets(updatedPresets);
+            window.localStorage.setItem('ps_pont_presets', JSON.stringify(updatedPresets));
+            toast.success(t('imposition.pontSettingsDialog:da_luu_mau_cau_hinh') + finalName + t('imposition.pontSettingsDialog:thanh_cong'));
+            onSave(localCfg, finalName);
+        } else {
+            onSave(localCfg, undefined);
         }
-        const newPresets = [...presets.filter(p => p.name !== presetName.trim()), { name: presetName.trim(), config: localCfg }];
-        setPresets(newPresets);
-        window.localStorage.setItem('ps_pont_presets', JSON.stringify(newPresets));
-        toast.success(t('imposition.pontSettingsDialog:da_luu_mau_cau_hinh') + presetName.trim() + t('imposition.pontSettingsDialog:thanh_cong'));
-    };
-
-    const loadPreset = (e: React.ChangeEvent<HTMLSelectElement>) => {
-        const val = e.target.value;
-        if (!val) return;
-        const p = presets.find(x => x.name === val);
-        if (p) {
-            setLocalCfg({ ...DEFAULT_PONT_CONFIG, ...p.config });
-            setPresetName(p.name);
-        }
+        onClose();
     };
 
     useEffect(() => {
@@ -123,36 +198,115 @@ function PontSettingsDialogContent({ onClose, config, onSave }: Omit<PontSetting
                     </button>
                 </div>
 
-                {/* Preset Manager */}
-                <div className="flex items-end gap-4 p-4 rounded-xl bg-indigo-50/50 dark:bg-indigo-500/10 border border-indigo-100 dark:border-indigo-500/20">
-                    <div className="flex-1">
-                        <label className={labelCls}>{t('imposition.pontSettingsDialog:luu_mau_moi_preset')}</label>
-                        <div className="flex gap-2">
-                            <input 
-                                type="text" 
-                                placeholder={t('imposition.pontSettingsDialog:vd_oc_leta_nua_chu_t')}
-                                value={presetName}
-                                onChange={e => setPresetName(e.target.value)}
-                                className={inputCls}
-                            />
+                {/* Preset Manager Toolbar */}
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 p-3.5 rounded-xl bg-slate-100 dark:bg-zinc-800/80 border border-slate-200 dark:border-white/10">
+                    <div className="flex items-center gap-2.5 flex-1 min-w-0">
+                        <label className="text-[12px] font-bold text-slate-600 dark:text-zinc-300 uppercase tracking-wide shrink-0">
+                            {t('imposition.pontSettingsDialog:mau_boong')}:
+                        </label>
+                        <select 
+                            value={isCreatingNew ? '__new__' : (selectedPresetName || '__custom__')} 
+                            onChange={handleSelectPreset} 
+                            className={`${selectCls} font-medium`}
+                        >
+                            <option value="__custom__">{t('imposition.pontSettingsDialog:tuy_chinh_khong_luu')}</option>
+                            {presets.map(p => (
+                                <option key={p.name} value={p.name}>{p.name}</option>
+                            ))}
+                            <option value="__new__">+ {t('imposition.pontSettingsDialog:tao_mau_moi')}</option>
+                        </select>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0">
+                        {/* Nút nhập tự động từ file mẫu PDF/SVG */}
+                        <button
+                            type="button"
+                            disabled={isInspecting}
+                            onClick={() => fileInputRef.current?.click()}
+                            className="inline-flex items-center gap-1.5 px-3 h-8 rounded-lg bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/40 dark:hover:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300 text-xs font-semibold border border-indigo-200 dark:border-indigo-800/60 shadow-sm transition-all cursor-pointer disabled:opacity-50"
+                            title="Tải file PDF hoặc SVG mẫu để PrynX tự động đọc thông số ốc và thanh canh giấy"
+                        >
+                            {isInspecting ? (
+                                <>
+                                    <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                                    </svg>
+                                    <span>Đang đọc...</span>
+                                </>
+                            ) : (
+                                <>
+                                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                                    </svg>
+                                    <span>Nhập từ file mẫu</span>
+                                </>
+                            )}
+                        </button>
+                        <input
+                            ref={fileInputRef}
+                            type="file"
+                            accept=".pdf,.svg"
+                            className="hidden"
+                            onChange={handleFileSelect}
+                        />
+
+                        {isCreatingNew ? (
+                            <div className="flex items-center gap-2 animate-in fade-in">
+                                <input 
+                                    type="text" 
+                                    placeholder={t('imposition.pontSettingsDialog:nhap_ten_mau')}
+                                    value={presetName}
+                                    onChange={e => setPresetName(e.target.value)}
+                                    className={inputCls}
+                                    autoFocus
+                                />
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setIsCreatingNew(false);
+                                        setPresetName(selectedPresetName);
+                                    }}
+                                    className="px-3 h-8 rounded bg-slate-200 hover:bg-slate-300 dark:bg-zinc-700 dark:hover:bg-zinc-600 text-slate-700 dark:text-zinc-200 text-xs font-semibold shrink-0 transition-colors"
+                                >
+                                    {t('imposition.pontSettingsDialog:huy_tao_moi')}
+                                </button>
+                            </div>
+                        ) : selectedPresetName ? (
+                            <div className="flex items-center gap-2">
+                                <input 
+                                    type="text" 
+                                    placeholder={t('imposition.pontSettingsDialog:nhap_ten_mau')}
+                                    value={presetName}
+                                    onChange={e => setPresetName(e.target.value)}
+                                    className={`${inputCls} w-36 sm:w-44`}
+                                    title={t('imposition.pontSettingsDialog:ten_nhom_group_name')}
+                                />
+                                <button
+                                    type="button"
+                                    onClick={deleteCurrentPreset}
+                                    className="p-2 text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/40 rounded-lg transition-colors shrink-0"
+                                    title={t('imposition.pontSettingsDialog:xoa_mau_nay')}
+                                    aria-label={t('imposition.pontSettingsDialog:xoa_mau_nay')}
+                                >
+                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                    </svg>
+                                </button>
+                            </div>
+                        ) : (
                             <button
                                 type="button"
-                                onClick={savePreset}
-                                className="h-8 px-4 rounded bg-indigo-600 hover:bg-indigo-700 text-white text-[13px] font-bold transition-all shadow-sm active:scale-95 whitespace-nowrap"
+                                onClick={() => {
+                                    setIsCreatingNew(true);
+                                    setPresetName('');
+                                }}
+                                className="px-3 h-8 rounded bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-500/10 dark:hover:bg-indigo-500/20 text-indigo-600 dark:text-indigo-400 text-xs font-bold shrink-0 transition-colors border border-indigo-200 dark:border-indigo-500/30"
                             >
-                                {t('imposition.pontSettingsDialog:luu_mau')}
+                                + {t('imposition.pontSettingsDialog:tao_mau_moi')}
                             </button>
-                        </div>
+                        )}
                     </div>
-                    {presets.length > 0 && (
-                        <div className="flex-1">
-                            <label className={labelCls}>{t('imposition.pontSettingsDialog:tai_mau_co_san')}</label>
-                            <select onChange={loadPreset} value={presets.some(p => p.name === presetName) ? presetName : ""} className={selectCls}>
-                                <option value="">{t('imposition.pontSettingsDialog:chon_mau_da_luu')}</option>
-                                {presets.map(p => <option key={p.name} value={p.name}>{p.name}</option>)}
-                            </select>
-                        </div>
-                    )}
                 </div>
 
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
@@ -281,7 +435,7 @@ function PontSettingsDialogContent({ onClose, config, onSave }: Omit<PontSetting
                                         </div>
                                         <div>
                                             <label className={labelCls}>{t('imposition.pontSettingsDialog:do_dai_mm')}</label>
-                                            <input type="number" min="0.01" step="1" value={localCfg.guide1Length} onChange={e => updateLocal('guide1Length', Number(e.target.value))} className={inputCls} />
+                                            <input type="number" min="0.01" step="0.1" value={localCfg.guide1Length} onChange={e => updateLocal('guide1Length', Number(e.target.value))} className={inputCls} />
                                         </div>
                                         <div>
                                             <label className={labelCls}>{t('imposition.pontSettingsDialog:do_dam_mm')}</label>
@@ -289,11 +443,11 @@ function PontSettingsDialogContent({ onClose, config, onSave }: Omit<PontSetting
                                         </div>
                                         <div>
                                             <label className={labelCls}>{getGuideLabelX(localCfg.guide1Pos)}</label>
-                                            <input type="number" step="1" value={localCfg.guide1OffX} onChange={e => updateLocal('guide1OffX', Number(e.target.value))} className={inputCls} />
+                                            <input type="number" step="0.1" value={localCfg.guide1OffX} onChange={e => updateLocal('guide1OffX', Number(e.target.value))} className={inputCls} />
                                         </div>
                                         <div>
                                             <label className={labelCls}>{getGuideLabelY(localCfg.guide1Pos)}</label>
-                                            <input type="number" step="1" value={localCfg.guide1OffY} onChange={e => updateLocal('guide1OffY', Number(e.target.value))} className={inputCls} />
+                                            <input type="number" step="0.1" value={localCfg.guide1OffY} onChange={e => updateLocal('guide1OffY', Number(e.target.value))} className={inputCls} />
                                         </div>
                                     </div>
                                 )}
@@ -322,7 +476,7 @@ function PontSettingsDialogContent({ onClose, config, onSave }: Omit<PontSetting
                                         </div>
                                         <div>
                                             <label className={labelCls}>{t('imposition.pontSettingsDialog:do_dai_mm')}</label>
-                                            <input type="number" min="0.01" step="1" value={localCfg.guide2Length} onChange={e => updateLocal('guide2Length', Number(e.target.value))} className={inputCls} />
+                                            <input type="number" min="0.01" step="0.1" value={localCfg.guide2Length} onChange={e => updateLocal('guide2Length', Number(e.target.value))} className={inputCls} />
                                         </div>
                                         <div>
                                             <label className={labelCls}>{t('imposition.pontSettingsDialog:do_dam_mm')}</label>
@@ -330,11 +484,11 @@ function PontSettingsDialogContent({ onClose, config, onSave }: Omit<PontSetting
                                         </div>
                                         <div>
                                             <label className={labelCls}>{getGuideLabelX(localCfg.guide2Pos)}</label>
-                                            <input type="number" step="1" value={localCfg.guide2OffX} onChange={e => updateLocal('guide2OffX', Number(e.target.value))} className={inputCls} />
+                                            <input type="number" step="0.1" value={localCfg.guide2OffX} onChange={e => updateLocal('guide2OffX', Number(e.target.value))} className={inputCls} />
                                         </div>
                                         <div>
                                             <label className={labelCls}>{getGuideLabelY(localCfg.guide2Pos)}</label>
-                                            <input type="number" step="1" value={localCfg.guide2OffY} onChange={e => updateLocal('guide2OffY', Number(e.target.value))} className={inputCls} />
+                                            <input type="number" step="0.1" value={localCfg.guide2OffY} onChange={e => updateLocal('guide2OffY', Number(e.target.value))} className={inputCls} />
                                         </div>
                                     </div>
                                 )}
@@ -360,11 +514,11 @@ function PontSettingsDialogContent({ onClose, config, onSave }: Omit<PontSetting
                         <span className="font-bold text-sm text-slate-600 dark:text-zinc-300">{t('imposition.pontSettingsDialog:vo_hieu_hoa_canh_bao_va_cham')}</span>
                     </label>
 
-                    <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-3">
                         <button
                             type="button"
                             onClick={onClose}
-                            className="px-5 py-2 rounded-lg text-sm text-slate-600 hover:text-slate-900 hover:bg-slate-100 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-zinc-700 font-bold transition-all"
+                            className="px-4 py-2 rounded-lg text-sm text-slate-600 hover:text-slate-900 hover:bg-slate-100 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-zinc-700 font-medium transition-all"
                         >
                             {t('imposition.pontSettingsDialog:dong')}
                         </button>
@@ -373,15 +527,12 @@ function PontSettingsDialogContent({ onClose, config, onSave }: Omit<PontSetting
                             type="button"
                             disabled={Boolean(validationError)}
                             aria-describedby={validationError ? 'pont-config-error' : undefined}
-                            onClick={(e) => { 
-                                e.stopPropagation();
-                                if (validationError) return;
-                                onSave(localCfg); 
-                                requestAnimationFrame(() => onClose());
-                            }}
+                            onClick={handleSaveAndApply}
                             className="px-6 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-bold shadow-md shadow-indigo-500/20 transition-all active:scale-95 text-sm disabled:cursor-not-allowed disabled:opacity-50 disabled:shadow-none"
                         >
-                            {t('imposition.pontSettingsDialog:luu_cau_hinh')}
+                            {(isCreatingNew || presetName.trim())
+                                ? t('imposition.pontSettingsDialog:luu_va_ap_dung')
+                                : t('imposition.pontSettingsDialog:ap_dung_cho_bai_in')}
                         </button>
                     </div>
                 </div>
@@ -389,13 +540,21 @@ function PontSettingsDialogContent({ onClose, config, onSave }: Omit<PontSetting
         </div>,
         document.body
     );
-};
+}
 
 
 // UIUX (audit 2026-08-24 §LINT.87): mount theo phiên mở để khởi tạo cấu hình
 // từ props, tránh effect reset state đồng bộ và giữ Fast Refresh thuần component.
 export function PontSettingsDialog(props: PontSettingsDialogProps) {
     if (!props.isOpen) return null;
-    const configKey = JSON.stringify(props.config);
-    return <PontSettingsDialogContent key={configKey} config={props.config} onClose={props.onClose} onSave={props.onSave} />;
+    const configKey = `${props.currentPresetName || ''}_${JSON.stringify(props.config)}`;
+    return (
+        <PontSettingsDialogContent 
+            key={configKey} 
+            config={props.config} 
+            onClose={props.onClose} 
+            onSave={props.onSave} 
+            currentPresetName={props.currentPresetName}
+        />
+    );
 }

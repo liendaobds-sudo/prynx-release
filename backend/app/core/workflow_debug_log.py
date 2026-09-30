@@ -15,6 +15,9 @@ from typing import Any
 
 _LOCK = threading.Lock()
 _logger = logging.getLogger("workflow_debug")
+# PERF (audit 2026-09-30 §LOG.DEBUG): Mặc định tắt trong production để tránh
+# mở/đóng file đĩa đồng bộ và flush console liên tục trong vòng lặp từng con tem.
+_WORKFLOW_DEBUG_ENABLED = os.environ.get("PRYNX_WORKFLOW_DEBUG", "").strip().lower() in ("1", "true")
 
 
 def _get_log_file_path() -> Path:
@@ -31,7 +34,13 @@ def _get_log_file_path() -> Path:
 
 
 def dbg_log(stage: str, message: str, **fields: Any) -> None:
-    """Ghi một dòng log debug nổi bật ra console và file log."""
+    """PERF (audit 2026-09-30 §LOG.DEBUG): Ghi một dòng log debug nổi bật ra console và file log.
+
+    Chỉ hoạt động khi PRYNX_WORKFLOW_DEBUG=1; bình thường no-op để giữ hiệu năng tối đa.
+    """
+    if not _WORKFLOW_DEBUG_ENABLED:
+        return
+
     now_str = datetime.now().strftime("%H:%M:%S.%f")[:-3]
     parts = []
     for k, v in fields.items():

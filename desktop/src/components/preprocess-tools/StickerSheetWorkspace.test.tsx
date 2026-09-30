@@ -371,6 +371,107 @@ describe('StickerSheetWorkspace - tách thao tác view và sửa mask', () => {
         expect(JSON.stringify(preview)).toBe(before);
     });
 
+    it('hiển thị bounding box và kích thước mm của từng khuôn khi showDimensions=true', () => {
+        const preview = {
+            page_number: 1, mask_revision: 1, preview_width_px: 200, preview_height_px: 200,
+            paths: [{ instance_id: 1, d: 'M 10 20 L 110 20 L 110 120 L 10 120 Z', segment_count: 4 }],
+            bounding_boxes: [{
+                id: 1,
+                width_mm: 50.0,
+                height_mm: 50.0,
+                x_px: 10,
+                y_px: 20,
+                width_px: 100,
+                height_px: 100,
+            }],
+            fingerprint: 'f'.repeat(64), segment_count: 4,
+        };
+
+        const { rerender } = render(
+            <StickerCutlineOverlay
+                preview={preview}
+                selectedInstanceId={null}
+                showDimensions={true}
+                thrucut={{ enabled: true, shape: 'rounded_rect', marginMm: 3.0, radiusMm: 2.0, color: '#00e5ff' }}
+            />
+        );
+
+        // Badge kích thước hiển thị rõ cả Bế trong và Dao ngoài
+        const badge = screen.getByTestId('sticker-bbox-badge-1');
+        expect(badge).toBeTruthy();
+        expect(badge.textContent).toContain('Bế trong:');
+        expect(badge.textContent).toContain('50.0 × 50.0 mm');
+        expect(badge.textContent).toContain('Dao ngoài:');
+        expect(badge.textContent).toContain('56.0 × 56.0 mm');
+
+        // Khi tắt showDimensions
+        rerender(
+            <StickerCutlineOverlay preview={preview} selectedInstanceId={null} showDimensions={false} />
+        );
+        expect(screen.queryByTestId('sticker-bbox-badge-1')).toBeNull();
+    });
+
+    it('hiển thị kích thước Dao ngoài theo 4 cạnh lề riêng biệt khi unlinked', () => {
+        const preview = {
+            page_number: 1, mask_revision: 1, preview_width_px: 500, preview_height_px: 500,
+            paths: [{ instance_id: 1, d: 'M 10 20 L 110 20 L 110 120 L 10 120 Z', segment_count: 4 }],
+            bounding_boxes: [{
+                id: 1,
+                width_mm: 50.0,
+                height_mm: 50.0,
+                x_px: 10,
+                y_px: 20,
+                width_px: 100,
+                height_px: 100,
+            }],
+            fingerprint: 'f'.repeat(64), segment_count: 4,
+        };
+
+        render(
+            <StickerCutlineOverlay
+                preview={preview}
+                selectedInstanceId={null}
+                showDimensions={true}
+                thrucut={{
+                    enabled: true,
+                    shape: 'rounded_rect',
+                    marginMm: 3.0,
+                    marginTopMm: 10.0,
+                    marginBottomMm: 2.0,
+                    marginLeftMm: 3.0,
+                    marginRightMm: 4.0,
+                    radiusMm: 2.0,
+                    color: '#00e5ff',
+                }}
+            />
+        );
+
+        const badge = screen.getByTestId('sticker-bbox-badge-1');
+        expect(badge).toBeTruthy();
+        expect(badge.textContent).toContain('Bế trong:');
+        expect(badge.textContent).toContain('50.0 × 50.0 mm');
+        expect(badge.textContent).toContain('Dao ngoài:');
+        expect(badge.textContent).toContain('57.0 × 62.0 mm');
+    });
+
+    it('tự động bóc tách bounding box của nhiều khuôn bế nếu preview chưa có sẵn bounding_boxes', () => {
+        const preview = {
+            page_number: 1, mask_revision: 1, preview_width_px: 500, preview_height_px: 500,
+            paths: [
+                { instance_id: 1, d: 'M 10 10 L 110 10 L 110 110 L 10 110 Z', segment_count: 4 },
+                { instance_id: 2, d: 'M 200 200 L 300 200 L 300 350 L 200 350 Z', segment_count: 4 }
+            ],
+            fingerprint: 'g'.repeat(64), segment_count: 8,
+        };
+
+        render(
+            <StickerCutlineOverlay preview={preview} selectedInstanceId={null} showDimensions={true} />
+        );
+
+        expect(screen.getByTestId('sticker-bbox-badge-1')).toBeTruthy();
+        expect(screen.getByTestId('sticker-bbox-badge-2')).toBeTruthy();
+    });
+
     it('khóa cọ trên canvas trong lúc cập nhật preview AI', () => {
         const current = useStickerSheetStore.getState().getTab('tab');
         useStickerSheetStore.setState({

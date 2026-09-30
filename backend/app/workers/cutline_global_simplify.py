@@ -229,6 +229,10 @@ def global_refit_ring(source, tolerance, units, *, max_candidate_attempts: int =
         points = np.asarray(points)
 
         def candidate_at(first, last):
+            # PERF: Khi ở chế độ preview_fast (max_candidate_attempts <= 3), giới hạn span tối đa
+            # 16 segment để tránh bùng nổ tổ hợp O(N^2) gây đơ preview trên contour phức tạp.
+            if max_candidate_attempts <= 3 and (last - first) > 16:
+                return None
             left, right = outgoing[start + first], incoming[start + last - 1]
             if left is None or right is None:
                 return None

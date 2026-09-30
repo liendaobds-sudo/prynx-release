@@ -36,3 +36,10 @@ else:                     # ≥16GB: giữ nguyên (cores-1/full) — KHÔNG cap
 3. Kết quả file ghi vào khu results/uploads hiện có (xem `results.py`, `upload.py`), dọn dẹp qua `cleanup.py` — đừng phát minh chỗ lưu mới.
 4. Cache: các engine có cache tài liệu/kết quả (DOC_CACHE phía native, cache backend) — key phải gồm mọi tham số ảnh hưởng kết quả, nếu không sẽ trả kết quả cũ sai âm thầm.
 5. Test: pytest `backend/tests/` (có `conftest.py` + bộ `golden/`); thêm case golden khi đổi kết quả render là chủ đích.
+
+## Bất biến tỷ lệ tem cùng khuôn VDP (OVAL20.01)
+
+- Khi bình bài bế tem nhiều trang / VDP (chế độ đồng nhất `homogeneous_mode`):
+  - Nếu các trang nội dung có cùng kích thước khổ trang (MediaBox/page.rect lệch <= 1 pt) với trang master: **BẮT BUỘC giữ nguyên tỉ lệ `scale = 1.0`** bằng cách kế thừa trực tiếp clip khuôn master `_hom_clip = _hom_master_die['rect']`.
+  - **Tuyệt đối không lấy bounding box của chi tiết vector con** (khung tên, dòng chữ) trên các trang VDP để tự ý co phóng (registration) toàn trang.
+  - **Cấm chữa cháy test mù quáng khi build QA release**: Tuyệt đối không thêm điều kiện giới hạn kích thước bounding box (như `_bb.width >= _mdr.width`) chỉ để làm xanh các bài test giả lập, vì hành động này từng gây hồi quy nghiêm trọng: làm nổ tem VDP thật lên 214% ở các con sau.

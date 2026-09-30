@@ -220,3 +220,24 @@ def test_reference_corner_detector_is_scale_invariant(scale):
     assert _reference_corner_indices(flower, flower, 38.0) == []
     assert len(_reference_corner_indices(gear, gear, 38.0)) == 80
     assert len(_reference_corner_indices(hourglass, hourglass, 38.0)) == 6
+
+
+def test_build_thrucut_path_stream_custom_margins():
+    from app.workers.cutline_geometry import build_thrucut_path_stream
+    bounds = (100.0, 100.0, 200.0, 200.0)
+    # Lề đều
+    _, (ox0, oy0, ox1, oy1) = build_thrucut_path_stream(bounds, margin_pts=10.0)
+    assert ox0 == 90.0 and oy0 == 90.0 and ox1 == 210.0 and oy1 == 210.0
+
+    # Lề 4 cạnh riêng biệt (Trên 20, Dưới 5, Trái 15, Phải 25)
+    _, (ox0, oy0, ox1, oy1) = build_thrucut_path_stream(
+        bounds,
+        margin_top_pts=20.0,
+        margin_bottom_pts=5.0,
+        margin_left_pts=15.0,
+        margin_right_pts=25.0,
+    )
+    assert ox0 == 85.0
+    assert oy0 == 80.0
+    assert ox1 == 225.0
+    assert oy1 == 205.0

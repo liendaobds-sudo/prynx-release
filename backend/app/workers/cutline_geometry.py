@@ -1314,3 +1314,116 @@ def build_contour_path_stream(coords, page_h, corner_style="round", tension=0.33
     if corner_style in {"round", "alpha_smooth"}:
         return _coords_to_bezier_stream(coords, page_h, tension=tension)
     return _coords_to_polyline_stream(coords, page_h)
+
+
+def build_thrucut_path_stream(
+    bounds: tuple[float, float, float, float],
+    shape: str = "rounded_rect",
+    margin_pts: float = 8.504,
+    radius_pts: float = 8.504,
+    page_height: float = 0.0,
+    margin_top_pts: float | None = None,
+    margin_bottom_pts: float | None = None,
+    margin_left_pts: float | None = None,
+    margin_right_pts: float | None = None,
+) -> tuple[list[str], tuple[float, float, float, float]]:
+    """Tạo PDF content stream cho đường bế đứt ngoài (ThruCut).
+
+    bounds: (minx, miny, maxx, maxy) trong hệ toạ độ raster (y tăng xuống).
+    Hỗ trợ lề riêng cho từng cạnh (trên, dưới, trái, phải).
+    Trả về: (stream_commands, (ox0, oy0, ox1, oy1)).
+    """
+    minx, miny, maxx, maxy = bounds
+    margin = max(0.0, float(margin_pts))
+    m_top = max(0.0, float(margin_top_pts)) if margin_top_pts is not None else margin
+    m_bottom = max(0.0, float(margin_bottom_pts)) if margin_bottom_pts is not None else margin
+    m_left = max(0.0, float(margin_left_pts)) if margin_left_pts is not None else margin
+    m_right = max(0.0, float(margin_right_pts)) if margin_right_pts is not None else margin
+
+    ox0 = minx - m_left
+    oy0 = miny - m_top
+    ox1 = maxx + m_right
+    oy1 = maxy + m_bottom
+    w = ox1 - ox0
+    h = oy1 - oy0
+
+    resolved_shape = str(shape or "rounded_rect").strip().lower()
+
+    if resolved_shape == "ellipse":
+        cx = (ox0 + ox1) / 2.0
+        cy = (oy0 + oy1) / 2.0
+        rx = w / 2.0
+        ry = h / 2.0
+        # 4 cung Bézier cho elip (kappa = 0.5522847498)
+        kx = rx * 0.5522847498307936
+        ky = ry * 0.5522847498307936
+        p_top = (cx, cy - ry)
+        p_right = (cx + rx, cy)
+        p_bottom = (cx, cy + ry)
+        p_left = (cx - rx, cy)
+        segments = [
+            (p_top, (cx + kx, cy - ry), (cx + rx, cy - ky), p_right),
+            (p_right, (cx + rx, cy + ky), (cx + kx, cy + ry), p_bottom),
+            (p_bottom, (cx - kx, cy + ry), (cx - rx, cy + ky), p_left),
+            (p_left, (cx - rx, cy - ky), (cx - kx, cy - ry), p_top),
+        ]
+        return build_bezier_segments_path_stream(segments, page_height), (ox0, oy0, ox1, oy1)
+
+    # Chữ nhật bo góc (mặc định)
+    r = min(max(0.0, float(radius_pts)), w / 2.0, h / 2.0)
+    if r > 0.1:
+        points = [(ox0, oy0), (ox1, oy0), (ox1, oy1), (ox0, oy1)]
+        segments = build_filleted_polygon_beziers(points, radius=r, edge_cap_ratio=0.499999)
+        if segments:
+            return build_bezier_segments_path_stream(segments, page_height), (ox0, oy0, ox1, oy1)
+
+    # Fallback chữ nhật cạnh thẳng
+    stream = [
+        f"{ox0:.4f} {page_height - oy0:.4f} m",
+        f"{ox1:.4f} {page_height - oy0:.4f} l",
+        f"{ox1:.4f} {page_height - oy1:.4f} l",
+        f"{ox0:.4f} {page_height - oy1:.4f} l",
+        "h",
+    ]
+    return stream, (ox0, oy0, ox1, oy1)
+
+
+def hex_to_cmyk_tint(hex_str: str) -> list[float]:
+    """Chuyển mã màu hex (#RRGGBB) hoặc chuỗi CMYK (c,m,y,k) sang vector DeviceCMYK [C, M, Y, K] trong khoảng [0.0, 1.0]."""
+    raw = (hex_str or "").strip()
+    if "," in raw:
+        parts = raw.split(",")
+        if len(parts) == 4:
+            try:
+                vals = [float(p.strip()) for p in parts]
+                if any(v > 1.0 for v in vals):
+                    vals = [v / 100.0 for v in vals]
+                return [round(max(0.0, min(1.0, v)), 4) for v in vals]
+            except ValueError:
+                pass
+    cleaned = raw.lstrip("#")
+    if len(cleaned) == 3:
+        cleaned = "".join(c * 2 for c in cleaned)
+    if len(cleaned) != 6:
+        return [1.0, 0.0, 0.0, 0.0]
+    try:
+        r = int(cleaned[0:2], 16) / 255.0
+        g = int(cleaned[2:4], 16) / 255.0
+        b = int(cleaned[4:6], 16) / 255.0
+    except ValueError:
+        return [1.0, 0.0, 0.0, 0.0]
+
+    k = 1.0 - max(r, g, b)
+    if k >= 0.9999:
+        return [0.0, 0.0, 0.0, 1.0]
+    c = (1.0 - r - k) / (1.0 - k)
+    m = (1.0 - g - k) / (1.0 - k)
+    y = (1.0 - b - k) / (1.0 - k)
+    return [
+        round(max(0.0, min(1.0, c)), 4),
+        round(max(0.0, min(1.0, m)), 4),
+        round(max(0.0, min(1.0, y)), 4),
+        round(max(0.0, min(1.0, k)), 4),
+    ]
+
+

@@ -8,6 +8,8 @@ import {
     buildStickerDielineFields,
     normalizeStickerBleedColorType,
     shouldCropStickerPage,
+    cmykToHex,
+    hexToCmyk,
 } from './stickerToolPolicy';
 
 
@@ -122,5 +124,111 @@ describe('StickerTool — nguồn đường cắt', () => {
         expect(shouldCropStickerPage('sticker', 'original', true)).toBe(true);
         expect(shouldCropStickerPage('sticker', 'none', true)).toBe(false);
         expect(shouldCropStickerPage('rectangle', 'original', true)).toBe(false);
+    });
+});
+
+describe('StickerTool — Bế 2 dao (KissCut + ThruCut)', () => {
+    const baseInput = {
+        productType: 'sticker' as const,
+        cutMode: 'original',
+        offsetMm: 0,
+        cornerStyle: 'preserve',
+        fillHoles: true,
+        bleedMm: 2,
+        removeWhiteBg: true,
+        bleedColorType: 'image',
+        bleedColorHex: '#FFFFFF',
+        edgeBiteMm: 0,
+        cutFirstPageOnly: false,
+        cropToSticker: true,
+    };
+
+    it('không đính kèm trường thrucut khi tùy chọn tắt', () => {
+        const fields = buildStickerDielineFields({ ...baseInput, thrucutEnabled: false });
+        expect(fields).not.toHaveProperty('thrucut_enabled');
+        expect(fields).not.toHaveProperty('thrucut_shape');
+        expect(fields).not.toHaveProperty('thrucut_margin_mm');
+        expect(fields).not.toHaveProperty('thrucut_radius_mm');
+        expect(fields).not.toHaveProperty('thrucut_spot_name');
+    });
+
+    it('đính kèm đầy đủ tham số khi bật Bế 2 dao', () => {
+        const fields = buildStickerDielineFields({
+            ...baseInput,
+            thrucutEnabled: true,
+            thrucutShape: 'rounded_rect',
+            thrucutMarginMm: 3.5,
+            thrucutRadiusMm: 2.0,
+            thrucutSpotName: 'ThruCut',
+        });
+        expect(fields.thrucut_enabled).toBe('true');
+        expect(fields.thrucut_shape).toBe('rounded_rect');
+        expect(fields.thrucut_margin_mm).toBe('3.5');
+        expect(fields.thrucut_radius_mm).toBe('2');
+        expect(fields.thrucut_spot_name).toBe('ThruCut');
+        expect(fields.thrucut_color_hex).toBe('#00FFFF');
+    });
+
+    it('nhận mã màu hex tùy chọn cho kênh bế đứt', () => {
+        const fields = buildStickerDielineFields({
+            ...baseInput,
+            thrucutEnabled: true,
+            thrucutColorHex: '#22C55E',
+        });
+        expect(fields.thrucut_enabled).toBe('true');
+        expect(fields.thrucut_color_hex).toBe('#22C55E');
+    });
+
+    it('tự động kẹp giới hạn và fallback giá trị mặc định hợp lệ', () => {
+        const fields = buildStickerDielineFields({
+            ...baseInput,
+            thrucutEnabled: true,
+            thrucutMarginMm: 999,
+            thrucutRadiusMm: -5,
+            thrucutSpotName: '  DieCut  ',
+        });
+        expect(fields.thrucut_enabled).toBe('true');
+        expect(fields.thrucut_shape).toBe('rounded_rect');
+        expect(fields.thrucut_margin_mm).toBe('30');
+        expect(fields.thrucut_radius_mm).toBe('0');
+        expect(fields.thrucut_spot_name).toBe('DieCut');
+    });
+
+    it('không xuất thrucut khi ở chế độ Xén vuông hoặc Không vẽ đường cắt', () => {
+        const rectFields = buildStickerDielineFields({
+            ...baseInput,
+            productType: 'rectangle',
+            thrucutEnabled: true,
+        });
+        expect(rectFields).not.toHaveProperty('thrucut_enabled');
+
+        const noCutFields = buildStickerDielineFields({
+            ...baseInput,
+            cutMode: 'none',
+            thrucutEnabled: true,
+        });
+        expect(noCutFields).not.toHaveProperty('thrucut_enabled');
+    });
+
+    it('chuyển đổi hai chiều CMYK và Hex chính xác cho in ấn', () => {
+        // Cyan 100%
+        expect(cmykToHex(100, 0, 0, 0)).toBe('#00ffff');
+        expect(hexToCmyk('#00ffff')).toEqual({ c: 100, m: 0, y: 0, k: 0 });
+
+        // Magenta 100%
+        expect(cmykToHex(0, 100, 0, 0)).toBe('#ff00ff');
+        expect(hexToCmyk('#ff00ff')).toEqual({ c: 0, m: 100, y: 0, k: 0 });
+
+        // Yellow 100%
+        expect(cmykToHex(0, 0, 100, 0)).toBe('#ffff00');
+        expect(hexToCmyk('#ffff00')).toEqual({ c: 0, m: 0, y: 100, k: 0 });
+
+        // Black 100%
+        expect(cmykToHex(0, 0, 0, 100)).toBe('#000000');
+        expect(hexToCmyk('#000000')).toEqual({ c: 0, m: 0, y: 0, k: 100 });
+
+        // Xanh lá (C100 Y100)
+        expect(cmykToHex(100, 0, 100, 0)).toBe('#00ff00');
+        expect(hexToCmyk('#00ff00')).toEqual({ c: 100, m: 0, y: 100, k: 0 });
     });
 });

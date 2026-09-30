@@ -501,6 +501,7 @@ async def _convert_candidate(
     contrast_percent: int,
     vibrance_percent: int,
     include_spot: bool,
+    preserve_smask: bool = False,
 ) -> Path:
     from app.core import pdf_actions_native
 
@@ -522,6 +523,7 @@ async def _convert_candidate(
             brightness_lstar=brightness_lstar,
             contrast_percent=contrast_percent,
             vibrance_percent=vibrance_percent,
+            preserve_smask=preserve_smask,
         )
         if not isinstance(result, dict) or not result.get("supported"):
             raise ColorConversionPreviewError(
@@ -648,6 +650,7 @@ async def create_color_conversion_preview(
     rendering_intent: str,
     preserve_black: bool,
     black_point_compensation: bool,
+    preserve_smask: bool = False,
     gamut_mapping: str,
     adjustment_stage: str,
     brightness_lstar: int,
@@ -776,6 +779,7 @@ async def create_color_conversion_preview(
                 contrast_percent=contrast,
                 vibrance_percent=vibrance,
                 include_spot=include_spot,
+                preserve_smask=preserve_smask,
             )
             return await _analyze_candidate(
                 candidate_path,

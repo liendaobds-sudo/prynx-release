@@ -391,10 +391,15 @@ def snapshot_classic_cutline_preview(
                     or cache.get("preview", {}).get("fingerprint") != expected_fingerprint
                     or cache.get("key") != expected_key):
                 raise StickerCanonicalPreviewConflict("Đường xem trước toàn trang đã cũ; hãy chờ cập nhật.")
-            # Chỉ chuyển memo thuần Simplify đã được worker tạo và giữ trong
-            # RAM session; không giả Alpha/instance để đi vào nhánh mask khác.
-            return {"kind": "whole-page-memo-v1", "simplify_memo": copy.deepcopy(cache["memo"]),
-                    "preview_fingerprint": expected_fingerprint}
+            # Chuyển memo Simplify, base_dieline_entry và operations đã được worker tạo và giữ trong
+            # RAM session để kích hoạt fast-path siêu tốc ở execute.
+            return {
+                "kind": "whole-page-memo-v1",
+                "simplify_memo": copy.deepcopy(cache["memo"]),
+                "preview_fingerprint": expected_fingerprint,
+                "base_dieline_entry": copy.deepcopy(cache.get("base_dieline_entry")),
+                "operations": copy.deepcopy(cache.get("operations")),
+            }
         if (
             int(cache.get("page_number", -1)) != int(page_number)
             or int(cache.get("revision", -1)) != revision

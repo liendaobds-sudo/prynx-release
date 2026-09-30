@@ -631,24 +631,15 @@ def simplify_cubic_path_groups(
 
     def _execute():
         if preview_fast:
-            # PERF (audit 2026-09-11 §SIMPLIFY.PREVIEW-FAST): lúc kéo slider,
-            # mức thấp ưu tiên reducer bảo toàn có chi phí ổn định. Với mức cao,
-            # fairing thường là ứng viên duy nhất giảm được node, nên chạy nó
-            # trước để không tốn thêm một lượt reducer vô ích.
-            if float(tolerance_mm) >= 0.075:
-                res, st = _simplify_cubic_path_groups_impl(
-                    path_groups, **options, fair_refit=True, fair_max_irls_rounds=3,
-                )
-                if st["changed"] or float(tolerance_mm) == 0:
-                    return res, st
-                return _simplify_cubic_path_groups_impl(
-                    path_groups, **options, global_refit=True,
-                )
+            # PERF (audit 2026-09-30 §SIMPLIFY.FAST-PREVIEW): global_refit chạy cực nhanh O(N)
+            # nhờ span cap <= 16; ưu tiên chạy trước để preview/pass 2 hoàn thành tức thì (< 50ms).
+            # Hầu hết contour tem nhãn giảm node thành công ngay tại đây mà không cần chạy IRLS nặng.
             res, st = _simplify_cubic_path_groups_impl(
                 path_groups, **options, global_refit=True,
             )
             if st["changed"] or float(tolerance_mm) == 0:
                 return res, st
+            # Fallback sang fair_refit nếu global_refit không giảm được node
             res, st = _simplify_cubic_path_groups_impl(
                 path_groups, **options, fair_refit=True, fair_max_irls_rounds=3,
             )

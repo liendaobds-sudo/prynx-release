@@ -5210,3 +5210,130 @@ def test_nen_gradient_bao_loi_thay_vi_cat_ca_trang(tmp_path):
     assert success is False, "nền gradient phải báo lỗi, không được cắt cả trang"
     assert "nền" in meta.get("error", "").lower()
     assert not os.path.exists(out), "file lỗi phải bị dọn, không để thợ mở nhầm"
+
+
+def test_sticker_dual_cutline_kiss_and_thru_cut(tmp_path):
+    """Kiểm tra tạo đồng thời 2 đường bế: CutContour (KissCut) và ThruCut."""
+    import io as _io
+    from PIL import Image as _Image, ImageDraw as _ImageDraw
+    from reportlab.pdfgen import canvas as _canvas
+    from reportlab.lib.utils import ImageReader as _ImageReader
+    from app.workers.nup_diecut import extract_page_die_cut_path_groups
+
+    src = str(tmp_path / "sticker_dual_cut.pdf")
+    out = str(tmp_path / "sticker_dual_cut_out.pdf")
+
+    # Tạo ảnh tem PNG có nền trong suốt (RGBA)
+    w, h = 200, 200
+    img = _Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = _ImageDraw.Draw(img)
+    draw.ellipse([50, 50, 150, 150], fill=(255, 0, 0, 255))
+    buf = _io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+
+    page_w, page_h = w * 72.0 / 150.0, h * 72.0 / 150.0
+    c = _canvas.Canvas(src, pagesize=(page_w, page_h), pageCompression=0)
+    c.drawImage(_ImageReader(buf), 0, 0, width=page_w, height=page_h, mask='auto')
+    c.showPage()
+    c.save()
+
+    engine = StickerEngine(dpi=150)
+    success, meta = engine.process_pdf(
+        input_path=src,
+        output_path=out,
+        cut_mode="original",
+        offset_mm=1.0,
+        corner_style="round",
+        bleed_mm=1.5,
+        fill_holes=True,
+        remove_white_bg=False,
+        draw_cut_contour=True,
+        shape_mode="contour",
+        thrucut_enabled=True,
+        thrucut_shape="rounded_rect",
+        thrucut_margin_mm=3.0,
+        thrucut_radius_mm=2.0,
+        thrucut_spot_name="ThruCut",
+        thrucut_color_hex="#22C55E",
+    )
+
+    assert success is True, meta.get("error")
+    assert os.path.exists(out)
+
+    with pikepdf.Pdf.open(out) as result:
+        page = result.pages[0]
+        # 1. Kiểm tra Resources.ColorSpace có cả CutContour và ThruCut
+        assert "/ColorSpace" in page.Resources
+        assert "/CutContour" in page.Resources.ColorSpace
+        assert "/ThruCut" in page.Resources.ColorSpace
+
+        # Kiểm tra Tint Transform của /ThruCut chứa mã màu CMYK tính từ hex
+        thru_cs = page.Resources.ColorSpace["/ThruCut"]
+        thru_func = thru_cs[3]
+        c1 = [float(v) for v in thru_func["/C1"]]
+        # Không còn là Cyan thuần [1, 0, 0, 0] vì đã truyền #22C55E
+        assert c1 != [1.0, 0.0, 0.0, 0.0]
+
+        # 2. Kiểm tra content stream có lệnh vẽ cả 2 spot color
+        stream_bytes = _read_all_content(page)
+        assert b"/CutContour CS" in stream_bytes
+        assert b"/ThruCut CS" in stream_bytes
+
+    # 3. Tích hợp: Kiểm tra nup_diecut trích xuất được 2 nhóm dao bế
+    from app.workers import pdf_wrapper as pdf_lib
+    doc = pdf_lib.open(out)
+    try:
+        groups = extract_page_die_cut_path_groups(doc[0])
+        assert len(groups) >= 2
+        spot_names = {g.get("spot_name") for g in groups}
+        assert "CutContour" in spot_names
+        assert "ThruCut" in spot_names
+    finally:
+        doc.close()
+
+
+def test_sticker_dual_cutline_cmyk_string_tint(tmp_path):
+    """Kiểm tra truyền trực tiếp chuỗi CMYK (ví dụ: '100,0,100,0') vào thrucut_color_hex."""
+    import io as _io
+    from PIL import Image as _Image, ImageDraw as _ImageDraw
+    from reportlab.pdfgen import canvas as _canvas
+    from reportlab.lib.utils import ImageReader as _ImageReader
+
+    src = str(tmp_path / "sticker_cmyk_tint.pdf")
+    out = str(tmp_path / "sticker_cmyk_tint_out.pdf")
+
+    w, h = 100, 100
+    img = _Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = _ImageDraw.Draw(img)
+    draw.rectangle([20, 20, 80, 80], fill=(0, 255, 0, 255))
+    buf = _io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+
+    page_w, page_h = w * 72.0 / 150.0, h * 72.0 / 150.0
+    c = _canvas.Canvas(src, pagesize=(page_w, page_h), pageCompression=0)
+    c.drawImage(_ImageReader(buf), 0, 0, width=page_w, height=page_h, mask='auto')
+    c.showPage()
+    c.save()
+
+    engine = StickerEngine(dpi=150)
+    success, meta = engine.process_pdf(
+        input_path=src,
+        output_path=out,
+        cut_mode="original",
+        offset_mm=1.0,
+        bleed_mm=1.0,
+        thrucut_enabled=True,
+        thrucut_spot_name="ThruCut",
+        thrucut_color_hex="100,0,100,0",
+    )
+    assert success is True, meta.get("error")
+    with pikepdf.Pdf.open(out) as result:
+        page = result.pages[0]
+        thru_cs = page.Resources.ColorSpace["/ThruCut"]
+        thru_func = thru_cs[3]
+        c1 = [float(v) for v in thru_func["/C1"]]
+        assert c1 == [1.0, 0.0, 1.0, 0.0]
+
+

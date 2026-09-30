@@ -2413,7 +2413,24 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
             {/* SEC/UIUX (audit 2026-08-04 re-audit UI): tab nền vẫn mounted, vì vậy
                 mọi portal phải đóng theo isActive để không nổi trên tab hiện tại. */}
             <MarksSettingsDialog isOpen={isActive !== false && s.showMarksModal} onClose={() => s.setShowMarksModal(false)} config={s.marksConfig} onSave={(cfg) => { s.setMarksConfig(cfg); }} />
-            <PontSettingsDialog isOpen={isActive !== false && s.showPontModal} onClose={() => s.setShowPontModal(false)} config={s.pontConfig} onSave={(cfg) => { s.setPontConfig(cfg); s.setPontType('custom'); }} />
+            <PontSettingsDialog
+                isOpen={isActive !== false && s.showPontModal}
+                onClose={() => s.setShowPontModal(false)}
+                config={s.pontConfig}
+                currentPresetName={
+                    typeof s.pontType === 'string' && s.pontType.startsWith('preset_')
+                        ? s.pontType.slice(7)
+                        : undefined
+                }
+                onSave={(cfg, presetName) => {
+                    s.setPontConfig(cfg);
+                    if (presetName) {
+                        s.setPontType('preset_' + presetName);
+                    } else {
+                        s.setPontType('custom');
+                    }
+                }}
+            />
             <PresetSelector isOpen={isActive !== false && s.isPresetOpen} onClose={() => s.setIsPresetOpen(false)} onLoadPreset={handleLoadPreset} onGetCurrentSettings={getCurrentSettings} />
             <FlipbookDialog isOpen={isActive !== false && s.showFlipbook} onClose={() => s.setShowFlipbook(false)} pdfUrl={pdfUrl} pdfFile={pdfFile} pageOrder={viewerPageOrder || []} pageRotations={viewerPageRotations || []} bindingMode={s.signatureMode} foliosize={s.foliosize} bleed={s.bleed} blankPlacement={s.blankPlacement} />
             <SheetViewerDialog isOpen={isActive !== false && s.showSheetViewer} onClose={() => s.setShowSheetViewer(false)} pdfFile={pdfFile} pageOrder={viewerPageOrder || []} pageRotations={viewerPageRotations || []} bindingMode={s.signatureMode} foliosize={(s.paperClassification === 'offset' && s.foldPattern?.startsWith('sig_')) ? parseInt(s.foldPattern.split('_')[1]) : s.foliosize} sheetWidth={s.customSheetWidth} sheetHeight={s.customSheetHeight} scaleMode={s.paperClassification === 'offset' ? 'chain_nup' : s.scaleMode} foldPattern={s.paperClassification === 'offset' ? s.foldPattern : ''} catalogJobs={s.autoCatalog && s.catalogJobsState ? s.catalogJobsState : undefined} isDigital={s.paperClassification === 'in_nhanh'} gripperMargin={s.paperClassification === 'offset' ? s.gripperMargin : 0} pageWpt={s.sourcePageDim?.w} pageHpt={s.sourcePageDim?.h} bleed={s.bleed} gapX={s.gapX} gapY={s.gapY} marginLeft={s.marginLeft} marginRight={s.marginRight} marginTop={s.marginTop} marginBottom={s.marginBottom} blankPlacement={s.blankPlacement} separateCover={s.separateCover && (s.signatureMode === 'continuous' || s.signatureMode === 'thread')} coverPageCount={s.coverPageCount} />

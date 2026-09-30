@@ -6,7 +6,18 @@ import { authenticatedFetch, getApiUrl } from './api';
 
 const t0 = typeof performance !== 'undefined' ? performance.now() : Date.now();
 type InvokeFn = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
-type PrynXWindow = Window & { __PRYNX_INVOKE__?: InvokeFn };
+type PrynXWindow = Window & {
+  __PRYNX_INVOKE__?: InvokeFn;
+  __PRYNX_VERBOSE_TRACE__?: boolean;
+};
+
+// PERF (audit 2026-09-30 §LOG.DEBUG): Không in console.debug object trong hot-loop viewer
+// (zoom, pan, wheel, visibility...) trừ khi chủ động bật __PRYNX_VERBOSE_TRACE__.
+// In console hàng trăm object mỗi giây làm nghẽn devtools và WebView IPC.
+function isVerboseTraceEnabled(): boolean {
+  if (typeof window === 'undefined') return false;
+  return (window as PrynXWindow).__PRYNX_VERBOSE_TRACE__ === true;
+}
 
 let enabledPromise: Promise<boolean> | null = null;
 let enabledValue: boolean | undefined;
@@ -250,7 +261,8 @@ async function enqueueTrace(line: string): Promise<void> {
 
 /** Capture thời gian ngay tại lời gọi; thời điểm ghi file không thay thế thời điểm sự kiện. */
 export function viewerTraceLog(event: string, extra: Record<string, unknown> = {}): Promise<void> {
-  if (import.meta.env.DEV) {
+  // PERF (audit 2026-09-30 §LOG.DEBUG): Chỉ console.debug khi bật __PRYNX_VERBOSE_TRACE__
+  if (import.meta.env.DEV && isVerboseTraceEnabled()) {
     console.debug(`[VIEWER_TRACE] ${event}`, extra);
   }
   let seq: number | undefined;
@@ -268,7 +280,8 @@ export function viewerTraceLog(event: string, extra: Record<string, unknown> = {
 }
 
 export function previewPerfLog(msg: string, extra: Record<string, unknown> = {}): Promise<void> {
-  if (import.meta.env.DEV) {
+  // PERF (audit 2026-09-30 §LOG.DEBUG): Chỉ console.debug khi bật __PRYNX_VERBOSE_TRACE__
+  if (import.meta.env.DEV && isVerboseTraceEnabled()) {
     console.debug(`[PREVIEW_PERF] ${msg}`, extra);
   }
   if (typeof window === 'undefined' || enabledValue === false) return Promise.resolve();

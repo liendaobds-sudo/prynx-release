@@ -32,6 +32,7 @@ from app.schemas.pdf_tools import (
     MetadataReadResponse,
     WarmupResponse,
     DownsampleImageResponse,
+    ImageToPdfResponse,
 )
 from typing import List, Optional
 import json
@@ -1591,6 +1592,22 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
     # auto_safe | contour | force_circle | force_ellipse | force_rect | force_triangle
     shape_mode = (form.get("shape_mode") or "auto_safe").strip().lower()
 
+    thrucut_enabled_raw = form.get("thrucut_enabled", "false")
+    do_thrucut_enabled = (
+        cut_mode != "none"
+        and not do_rectangle_mode
+        and str(thrucut_enabled_raw).lower() in ("true", "1", "yes")
+    )
+    thrucut_shape = (form.get("thrucut_shape") or "rounded_rect").strip().lower()
+    thrucut_margin_mm = _sticker_float_param(form, "thrucut_margin_mm", default=3.0, low=0.5, high=30.0)
+    thrucut_margin_top_mm = _sticker_float_param(form, "thrucut_margin_top_mm", default=thrucut_margin_mm, low=0.0, high=50.0)
+    thrucut_margin_bottom_mm = _sticker_float_param(form, "thrucut_margin_bottom_mm", default=thrucut_margin_mm, low=0.0, high=50.0)
+    thrucut_margin_left_mm = _sticker_float_param(form, "thrucut_margin_left_mm", default=thrucut_margin_mm, low=0.0, high=50.0)
+    thrucut_margin_right_mm = _sticker_float_param(form, "thrucut_margin_right_mm", default=thrucut_margin_mm, low=0.0, high=50.0)
+    thrucut_radius_mm = _sticker_float_param(form, "thrucut_radius_mm", default=3.0, low=0.0, high=20.0)
+    thrucut_spot_name = str(form.get("thrucut_spot_name") or "ThruCut").strip() or "ThruCut"
+    thrucut_color_hex = str(form.get("thrucut_color_hex") or "#00FFFF").strip() or "#00FFFF"
+
     process_pages = None
     process_pages_raw = form.get("process_pages")
     if process_pages_raw:
@@ -1858,6 +1875,15 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
                 if canonical_preview_override is not None and canonical_preview_override.get("kind") != "whole-page-memo-v1"
                 else None
             )
+            cached_page_dielines = None
+            if canonical_preview_override is not None:
+                base_entry = canonical_preview_override.get("base_dieline_entry")
+                if base_entry is not None:
+                    cached_page_dielines = {canonical_preview_page - 1: base_entry}
+                    logger.info(
+                        "[STICKER] page=%d có base_dieline từ canonical preview -> kích hoạt fast-path!",
+                        canonical_preview_page,
+                    )
             if canonical_preview_override is not None:
                 logger.info(
                     "[STICKER] page=%d tái dùng canonical preview %s; "
@@ -1941,12 +1967,23 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
                 alpha_corner_policy=adaptive_corner_policy,
                 curve_tension=curve_tension,
                 approved_contour_overrides=approved_contour_overrides,
+                _cached_page_dielines=cached_page_dielines,
                 cutline_denoise=cutline_denoise,
                 cutline_simplify_mm=cutline_simplify_mm,
                 _simplify_memo=(canonical_preview_override.get("simplify_memo")
                     if canonical_preview_override and canonical_preview_override.get("kind") == "whole-page-memo-v1" else None),
                 cutline_simplify_auto=cutline_simplify_auto,
                 alpha_source_mode=alpha_source_mode,
+                thrucut_enabled=do_thrucut_enabled,
+                thrucut_shape=thrucut_shape,
+                thrucut_margin_mm=thrucut_margin_mm,
+                thrucut_margin_top_mm=thrucut_margin_top_mm,
+                thrucut_margin_bottom_mm=thrucut_margin_bottom_mm,
+                thrucut_margin_left_mm=thrucut_margin_left_mm,
+                thrucut_margin_right_mm=thrucut_margin_right_mm,
+                thrucut_radius_mm=thrucut_radius_mm,
+                thrucut_spot_name=thrucut_spot_name,
+                thrucut_color_hex=thrucut_color_hex,
             )
             engine_seconds = time.perf_counter() - engine_started
             logger.info(
@@ -1989,6 +2026,10 @@ async def sticker_dieline_endpoint(request: Request, license_info: dict = Depend
                         offset_pts,
                     )
                     page_expansion_pts = max(0.0, cut_edge_pts, outer_edge_pts)
+                    if do_thrucut_enabled:
+                        max_thru_margin_mm = max(thrucut_margin_top_mm, thrucut_margin_bottom_mm, thrucut_margin_left_mm, thrucut_margin_right_mm)
+                        thrucut_margin_pts = max_thru_margin_mm * 2.83465
+                        page_expansion_pts = max(page_expansion_pts, (offset_pts if offset_pts > 0 else 0.0) + thrucut_margin_pts)
                 restore_sticker_page_canvas(
                     job_source_path,
                     output_path,
@@ -2800,4 +2841,91 @@ async def downsample_image(
 
     result = await run_in_threadpool(_process)
     return result
+
+
+@router.post(
+    "/image-to-pdf",
+    dependencies=[Depends(require_license)],
+    response_model=ImageToPdfResponse,
+)
+async def image_to_pdf(
+    file: Optional[UploadFile] = File(None),
+    source_path: Optional[str] = Form(None),
+):
+    """PERF (audit 2026-09-30 fast-path image-to-pdf): Đóng gói ảnh thành PDF 1 trang siêu tốc.
+
+    Ủy thác qua native PDFium engine thay vì để JavaScript frontend giải nén và nén lại
+    mảng pixel bằng vòng lặp JS. Bảo toàn kích thước in theo DPI thật và kênh trong suốt RGBA.
+    """
+    import os
+    import uuid
+    from pathlib import Path
+    from PIL import Image
+    from app.core.pdfium_lock import pdfium_guard
+    import pypdfium2 as pdfium
+
+    is_temp = False
+    actual_source_path = None
+    raw_source = source_path if isinstance(source_path, str) else None
+    if raw_source and os.path.exists(raw_source):
+        actual_source_path = raw_source
+    elif file and file.filename:
+        _, actual_source_path, _ = await save_upload_file(file)
+        is_temp = True
+    else:
+        raise HTTPException(status_code=400, detail="Thiếu file hoặc source_path hợp lệ.")
+
+    def _process():
+        old_max = Image.MAX_IMAGE_PIXELS
+        Image.MAX_IMAGE_PIXELS = None
+        try:
+            with Image.open(actual_source_path) as img:
+                orig_w, orig_h = img.width, img.height
+                dpi_tuple = img.info.get("dpi")
+                dpi_x = float(dpi_tuple[0]) if dpi_tuple and dpi_tuple[0] else 72.0
+                dpi_y = float(dpi_tuple[1]) if dpi_tuple and len(dpi_tuple) > 1 and dpi_tuple[1] else dpi_x
+                if dpi_x <= 0:
+                    dpi_x = 72.0
+                if dpi_y <= 0:
+                    dpi_y = 72.0
+
+                w_pt = (orig_w / dpi_x) * 72.0
+                h_pt = (orig_h / dpi_y) * 72.0
+
+                stem = Path(actual_source_path).stem
+                out_filename = f"{stem}.pdf"
+                out_pdf_path = os.path.join(settings.RESULTS_DIR, f"{stem}_{uuid.uuid4().hex[:8]}.pdf")
+
+                with pdfium_guard():
+                    pdf = pdfium.PdfDocument.new()
+                    page = pdf.new_page(w_pt, h_pt)
+                    image_obj = pdfium.PdfImage.new(pdf)
+                    bitmap = pdfium.PdfBitmap.from_pil(img)
+                    image_obj.set_bitmap(bitmap)
+                    image_obj.set_matrix(pdfium.PdfMatrix().scale(w_pt, h_pt))
+                    page.insert_obj(image_obj)
+                    page.gen_content()
+                    pdf.save(out_pdf_path)
+                    pdf.close()
+
+                return {
+                    "success": True,
+                    "pdf_path": out_pdf_path,
+                    "filename": out_filename,
+                    "width_pt": round(w_pt, 2),
+                    "height_pt": round(h_pt, 2),
+                    "dpi": [round(dpi_x, 1), round(dpi_y, 1)],
+                    "size_bytes": os.path.getsize(out_pdf_path),
+                    "format": img.format or "PNG",
+                }
+        finally:
+            Image.MAX_IMAGE_PIXELS = old_max
+            if is_temp and os.path.exists(actual_source_path):
+                try:
+                    os.remove(actual_source_path)
+                except OSError:
+                    pass
+
+    return await run_in_threadpool(_process)
+
 

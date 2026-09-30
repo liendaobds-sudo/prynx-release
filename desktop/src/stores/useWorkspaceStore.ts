@@ -84,6 +84,25 @@ export interface FontInspectionCache {
     report: unknown;
 }
 
+export interface ClassicCutlineThrucutPreviewConfig {
+    enabled: boolean;
+    shape: 'rounded_rect' | 'ellipse' | 'contour_offset';
+    marginMm: number;
+    marginTopMm?: number;
+    marginBottomMm?: number;
+    marginLeftMm?: number;
+    marginRightMm?: number;
+    radiusMm: number;
+    color: string;
+    spotName?: string;
+    marginPx?: number;
+    marginTopPx?: number;
+    marginBottomPx?: number;
+    marginLeftPx?: number;
+    marginRightPx?: number;
+    radiusPx?: number;
+}
+
 export interface ClassicCutlineViewerPreview {
     /** Chủ sở hữu giúp cleanup của component cũ không xóa preview mới. */
     ownerId: string;
@@ -95,6 +114,8 @@ export interface ClassicCutlineViewerPreview {
     /** Fence file + reorder + rotation; payload cũ không được lóe lại sau khi đổi nguồn. */
     documentIdentity: string;
     isUpdating: boolean;
+    thrucut?: ClassicCutlineThrucutPreviewConfig | null;
+    showDimensions?: boolean;
 }
 
 export interface ViewerActivePagePhysical {

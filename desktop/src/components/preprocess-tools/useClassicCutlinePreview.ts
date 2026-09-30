@@ -1057,15 +1057,8 @@ export function useClassicCutlinePreview({
                 const updateWithDraft = async (draftJob: StickerCutlinePreviewJob) => {
                     if (draftJob.draft && !draftRendered && !isStale() && mountedRef.current) {
                         draftRendered = true;
-                        if (
-                            sessionRef.current?.generation === requested.generation
-                            && sessionRef.current.sessionId === requested.source.sessionId
-                        ) {
-                            previewCacheRef.current.set(requested.key, {
-                                preview: draftJob.draft,
-                                canonicalReference: null,
-                            });
-                        }
+                        // Draft chỉ hiển thị tạm cho người dùng xem dáng tem trên Viewer;
+                        // không cấp canonicalReference từ bản nháp để tránh lệch cache khi Thực thi.
                         setState(current => ({
                             ...current,
                             preview: draftJob.draft,
@@ -1079,8 +1072,16 @@ export function useClassicCutlinePreview({
 
                 await updateWithDraft(job);
 
+                let pollCount = 0;
+                // MAX_POLL_COUNT: Mỗi lần poll 100ms. Chờ cho đến khi pass 2 hoàn tất (job.status === 'ready').
+                // Nhờ tối ưu global_refit trước, pass 2 chỉ mất 20-50ms (thường xong ngay nhịp poll đầu tiên).
+                const MAX_POLL_COUNT = 600;
                 while (job.status === 'preparing' || job.status === 'simplifying') {
                     if (isStale()) return;
+                    pollCount += 1;
+                    if (pollCount >= MAX_POLL_COUNT) {
+                        throw new Error(i18n.t('preprocess.stickerSheet:classic_preview_timeout', 'Quá thời gian tải xem trước đường bế.'));
+                    }
                     await waitForPreviewJobPoll(controller.signal);
                     if (isStale()) return;
                     job = await readStickerCutlinePreviewJob(
@@ -1111,6 +1112,9 @@ export function useClassicCutlinePreview({
                 && activePreviewJobRef.current?.generation === requested.jobGeneration
             ) {
                 activePreviewJobRef.current = null;
+            }
+            if (mountedRef.current && desiredRef.current === null && activePreviewJobRef.current === null) {
+                setState(current => current.isUpdating ? { ...current, isUpdating: false, isPreparing: false } : current);
             }
             }
         })();

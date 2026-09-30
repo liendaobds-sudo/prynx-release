@@ -174,6 +174,7 @@ def test_convert_colors_returns_log_list_and_downloadable_pdf(monkeypatch, tmp_p
             "brightness_lstar": 3,
             "contrast_percent": -5,
             "vibrance_percent": 7,
+            "preserve_smask": False,
         }
         assert captured_profiles == ["test-destination.icc", "test-source.icc"]
 

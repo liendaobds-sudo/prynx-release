@@ -368,6 +368,47 @@ describe('imageFileToPdfIfNeeded — chuỗi ảnh → PDF cho viewer', () => {
         expect(embedPngSpy).not.toHaveBeenCalled();
         expect(invokeMock).not.toHaveBeenCalled();
     });
+
+    it('sử dụng Fast-Path Backend khi chạy trong Tauri desktop và file có path', async () => {
+        tauriWindow.__TAURI_INTERNALS__ = {};
+        const source = new File([], 'tem-nhan.png', { type: 'image/png' });
+        Object.defineProperty(source, 'path', { value: 'C:\\\\Users\\\\test\\\\tem-nhan.png' });
+
+        const apiModule = await import('./api');
+        const fetchSpy = vi.spyOn(apiModule, 'authenticatedFetch').mockResolvedValueOnce(
+            new Response(JSON.stringify({
+                success: true,
+                pdf_path: 'C:\\\\Users\\\\test\\\\results\\\\tem-nhan_abc.pdf',
+                size_bytes: 54321,
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+        );
+
+        const output = await imageFileToPdfIfNeeded(source);
+        expect(fetchSpy).toHaveBeenCalledOnce();
+        expect(output.name).toBe('tem-nhan.pdf');
+        expect((output as File & { path?: string }).path).toBe('C:\\\\Users\\\\test\\\\results\\\\tem-nhan_abc.pdf');
+        expect(output.size).toBe(54321);
+        expect((output as unknown as { isTempUploadPath?: boolean }).isTempUploadPath).toBe(true);
+        expect((output as unknown as { isGenerated?: boolean }).isGenerated).toBe(true);
+    });
+
+    it('fallback về pdf-lib khi fast-path backend trả về lỗi', async () => {
+        tauriWindow.__TAURI_INTERNALS__ = {};
+        const bytes = fromBase64(PNG_2X3_NO_DPI);
+        const source = new File([bytes as unknown as BlobPart], 'tem-loi.png', { type: 'image/png' });
+        Object.defineProperty(source, 'path', { value: 'C:\\\\Users\\\\test\\\\tem-loi.png' });
+
+        const apiModule = await import('./api');
+        vi.spyOn(apiModule, 'authenticatedFetch').mockResolvedValueOnce(
+            new Response('Internal Error', { status: 500 }),
+        );
+
+        const output = await imageFileToPdfIfNeeded(source, async () => bytes);
+        expect(output.name).toBe('tem-loi.pdf');
+        expect(output.type).toBe('application/pdf');
+        const document = await readPdfFile(output);
+        expect(document.getPageCount()).toBe(1);
+    });
 });
 
 describe('imageFilesToPdfFile — nhiều ảnh dùng chung Viewer/thumbnail', () => {

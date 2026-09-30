@@ -1,6 +1,7 @@
 import {
     useCallback,
     useEffect,
+    useMemo,
     useRef,
     useState,
     type PointerEvent as ReactPointerEvent,
@@ -9,7 +10,7 @@ import {
 import { Hand, Pencil } from 'lucide-react';
 
 import { tv } from '../../i18n';
-import type { StickerCutlinePreview } from '../../lib/stickerSheetApi';
+import type { StickerCutlinePreview, StickerCutlineBoundingBox } from '../../lib/stickerSheetApi';
 import {
     decodeLabelRgb,
     type StickerMaskWorkerResponse,
@@ -36,54 +37,315 @@ interface Props {
  */
 function resolveStickerCutlineStrokeWidth(
     displayZoom: number | undefined,
+    base: number = 2,
 ): number {
     const zoom = Number.isFinite(displayZoom) && Number(displayZoom) > 0
         ? Number(displayZoom)
         : 1;
     // UIUX (feedback 2026-09-07 §CUTPREVIEW.PARITY): classic không có selected ID
     // vẫn phải rõ như nhiều tem; phân biệt lựa chọn bằng màu, không làm mờ nét còn lại.
-    const base = 2;
+    // base configurable
     const min = 1;
     const max = 3;
     const width = Math.max(min, Math.min(max, base / Math.sqrt(zoom)));
     return Math.round(width * 100) / 100;
 }
 
+import type { ClassicCutlineThrucutPreviewConfig } from '../../stores/useWorkspaceStore';
+
+function computePathsBoundingBox(paths: Array<{ d: string }>): {
+    minX: number;
+    minY: number;
+    maxX: number;
+    maxY: number;
+} | null {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    let found = false;
+
+    for (const p of paths) {
+        const matches = p.d.match(/-?\d+(?:\.\d+)?/g);
+        if (!matches || matches.length < 2) continue;
+        for (let i = 0; i < matches.length - 1; i += 2) {
+            const x = Number(matches[i]);
+            const y = Number(matches[i + 1]);
+            if (Number.isFinite(x) && Number.isFinite(y)) {
+                found = true;
+                if (x < minX) minX = x;
+                if (y < minY) minY = y;
+                if (x > maxX) maxX = x;
+                if (y > maxY) maxY = y;
+            }
+        }
+    }
+    return found ? { minX, minY, maxX, maxY } : null;
+}
+
+function buildSvgRoundedRect(
+    left: number,
+    top: number,
+    right: number,
+    bottom: number,
+    radius: number,
+): string {
+    const x0 = left;
+    const y0 = top;
+    const x1 = right;
+    const y1 = bottom;
+    const r = Math.min(radius, (x1 - x0) / 2, (y1 - y0) / 2);
+    if (r <= 0.05) {
+        return `M ${x0.toFixed(2)} ${y0.toFixed(2)} L ${x1.toFixed(2)} ${y0.toFixed(2)} L ${x1.toFixed(2)} ${y1.toFixed(2)} L ${x0.toFixed(2)} ${y1.toFixed(2)} Z`;
+    }
+    const k = r * 0.5522847498307936;
+    return [
+        `M ${(x0 + r).toFixed(2)} ${y0.toFixed(2)}`,
+        `L ${(x1 - r).toFixed(2)} ${y0.toFixed(2)}`,
+        `C ${(x1 - r + k).toFixed(2)} ${y0.toFixed(2)} ${x1.toFixed(2)} ${(y0 + r - k).toFixed(2)} ${x1.toFixed(2)} ${(y0 + r).toFixed(2)}`,
+        `L ${x1.toFixed(2)} ${(y1 - r).toFixed(2)}`,
+        `C ${x1.toFixed(2)} ${(y1 - r + k).toFixed(2)} ${(x1 - r + k).toFixed(2)} ${y1.toFixed(2)} ${(x1 - r).toFixed(2)} ${y1.toFixed(2)}`,
+        `L ${(x0 + r).toFixed(2)} ${y1.toFixed(2)}`,
+        `C ${(x0 + r - k).toFixed(2)} ${y1.toFixed(2)} ${x0.toFixed(2)} ${(y1 - r + k).toFixed(2)} ${x0.toFixed(2)} ${(y1 - r).toFixed(2)}`,
+        `L ${x0.toFixed(2)} ${(y0 + r).toFixed(2)}`,
+        `C ${x0.toFixed(2)} ${(y0 + r - k).toFixed(2)} ${(x0 + r - k).toFixed(2)} ${y0.toFixed(2)} ${(x0 + r).toFixed(2)} ${y0.toFixed(2)}`,
+        'Z',
+    ].join(' ');
+}
+
+function buildThrucutSvgPath(
+    preview: StickerCutlinePreview,
+    thrucut: ClassicCutlineThrucutPreviewConfig,
+): string | null {
+    if (!thrucut.enabled || !preview.paths || preview.paths.length === 0) return null;
+    const bbox = computePathsBoundingBox(preview.paths);
+    const box = bbox || {
+        minX: 0,
+        minY: 0,
+        maxX: preview.preview_width_px,
+        maxY: preview.preview_height_px,
+    };
+
+    const scaleMmToPx = preview.preview_width_px / 100;
+    const defaultMarginPx = thrucut.marginPx !== undefined
+        ? thrucut.marginPx
+        : thrucut.marginMm * scaleMmToPx;
+
+    const mTop = thrucut.marginTopPx !== undefined
+        ? thrucut.marginTopPx
+        : (thrucut.marginTopMm !== undefined ? thrucut.marginTopMm * scaleMmToPx : defaultMarginPx);
+
+    const mBottom = thrucut.marginBottomPx !== undefined
+        ? thrucut.marginBottomPx
+        : (thrucut.marginBottomMm !== undefined ? thrucut.marginBottomMm * scaleMmToPx : defaultMarginPx);
+
+    const mLeft = thrucut.marginLeftPx !== undefined
+        ? thrucut.marginLeftPx
+        : (thrucut.marginLeftMm !== undefined ? thrucut.marginLeftMm * scaleMmToPx : defaultMarginPx);
+
+    const mRight = thrucut.marginRightPx !== undefined
+        ? thrucut.marginRightPx
+        : (thrucut.marginRightMm !== undefined ? thrucut.marginRightMm * scaleMmToPx : defaultMarginPx);
+
+    const radius = thrucut.radiusPx !== undefined
+        ? thrucut.radiusPx
+        : thrucut.radiusMm * scaleMmToPx;
+
+    const x0 = box.minX - mLeft;
+    const y0 = box.minY - mTop;
+    const x1 = box.maxX + mRight;
+    const y1 = box.maxY + mBottom;
+    const w = x1 - x0;
+    const h = y1 - y0;
+    if (w <= 0 || h <= 0) return null;
+
+    if (thrucut.shape === 'ellipse') {
+        const cx = (x0 + x1) / 2;
+        const cy = (y0 + y1) / 2;
+        const rx = w / 2;
+        const ry = h / 2;
+        return `M ${(cx - rx).toFixed(2)} ${cy.toFixed(2)} a ${rx.toFixed(2)} ${ry.toFixed(2)} 0 1 0 ${(2 * rx).toFixed(2)} 0 a ${rx.toFixed(2)} ${ry.toFixed(2)} 0 1 0 ${(-2 * rx).toFixed(2)} 0 Z`;
+    }
+
+    return buildSvgRoundedRect(x0, y0, x1, y1, radius);
+}
+
 /** SVG đường bế dùng chung cho workspace AI và overlay classic trên Viewer. */
+export function resolveCutlineBoundingBoxes(
+    preview: StickerCutlinePreview,
+    pageWidthMm?: number,
+): StickerCutlineBoundingBox[] {
+    if (preview.bounding_boxes && preview.bounding_boxes.length > 0) {
+        return preview.bounding_boxes;
+    }
+
+    if (!preview.paths || preview.paths.length === 0) return [];
+
+    const scale = (pageWidthMm && pageWidthMm > 0 && preview.preview_width_px > 0)
+        ? preview.preview_width_px / pageWidthMm
+        : (preview.preview_width_px > 0 ? preview.preview_width_px / 100 : 1);
+
+    const boxes: StickerCutlineBoundingBox[] = [];
+    let boxIndex = 1;
+
+    for (const path of preview.paths) {
+        const subpaths = path.d.split(/(?=[Mm])/g).filter(s => s.trim().length > 0);
+        for (const sub of subpaths) {
+            const matches = sub.match(/-?\d+(?:\.\d+)?/g);
+            if (!matches || matches.length < 2) continue;
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            for (let i = 0; i < matches.length - 1; i += 2) {
+                const x = Number(matches[i]);
+                const y = Number(matches[i + 1]);
+                if (Number.isFinite(x) && Number.isFinite(y)) {
+                    if (x < minX) minX = x;
+                    if (y < minY) minY = y;
+                    if (x > maxX) maxX = x;
+                    if (y > maxY) maxY = y;
+                }
+            }
+            const width_px = maxX - minX;
+            const height_px = maxY - minY;
+            if (width_px < 3 || height_px < 3) continue;
+
+            const width_mm = scale > 0 ? Number((width_px / scale).toFixed(1)) : 0;
+            const height_mm = scale > 0 ? Number((height_px / scale).toFixed(1)) : 0;
+
+            boxes.push({
+                id: boxIndex++,
+                x_px: Number(minX.toFixed(1)),
+                y_px: Number(minY.toFixed(1)),
+                width_px: Number(width_px.toFixed(1)),
+                height_px: Number(height_px.toFixed(1)),
+                width_mm,
+                height_mm,
+            });
+        }
+    }
+
+    const nonHoles = boxes.filter((b1, i) => {
+        return !boxes.some((b2, j) => {
+            if (i === j) return false;
+            const isInside = (
+                b1.x_px >= b2.x_px - 0.5 &&
+                b1.x_px + b1.width_px <= b2.x_px + b2.width_px + 0.5 &&
+                b1.y_px >= b2.y_px - 0.5 &&
+                b1.y_px + b1.height_px <= b2.y_px + b2.height_px + 0.5
+            );
+            return isInside && (b1.width_px * b1.height_px < b2.width_px * b2.height_px);
+        });
+    });
+
+    return nonHoles.map((box, idx) => ({ ...box, id: idx + 1 }));
+}
+
 export function StickerCutlineOverlay({
     preview,
     selectedInstanceId,
     displayZoom = 1,
+    thrucut,
+    showDimensions = true,
 }: {
     preview: StickerCutlinePreview;
     selectedInstanceId: number | null;
     displayZoom?: number;
+    thrucut?: ClassicCutlineThrucutPreviewConfig | null;
+    showDimensions?: boolean;
 }) {
+    const thrucutPath = thrucut?.enabled ? buildThrucutSvgPath(preview, thrucut) : null;
+    const boundingBoxes = useMemo(() => resolveCutlineBoundingBoxes(preview), [preview]);
+
     return (
-        <svg
-            data-testid="sticker-cutline-preview"
-            viewBox={`0 0 ${preview.preview_width_px} ${preview.preview_height_px}`}
-            preserveAspectRatio="none"
-            aria-label={tv('Đường bế xem trước', 'preprocess.stickerSheet')}
-            className="pointer-events-none absolute inset-0 z-10 h-full w-full overflow-visible"
-        >
-            {preview.paths.map(path => {
-                const selected = selectedInstanceId === path.instance_id;
-                return (
+        <>
+            <svg
+                data-testid="sticker-cutline-preview"
+                viewBox={`0 0 ${preview.preview_width_px} ${preview.preview_height_px}`}
+                preserveAspectRatio="none"
+                aria-label={tv('Đường bế xem trước', 'preprocess.stickerSheet')}
+                className="pointer-events-none absolute inset-0 z-10 h-full w-full overflow-visible"
+            >
+                {/* Dao 1: KissCut viền tem */}
+                {preview.paths.map(path => {
+                    const selected = selectedInstanceId === path.instance_id;
+                    return (
+                        <path
+                            key={path.instance_id}
+                            data-cutline-layer="main"
+                            d={path.d}
+                            fill="none"
+                            stroke={selected ? '#d946ef' : '#7c3aed'}
+                            strokeWidth={resolveStickerCutlineStrokeWidth(displayZoom)}
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            vectorEffect="non-scaling-stroke"
+                        />
+                    );
+                })}
+
+                {/* Dao 2: ThruCut ngoài cùng (nét liền) */}
+                {thrucutPath && (
                     <path
-                        key={path.instance_id}
-                        data-cutline-layer="main"
-                        d={path.d}
+                        key="thrucut-path"
+                        data-testid="sticker-thrucut-preview-path"
+                        data-cutline-layer="thrucut"
+                        d={thrucutPath}
                         fill="none"
-                        stroke={selected ? '#d946ef' : '#7c3aed'}
+                        stroke={thrucut?.color || '#00e5ff'}
                         strokeWidth={resolveStickerCutlineStrokeWidth(displayZoom)}
                         strokeLinecap="round"
                         strokeLinejoin="round"
                         vectorEffect="non-scaling-stroke"
                     />
+                )}
+
+            </svg>
+
+            {/* Nhãn kích thước hiển thị rõ cho từng loại đường bế (HTML Overlay) */}
+            {showDimensions && boundingBoxes.map((box) => {
+                const leftPct = ((box.x_px + box.width_px / 2) / preview.preview_width_px) * 100;
+                const baseTopPct = ((box.y_px + box.height_px) / preview.preview_height_px) * 100;
+                const isNearBottom = baseTopPct > 93;
+                const topPct = isNearBottom
+                    ? (box.y_px / preview.preview_height_px) * 100
+                    : baseTopPct;
+
+                const mTopMm = thrucut?.enabled ? (thrucut.marginTopMm ?? thrucut.marginMm ?? 0) : 0;
+                const mBottomMm = thrucut?.enabled ? (thrucut.marginBottomMm ?? thrucut.marginMm ?? 0) : 0;
+                const mLeftMm = thrucut?.enabled ? (thrucut.marginLeftMm ?? thrucut.marginMm ?? 0) : 0;
+                const mRightMm = thrucut?.enabled ? (thrucut.marginRightMm ?? thrucut.marginMm ?? 0) : 0;
+
+                const thrucutW = thrucut?.enabled ? (box.width_mm + mLeftMm + mRightMm) : 0;
+                const thrucutH = thrucut?.enabled ? (box.height_mm + mTopMm + mBottomMm) : 0;
+
+                return (
+                    <div
+                        key={`badge-${box.id}`}
+                        data-testid={`sticker-bbox-badge-${box.id}`}
+                        className="pointer-events-none absolute select-none z-20 flex items-center justify-center"
+                        style={{
+                            left: `${leftPct}%`,
+                            top: `${topPct}%`,
+                            transform: isNearBottom ? 'translate(-50%, -100%)' : 'translate(-50%, 6px)',
+                        }}
+                    >
+                        <div className="inline-flex flex-col gap-0.5 px-2 py-1 rounded text-[11px] font-mono font-medium tracking-tight bg-slate-950/90 border border-slate-700/80 shadow-md backdrop-blur-[2px] whitespace-nowrap text-left">
+                            <div className="flex items-center gap-1.5 text-fuchsia-300">
+                                <span className="h-1.5 w-1.5 rounded-full bg-fuchsia-400 shrink-0 inline-block" />
+                                <span className="text-[10px] text-slate-400 font-sans">{boundingBoxes.length > 1 ? `K${box.id} Bế trong:` : 'Bế trong:'}</span>
+                                <span className="font-semibold">{box.width_mm.toFixed(1)} × {box.height_mm.toFixed(1)} mm</span>
+                            </div>
+                            {thrucut?.enabled && (
+                                <div className="flex items-center gap-1.5 text-cyan-300 border-t border-slate-800 pt-0.5">
+                                    <span className="h-1.5 w-1.5 rounded-full bg-cyan-400 shrink-0 inline-block" />
+                                    <span className="text-[10px] text-slate-400 font-sans">{boundingBoxes.length > 1 ? `K${box.id} Dao ngoài:` : 'Dao ngoài:'}</span>
+                                    <span className="font-semibold">{thrucutW.toFixed(1)} × {thrucutH.toFixed(1)} mm</span>
+                                </div>
+                            )}
+                        </div>
+                    </div>
                 );
             })}
-        </svg>
+        </>
     );
 }
 
