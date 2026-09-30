@@ -14,7 +14,8 @@ param(
     [string]$ReleaseRepo = "",                            # (TUY CHON) override; mac dinh SUY TU endpoint updater. Neu dat ma KHAC endpoint -> dung.
     [string]$KeyPassword = "",                            # mat khau cua ~/.tauri/prynx.key (de trong neu khong dat)
     [string]$Notes = "",
-    [switch]$SkipPreflightQA                              # KHAN CAP: bo qua pytest Preflight truoc build
+    [switch]$SkipPreflightQA,                              # KHAN CAP: bo qua pytest Preflight truoc build
+    [switch]$Prerelease
 )
 $ErrorActionPreference = "Stop"
 $ROOT = Split-Path -Parent $MyInvocation.MyCommand.Definition
@@ -811,6 +812,19 @@ if ($releaseExists) {
                 [string]$publishLease.Latest.Path
             )
         if ($uploadResult.ExitCode -ne 0) { throw "gh release upload (clobber) that bai." }
+        if ($Prerelease) {
+            $prereleaseResult = Invoke-PrynXGitHubCliCommand `
+                -GitHubCliPath $script:PrynXGitHubCli `
+                -Command 'release' `
+                -Arguments @(
+                    'edit',
+                    $tag,
+                    '--repo',
+                    "github.com/$ReleaseRepo",
+                    '--prerelease'
+                )
+            if ($prereleaseResult.ExitCode -ne 0) { throw "gh release edit --prerelease that bai." }
+        }
     } finally {
         Close-PrynXPayloadLease -Lease $publishLease
     }
@@ -847,7 +861,7 @@ else {
         $createResult = Invoke-PrynXGitHubCliCommand `
             -GitHubCliPath $script:PrynXGitHubCli `
             -Command 'release' `
-            -Arguments @(
+            -Arguments (@(
                 'create',
                 $tag,
                 '--repo',
@@ -857,11 +871,12 @@ else {
                 '--title',
                 "PrynX $Version",
                 '--notes',
-                $Notes,
+                $Notes
+            ) + $(if ($Prerelease) { @('--prerelease') } else { @() }) + @(
                 [string]$publishLease.Setup.Path,
                 [string]$publishLease.Signature.Path,
                 [string]$publishLease.Latest.Path
-            )
+            ))
         if ($createResult.ExitCode -ne 0) { throw "gh release create that bai." }
     } finally {
         Close-PrynXPayloadLease -Lease $publishLease
