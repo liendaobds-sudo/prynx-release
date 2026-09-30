@@ -104,9 +104,9 @@ def test_build_script_nung_du_cap_co_va_co_guard() -> None:
     assert BUILD_SCRIPT.is_file(), "không tìm thấy build_production.ps1"
     text = BUILD_SCRIPT.read_text(encoding="utf-8", errors="replace")
 
-    # Nung tường minh về HOLD.
-    assert '$env:VITE_TRUE_SHAPE_NESTING_ENABLED = "false"' in text
-    assert '$env:PRYNX_TRUE_SHAPE_NESTING_ENABLED = "false"' in text
+    # Nung tường minh về ENABLED.
+    assert '$env:VITE_TRUE_SHAPE_NESTING_ENABLED = "true"' in text
+    assert '$env:PRYNX_TRUE_SHAPE_NESTING_ENABLED = "true"' in text
 
     # Có trong snapshot env để build không làm bẩn shell của người chạy.
     assert '"VITE_TRUE_SHAPE_NESTING_ENABLED"' in text
@@ -114,12 +114,12 @@ def test_build_script_nung_du_cap_co_va_co_guard() -> None:
 
     # Guard phải kiểm cả hai bên ở CẢ HAI chốt: trước bundle và trước manifest.
     guard_pattern = re.compile(
-        r"VITE_TRUE_SHAPE_NESTING_ENABLED -ne \"false\"", re.MULTILINE
+        r"VITE_TRUE_SHAPE_NESTING_ENABLED -ne \"true\"", re.MULTILINE
     )
     assert len(guard_pattern.findall(text)) >= 2, (
         "thiếu guard cờ ở một trong hai chốt (trước bundle / trước manifest)"
     )
     backend_guard = re.compile(
-        r"PRYNX_TRUE_SHAPE_NESTING_ENABLED -ne \"false\"", re.MULTILINE
+        r"PRYNX_TRUE_SHAPE_NESTING_ENABLED -ne \"true\"", re.MULTILINE
     )
     assert len(backend_guard.findall(text)) >= 2

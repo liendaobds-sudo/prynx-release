@@ -1003,9 +1003,9 @@ Write-Host "  Logo Rebuild release gate: HOLD (frontend + backend)" -ForegroundC
 # NEST (audit 2026-08-28 §A4a-3): "Nesting toi uu theo duong be" van HOLD.
 # Cong Chang B chua dong: so do Lo 0 cho thay free-angle kem cardinal 8/9 ca.
 # Nung tuong minh de bao phat hanh khong bao gio phu thuoc .env cua may build.
-$env:VITE_TRUE_SHAPE_NESTING_ENABLED = "false"
-$env:PRYNX_TRUE_SHAPE_NESTING_ENABLED = "false"
-Write-Host "  True-shape nesting release gate: HOLD (frontend + backend)" -ForegroundColor Yellow
+$env:VITE_TRUE_SHAPE_NESTING_ENABLED = "true"
+$env:PRYNX_TRUE_SHAPE_NESTING_ENABLED = "true"
+Write-Host "  True-shape nesting release gate: ENABLED (frontend + backend)" -ForegroundColor Green
 
 # ---- Step 0: Full release QA gate -----------------------------------------
 # The gate is executed after the native wheel is staged below. Running it here
@@ -2183,8 +2183,8 @@ if (-not $SkipTauri) {
         [string]$env:PRYNX_FEATURE_GATING_ENABLED -ne "true" -or
         [string]$env:VITE_LOGO_REBUILD_ENABLED -ne "false" -or
         [string]$env:PRYNX_LOGO_REBUILD_ENABLED -ne "false" -or
-        [string]$env:VITE_TRUE_SHAPE_NESTING_ENABLED -ne "false" -or
-        [string]$env:PRYNX_TRUE_SHAPE_NESTING_ENABLED -ne "false") {
+        [string]$env:VITE_TRUE_SHAPE_NESTING_ENABLED -ne "true" -or
+        [string]$env:PRYNX_TRUE_SHAPE_NESTING_ENABLED -ne "true") {
         throw "Production frontend/backend feature gates must stay synchronized before bundling."
     }
 
@@ -2625,8 +2625,8 @@ if (-not $SkipTauri) {
             [string]$env:PRYNX_FEATURE_GATING_ENABLED -ne "true" -or
             [string]$env:VITE_LOGO_REBUILD_ENABLED -ne "false" -or
             [string]$env:PRYNX_LOGO_REBUILD_ENABLED -ne "false" -or
-            [string]$env:VITE_TRUE_SHAPE_NESTING_ENABLED -ne "false" -or
-            [string]$env:PRYNX_TRUE_SHAPE_NESTING_ENABLED -ne "false") {
+            [string]$env:VITE_TRUE_SHAPE_NESTING_ENABLED -ne "true" -or
+            [string]$env:PRYNX_TRUE_SHAPE_NESTING_ENABLED -ne "true") {
             throw "Feature gate state changed before manifest creation."
         }
         $manifestGitOutput = if ($Release) {

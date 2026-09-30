@@ -125,7 +125,9 @@ export const GridPreviewCanvas: React.FC<GridPreviewCanvasProps> = ({
     for (let i = 0; i < cells.length; i++) {
       const c = cells[i];
       const color =
-        CANVAS_BLOCK_COLORS[colorIndexFor(c.blockId) % CANVAS_BLOCK_COLORS.length];
+        CANVAS_BLOCK_COLORS[
+          (Math.abs(colorIndexFor(c.blockId)) || 0) % CANVAS_BLOCK_COLORS.length
+        ] || CANVAS_BLOCK_COLORS[0];
       const itemShape =
         isMixed && shapesByPage ? shapesByPage[c.blockId] || shapeType : shapeType;
       const itemShapeParams =
@@ -374,7 +376,7 @@ export const GridPreviewCanvas: React.FC<GridPreviewCanvasProps> = ({
     <canvas
       ref={canvasRef}
       data-testid={`grid-cells-canvas-${side}`}
-      className="absolute inset-0 pointer-events-none"
+      className="absolute inset-0 pointer-events-none z-10"
       style={{ width: `${width}px`, height: `${height}px` }}
     />
   );

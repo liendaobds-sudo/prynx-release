@@ -3933,28 +3933,6 @@ export default function GridPreview(props: GridPreviewProps) {
                   </div>
                 )}
                 <div className="relative" style={{ width: svgW, height: svgH }}>
-                  {useCanvasForCells && (
-                    <GridPreviewCanvas
-                      width={svgW}
-                      height={svgH}
-                      cells={visibleCells}
-                      isMixed={!!layoutResult?.isMixedPreview}
-                      shapesByPage={shapesByPage}
-                      shapeParamsByPage={shapeParamsByPage}
-                      shapeType={shapeType}
-                      shapePropsParsed={shapePropsParsed}
-                      diePolygon={layoutResult?.diePolygon}
-                      diePolygonsByPage={layoutResult?.diePolygonsByPage}
-                      effectiveAlternateRotation={effectiveAlternateRotation}
-                      side="front"
-                      cellLabel={cellLabel}
-                      colorIndexFor={colorIndexFor}
-                      cutBorder={cutBorder}
-                      canUseBorder={Boolean(canUseCutBorder({ activeTool, taskMode, pageSheetMode }) && !isDieCut)}
-                      borderBleedPx={cutBorder?.position === "bleed" ? Math.max(0, bleed) * scale : 0}
-                      borderThicknessPx={Math.max(0.5, Math.min(2, Math.max(0.1, Number(cutBorder?.thickness) || 0.3)) * scale)}
-                    />
-                  )}
                   <svg
                     width={svgW}
                     height={svgH}
@@ -4115,6 +4093,28 @@ export default function GridPreview(props: GridPreviewProps) {
                   })}
                   {!useCanvasForCells && renderCutBorderRects(visibleCells, "front")}
                 </svg>
+                {useCanvasForCells && (
+                  <GridPreviewCanvas
+                    width={svgW}
+                    height={svgH}
+                    cells={visibleCells}
+                    isMixed={!!layoutResult?.isMixedPreview}
+                    shapesByPage={shapesByPage}
+                    shapeParamsByPage={shapeParamsByPage}
+                    shapeType={shapeType}
+                    shapePropsParsed={shapePropsParsed}
+                    diePolygon={layoutResult?.diePolygon}
+                    diePolygonsByPage={layoutResult?.diePolygonsByPage}
+                    effectiveAlternateRotation={effectiveAlternateRotation}
+                    side="front"
+                    cellLabel={cellLabel}
+                    colorIndexFor={colorIndexFor}
+                    cutBorder={cutBorder}
+                    canUseBorder={Boolean(canUseCutBorder({ activeTool, taskMode, pageSheetMode }) && !isDieCut)}
+                    borderBleedPx={cutBorder?.position === "bleed" ? Math.max(0, bleed) * scale : 0}
+                    borderThicknessPx={Math.max(0.5, Math.min(2, Math.max(0.1, Number(cutBorder?.thickness) || 0.3)) * scale)}
+                  />
+                )}
               </div>
 
                 {/* Loading overlay */}
@@ -4140,29 +4140,6 @@ export default function GridPreview(props: GridPreviewProps) {
                     {t('imposition.gridPreview:mat_sau')}
                   </div>
                   <div className="relative" style={{ width: svgW, height: svgH }}>
-                    {useCanvasForCells && (
-                      <GridPreviewCanvas
-                        width={svgW}
-                        height={svgH}
-                        cells={cncBackCells}
-                        isMixed={!!layoutResult?.isMixedPreview}
-                        shapesByPage={shapesByPage}
-                        shapeParamsByPage={shapeParamsByPage}
-                        shapeType={shapeType}
-                        shapePropsParsed={shapePropsParsed}
-                        diePolygon={layoutResult?.diePolygon}
-                        diePolygonsByPage={layoutResult?.diePolygonsByPage}
-                        effectiveAlternateRotation={effectiveAlternateRotation}
-                        side="back"
-                        cellLabel={cellLabel}
-                        colorIndexFor={colorIndexFor}
-                        cutBorder={cutBorder}
-                        canUseBorder={Boolean(canUseCutBorder({ activeTool, taskMode, pageSheetMode }) && !isDieCut)}
-                        borderBleedPx={cutBorder?.position === "bleed" ? Math.max(0, bleed) * scale : 0}
-                        borderThicknessPx={Math.max(0.5, Math.min(2, Math.max(0.1, Number(cutBorder?.thickness) || 0.3)) * scale)}
-                        isCncShortFlip={_cncShortFlip}
-                      />
-                    )}
                     <svg
                       width={svgW}
                       height={svgH}
@@ -4290,6 +4267,29 @@ export default function GridPreview(props: GridPreviewProps) {
                       {!useCanvasForCells && renderCutBorderRects(cncBackCells, "back")}
                     </g>
                   </svg>
+                  {useCanvasForCells && (
+                    <GridPreviewCanvas
+                      width={svgW}
+                      height={svgH}
+                      cells={cncBackCells}
+                      isMixed={!!layoutResult?.isMixedPreview}
+                      shapesByPage={shapesByPage}
+                      shapeParamsByPage={shapeParamsByPage}
+                      shapeType={shapeType}
+                      shapePropsParsed={shapePropsParsed}
+                      diePolygon={layoutResult?.diePolygon}
+                      diePolygonsByPage={layoutResult?.diePolygonsByPage}
+                      effectiveAlternateRotation={effectiveAlternateRotation}
+                      side="back"
+                      cellLabel={cellLabel}
+                      colorIndexFor={colorIndexFor}
+                      cutBorder={cutBorder}
+                      canUseBorder={Boolean(canUseCutBorder({ activeTool, taskMode, pageSheetMode }) && !isDieCut)}
+                      borderBleedPx={cutBorder?.position === "bleed" ? Math.max(0, bleed) * scale : 0}
+                      borderThicknessPx={Math.max(0.5, Math.min(2, Math.max(0.1, Number(cutBorder?.thickness) || 0.3)) * scale)}
+                      isCncShortFlip={_cncShortFlip}
+                    />
+                  )}
                 </div>
 
                   <div className="absolute bottom-1 right-1 bg-white/80 dark:bg-zinc-800/80 rounded px-1.5 py-0.5 text-[9px] text-slate-400 dark:text-zinc-500 font-medium opacity-0 group-hover:opacity-100 transition-opacity">
