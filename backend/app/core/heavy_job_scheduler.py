@@ -553,6 +553,7 @@ def scheduled_job(
     kind: str,
     *,
     queue_cancelled_factory: Callable[..., Callable[[], bool] | None] | None = None,
+    on_queue_cancelled: Callable[..., Any] | None = None,
     swallow_queue_cancelled: bool = False,
 ) -> Callable[[Callable[..., T]], Callable[..., T]]:
     """Decorate a fixed-executor worker with shared heavy-job admission.
@@ -574,6 +575,8 @@ def scheduled_job(
                 with heavy_job_slot(kind, queue_cancelled):
                     return function(*args, **kwargs)
             except HeavyJobQueueCancelled:
+                if on_queue_cancelled is not None:
+                    on_queue_cancelled(*args, **kwargs)
                 if not swallow_queue_cancelled:
                     raise
                 return None  # type: ignore[return-value]

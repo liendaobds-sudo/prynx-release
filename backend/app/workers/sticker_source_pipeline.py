@@ -704,7 +704,12 @@ def build_classic_alpha_page_contour(
     # Manifest preview làm tròn mm 4 số trước render; lấy DPI THỰC hai trục
     # từ bitmap để cả vị trí node lẫn ngưỡng pixel khớp sau lượng tử hóa PDF.
     physical_size = tuple(round(value, 4) for value in _page_size_mm(page))
-    source_image, dpi = _render_pdf_page(source_path, page_index, physical_size)
+    source_image, dpi = _render_pdf_page(
+        source_path,
+        page_index,
+        physical_size,
+        clean_transparent_edges=True,
+    )
     raw_alpha = np.asarray(source_image.getchannel("A"), dtype=np.uint8)
     if not has_meaningful_alpha(raw_alpha, DEFAULT_ALPHA_THRESHOLD):
         return None

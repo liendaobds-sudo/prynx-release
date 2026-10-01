@@ -390,7 +390,7 @@ def test_vdp_retains_own_download_and_cancel_after_expiry(scenario):
     output = scenario.tmp_path / "vdp-completed-fixture.pdf"
     output.write_bytes(b"vdp-result-fixture")
     vdp.vdp_jobs[job_id].update(
-        status="completed", total=1, result=str(output), completed_at=scenario.clock.wall,
+        status="completed", total=1, result=str(output), artifact_lease="vdp-lease-fixture", completed_at=scenario.clock.wall,
     )
     headers = {HEADER: receipt["job_access_token"]}
     assert set(receipt["job_access_paths"]) == {

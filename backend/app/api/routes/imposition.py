@@ -2519,8 +2519,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
             _is_explicit_autofill = (
                 bool(getattr(req, 'auto_fill', False))
                 or (
-                    not _is_sticker_nup
-                    and getattr(req, 'grouping_strategy', None) == "maximize_area"
+                    getattr(req, 'grouping_strategy', None) == "maximize_area"
                     and int(req.target_quantity or 0) <= 0
                     and not any(int(v or 0) > 0 for v in (req.target_quantities_by_page or {}).values())
                 )

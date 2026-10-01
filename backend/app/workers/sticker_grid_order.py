@@ -75,8 +75,7 @@ def build_sticker_grid_order(doc, settings, *, logical_page_count=None, repeat_t
     is_auto_fill = (
         bool(settings.get("autoFill") or settings.get("auto_fill"))
         or (
-            page_sheet
-            and (raw_tq is None or raw_tq == "" or int(raw_tq or 0) <= 0)
+            (raw_tq is None or raw_tq == "" or int(raw_tq or 0) <= 0)
             and not any(int(v or 0) > 0 for v in raw_tqbp.values())
         )
     )
@@ -345,6 +344,7 @@ def build_sticker_manual_repeat_order(doc, settings, *, logical_page_count=None)
     if count != doc.page_count and doc.page_count != 1:
         raise ValueError("Các thay đổi trang chưa được áp dụng vào PDF làm việc. Hãy thử lại khi xử lý trang hoàn tất.")
     default = int(settings.get("targetQuantity", 0) or 0)
+    overrides = settings.get("targetQuantitiesByPage") or {}
     auto_fill = bool(settings.get("autoFill") or settings.get("auto_fill")) or (
         default == 0 and not any(int(v or 0) > 0 for v in overrides.values())
     )

@@ -263,6 +263,42 @@ def _release_vdp_submission_slot(job: dict) -> bool:
     return should_release
 
 
+def _on_vdp_queue_cancelled(
+    job_id: str,
+    template_path: str = "",
+    data_path: str = "",
+    *args,
+    output_path: str = "",
+    **kwargs,
+) -> None:
+    """Thu dọn file và giải phóng slot khi job bị hủy trong hàng đợi scheduler."""
+    job = None
+    with _VDP_JOBS_LOCK:
+        job = vdp_jobs.get(job_id)
+        if job is not None:
+            job.setdefault("data_path", data_path)
+            job.setdefault("template_path", template_path)
+            job.setdefault("output_path", output_path)
+            job.setdefault("cancel_file", _vdp_cancel_marker(job_id))
+            job["cancel_requested"] = True
+            job["status"] = "cancelled"
+            job["result"] = None
+            job["artifact_lease"] = None
+            job["error"] = None
+            job["completed_at"] = job.get("completed_at") or time.time()
+    if job is not None:
+        _cleanup_vdp_job_files(job_id, job, include_output=True)
+        _release_vdp_submission_slot(job)
+    else:
+        for path in (data_path, template_path, output_path):
+            try:
+                if path and os.path.exists(path):
+                    os.remove(path)
+            except OSError:
+                pass
+        _VDP_SUBMISSION_SLOTS.release()
+
+
 def _parse_csv_upload(file_obj, has_header: bool) -> List[Dict[str, str]]:
     """Parse an uploaded CSV once, without materializing a JSON string copy."""
     file_obj.seek(0)
@@ -468,6 +504,7 @@ def vdp_background_task(job_id: str, template_path: str, fields: List[VdpField],
 @scheduled_job(
     "vdp",
     queue_cancelled_factory=_vdp_queue_cancelled_factory,
+    on_queue_cancelled=_on_vdp_queue_cancelled,
     swallow_queue_cancelled=True,
 )
 def vdp_background_task_spooled(
