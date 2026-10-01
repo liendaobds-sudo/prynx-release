@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::mixed_nesting::kernel;
+use std::collections::HashMap;
 
 #[derive(Clone)]
 struct Member {
@@ -50,7 +51,9 @@ struct Search<'a> {
     orientations: u64,
     // Chỉ sống trong một run, geometry/clearance không đổi. Dùng exact f64 bits,
     // không gộp hai khoảng hở khác nhau bằng lượng tử hoá cache key.
-    pair_memo: BTreeMap<(u64, u64, u64, u64), bool>,
+    // Memo chỉ dùng tra cứu/ghi, không duyệt theo thứ tự. HashMap tránh chi phí
+    // cây đỏ-đen trong vòng basis_valid/clash nóng mà không đổi quyết định hình học.
+    pair_memo: HashMap<(u64, u64, u64, u64), bool>,
 }
 
 fn shifted(ring: &[PointMm], delta: PointMm) -> Vec<PointMm> {
@@ -630,6 +633,7 @@ fn row_contacts(
     search: &Search<'_>,
     motif: &Motif,
     forbidden: &RegionMm,
+    forbidden_bounds: &[Option<BoundsMm>],
     pitch_x: f64,
 ) -> Result<Vec<PointMm>, BaselineError> {
     let tol = search.request.tolerance;
@@ -643,10 +647,6 @@ fn row_contacts(
         PointMm::new(0.0, height),
     ]];
     let radius = (width / pitch_x).ceil() as i64 + 1;
-    let forbidden_bounds: Vec<Option<BoundsMm>> = forbidden
-        .iter()
-        .map(|ring| BoundsMm::from_ring(ring))
-        .collect();
     let mut blocked = Vec::new();
     for column in -radius..=radius {
         search.control.checkpoint_cancel_only()?;
@@ -659,7 +659,7 @@ fn row_contacts(
         // tọa độ; mọi vòng còn khả năng giao vẫn đi qua kernel exact như cũ.
         let moved: RegionMm = forbidden
             .iter()
-            .zip(&forbidden_bounds)
+            .zip(forbidden_bounds)
             .filter_map(|(ring, bounds)| {
                 let bounds = bounds.as_ref()?;
                 if bounds.max_x + shift_x < -tol.linear_mm
@@ -738,6 +738,14 @@ fn optimize_motif(
     cache: &mut NfpCache,
 ) -> Result<(), BaselineError> {
     let forbidden = self_forbidden(motif, search.request, cache, search.control)?;
+    // PERF (audit 2026-10-01 §NEST-NATIVE-PERIODIC-02): mọi pitch chỉ thay
+    // phép dịch x của cùng một tập vòng cấm. Tính bbox một lần cho motif thay vì
+    // quét lại toàn bộ contour ở mỗi pitch; không đổi thứ tự candidate hay phép
+    // phán quyết kernel.
+    let forbidden_bounds: Vec<Option<BoundsMm>> = forbidden
+        .iter()
+        .map(|ring| BoundsMm::from_ring(ring))
+        .collect();
     let mut pitches = axis_contacts(&forbidden, true, &search.request.tolerance);
     let clearance = part_clearance_for_request(search.request);
     pitches.push(motif.bounds.width_mm() + clearance.reach_x_mm());
@@ -747,7 +755,7 @@ fn optimize_motif(
         if search.expired()? {
             break;
         }
-        let contacts = row_contacts(search, motif, &forbidden, pitch_x)?;
+        let contacts = row_contacts(search, motif, &forbidden, &forbidden_bounds, pitch_x)?;
         for row in contacts {
             if search.expired()? {
                 break;
@@ -856,7 +864,7 @@ pub(super) fn run(
         best: None,
         attempts: 0,
         orientations: 0,
-        pair_memo: BTreeMap::new(),
+        pair_memo: HashMap::new(),
     };
     let angles = baseline_angles_with_fallback(&part.rotation_domain, policy, &request.tolerance);
     let mut members: Vec<Member> = angles
