@@ -27,7 +27,8 @@
 use std::collections::BTreeMap;
 
 use super::collision::{
-    judge_pair, judge_pair_sheet_axis, ring_within_bounds, signed_margin_to_bounds_mm, PairVerdict,
+    judge_pair_prepared, judge_pair_sheet_axis_prepared, ring_within_bounds,
+    signed_margin_to_bounds_mm, PairVerdict, PreparedRing,
 };
 use super::model::{
     canonicalize_angle_deg, format_instance_id, PlacementRecord, PointMm, RunStats,
@@ -461,6 +462,14 @@ pub fn validate_layout(
         });
     }
 
+    // PERF (audit 2026-10-01 §NEST-PERF-10): chuẩn bị convex/decomposition một lần
+    // cho mỗi contour đã pose. Các cặp trong lưới và obstacle đều dùng cùng dữ liệu;
+    // không chia sẻ qua job hay qua pose.
+    let prepared_rings: Vec<PreparedRing<'_>> = placed_rings
+        .iter()
+        .map(|placed| PreparedRing::new(&placed.ring))
+        .collect();
+
     // ── 6. Chồng lấn và khoảng hở, theo từng tờ ──
     //
     // Broad phase bằng lưới để không phải đo mọi cặp; narrow phase là `judge_pair`,
@@ -487,12 +496,19 @@ pub fn validate_layout(
                     continue;
                 }
                 let other = &placed_rings[candidate.id];
+                let subject_prepared = &prepared_rings[index];
+                let other_prepared = &prepared_rings[candidate.id];
                 pairs_checked += 1;
                 let verdict = match part_clearance {
-                    Some(clearance) => {
-                        judge_pair_sheet_axis(&subject.ring, &other.ring, clearance, &tol)
+                    Some(clearance) => judge_pair_sheet_axis_prepared(
+                        subject_prepared,
+                        other_prepared,
+                        clearance,
+                        &tol,
+                    ),
+                    None => {
+                        judge_pair_prepared(subject_prepared, other_prepared, request.gap_mm, &tol)
                     }
-                    None => judge_pair(&subject.ring, &other.ring, request.gap_mm, &tol),
                 };
                 match verdict {
                     PairVerdict::Overlap => {
@@ -539,13 +555,18 @@ pub fn validate_layout(
         }
         let obstacle_clearance = contract.clearance.part_to_obstacle;
         let broad_margin = obstacle_clearance.x_mm.hypot(obstacle_clearance.y_mm);
-        for subject in &placed_rings {
+        let prepared_obstacles: Vec<PreparedRing<'_>> = contract
+            .fixed_obstacles
+            .iter()
+            .map(|obstacle| PreparedRing::new(&obstacle.outer))
+            .collect();
+        for (subject_index, subject) in placed_rings.iter().enumerate() {
             for candidate in obstacle_grid.query(&subject.bounds, broad_margin, &tol) {
                 let obstacle = &contract.fixed_obstacles[candidate.id];
                 obstacle_pairs_checked += 1;
-                match judge_pair_sheet_axis(
-                    &subject.ring,
-                    &obstacle.outer,
+                match judge_pair_sheet_axis_prepared(
+                    &prepared_rings[subject_index],
+                    &prepared_obstacles[candidate.id],
                     obstacle_clearance,
                     &tol,
                 ) {

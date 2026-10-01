@@ -241,6 +241,22 @@ A/B native tích lũy sau Lô C/E, cùng artifact HEAD, grant 1, workers 1: fixt
 đều trùng; riêng baseline phase giảm 27.832 ms → 24.181 ms. Đây là tối ưu hot path
 giữ nguyên kết quả, chưa phải thay đổi kiến trúc batch/progressive.
 
+### Lô F — chuẩn bị contour dùng lại trong validator — ĐÃ TRIỂN KHAI
+
+`PreparedRing` giữ tham chiếu tới contour đã pose, bbox và kết quả convex/decomposition
+lazy. `validate_layout()` tạo dữ liệu này một lần cho mỗi placement và obstacle, sau đó
+truyền vào các phán quyết overlap/clearance của mọi cặp. Nhánh public vẫn dựng wrapper
+riêng nên hợp đồng cũ không đổi; phân rã lỗi vẫn fail-closed.
+
+A/B native trước/sau Lô F, grant 1, workers 1, có warmup và 2 lần đo trong process:
+fixture 4 case **15.191 s → 9.217 s (-39,3%)**. Corpus 13 trang thực tế:
+**31.638 s → 19.880 s (-37,2%)**; baseline **24.271 s → 18.580 s**, validation
+**2.312 s → 0.422 s**, publication **5.032 s → 0.858 s**. Cả 13/13 pose digest và
+placed count đều trùng. Đây là một lượt A/B có artifact cố định, chưa thay cho N≥20
+cold/warm và kiểm packaged. Artifact trước có SHA-256
+`7716d8c7b84d30eca8f261a58d8956a62e3549540de63f4496cd5f9f10ceb72e`, artifact sau
+`f24ebe4506e1caedbffefd18db317e6715342bfad8e33945ff326f7ec90789de`.
+
 ## Acceptance bắt buộc
 
 - N≥20 cold và warm, cùng source/native hash; báo P50/P95 và từng phase.
@@ -259,7 +275,7 @@ không còn lỗi. Backend `tests/test_nesting_preview_capacity.py` và
 `tests/test_nesting_preview_jobs.py` đạt 59/59; `compileall` đạt. Một test process trong
 `test_nesting_session_handover.py` bị `WinError 5` khi Windows tạo named pipe cho
 `multiprocessing.Queue` trong môi trường này, nên chưa dùng kết quả đó để đánh giá code.
-Native Lô C/E đã có A/B trên đúng corpus 13 request, nhưng chưa có N≥20 cold/warm,
+Native Lô C/E/F đã có A/B trên đúng corpus 13 request, nhưng chưa có N≥20 cold/warm,
 RSS process tree, raster Front/CUT hoặc runtime packaged/installer. Vì vậy chưa tuyên
 bố tốc độ installer; bước còn lại là chạy profile production đủ mẫu và restart
 sidecar/dev app để nạp `.pyd` vừa build. Smoke final trên 4 fixture S&R giữ nguyên

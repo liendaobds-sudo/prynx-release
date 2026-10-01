@@ -25,6 +25,8 @@
 //! Vì vậy **chạm biên không phải chồng lấn**: [`rings_overlap`] chỉ báo `true` khi phần
 //! *trong* của hai hình giao nhau.
 
+use std::cell::OnceCell;
+
 use super::model::{PointMm, SheetAxisClearanceMm, Tolerance};
 use super::normalize::BoundsMm;
 
@@ -121,6 +123,7 @@ impl PreparedEdge {
     }
 }
 
+#[cfg(test)]
 fn any_edges_properly_cross(
     a: &[PointMm],
     b: &[PointMm],
@@ -150,6 +153,153 @@ fn any_edges_properly_cross(
         }
     }
     false
+}
+
+/// Hình học đã đặt pose, dùng chung trong một lượt phán quyết/validate.
+///
+/// `validate_layout` thường kiểm cùng một contour với nhiều láng giềng và vật cản.
+/// Trước đây mỗi cặp lại tính `is_convex_ring` rồi `convex_decompose` từ đầu. Bản
+/// chuẩn bị này chỉ giữ tham chiếu tới ring đã được caller dựng; phần phân rã vẫn
+/// lazy để các cặp bị loại ở broad phase hoặc đường tắt cạnh cắt không phải cấp phát.
+/// Không chia sẻ qua lượt solve, pose hay dung sai khác.
+pub(crate) struct PreparedRing<'a> {
+    ring: &'a [PointMm],
+    bounds: Option<BoundsMm>,
+    convex: OnceCell<bool>,
+    pieces: OnceCell<Vec<Vec<PointMm>>>,
+}
+
+impl<'a> PreparedRing<'a> {
+    pub(crate) fn new(ring: &'a [PointMm]) -> Self {
+        Self {
+            ring,
+            bounds: BoundsMm::from_ring(ring),
+            convex: OnceCell::new(),
+            pieces: OnceCell::new(),
+        }
+    }
+
+    fn ring(&self) -> &[PointMm] {
+        self.ring
+    }
+
+    fn bounds(&self) -> Option<BoundsMm> {
+        self.bounds
+    }
+
+    fn is_convex(&self, tol: &Tolerance) -> bool {
+        *self
+            .convex
+            .get_or_init(|| super::geometry::is_convex_ring(self.ring, tol))
+    }
+
+    /// Trả các mảnh chỉ khi ring lõm; ring lồi đi thẳng qua SAT không clone.
+    fn concave_pieces(&self, tol: &Tolerance) -> &[Vec<PointMm>] {
+        self.pieces
+            .get_or_init(|| super::geometry::convex_decompose(self.ring, tol))
+    }
+}
+
+fn any_prepared_edges_properly_cross(
+    a: &PreparedRing<'_>,
+    b: &PreparedRing<'_>,
+    tol: &Tolerance,
+) -> bool {
+    let edges_b: Vec<_> = (0..b.ring().len())
+        .map(|index| {
+            PreparedEdge::new(b.ring()[index], b.ring()[(index + 1) % b.ring().len()], tol)
+        })
+        .collect();
+    for i in 0..a.ring().len() {
+        let edge_a = PreparedEdge::new(a.ring()[i], a.ring()[(i + 1) % a.ring().len()], tol);
+        for edge_b in &edges_b {
+            if !edge_a.may_touch(edge_b, tol) {
+                continue;
+            }
+            if segments_cross_with_tolerances(
+                edge_a.from,
+                edge_a.to,
+                edge_b.from,
+                edge_b.to,
+                edge_a.cross_tolerance,
+                edge_b.cross_tolerance,
+            ) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn rings_overlap_prepared(a: &PreparedRing<'_>, b: &PreparedRing<'_>, tol: &Tolerance) -> bool {
+    if a.ring().len() < 3 || b.ring().len() < 3 {
+        return false;
+    }
+    let (Some(bounds_a), Some(bounds_b)) = (a.bounds(), b.bounds()) else {
+        return false;
+    };
+    if !bounds_may_touch(&bounds_a, &bounds_b, tol) {
+        return false;
+    }
+    if any_prepared_edges_properly_cross(a, b, tol) {
+        return true;
+    }
+
+    let convex_a = a.is_convex(tol);
+    let convex_b = b.is_convex(tol);
+    if convex_a && convex_b {
+        return !separating_axis_exists(a.ring(), b.ring(), tol);
+    }
+    let pieces_a = if convex_a {
+        &[][..]
+    } else {
+        a.concave_pieces(tol)
+    };
+    let pieces_b = if convex_b {
+        &[][..]
+    } else {
+        b.concave_pieces(tol)
+    };
+    // Không phân rã được nghĩa là contour chưa qua `normalize.rs`. Quan toà không
+    // được "tha" khi không chứng minh được an toàn, kể cả khi ring còn lại lồi.
+    if (!convex_a && pieces_a.is_empty()) || (!convex_b && pieces_b.is_empty()) {
+        return true;
+    }
+    // Một ring lồi không cần clone thành một mảnh; chỉ các cặp có ring lõm đi qua
+    // đường phân rã bên dưới. Hai ring lồi đã xử lý ở nhánh SAT phía trên.
+    if convex_a {
+        return pieces_b.iter().any(|piece_b| {
+            let Some(piece_bounds) = BoundsMm::from_ring(piece_b) else {
+                return true;
+            };
+            if !bounds_may_touch(&bounds_a, &piece_bounds, tol) {
+                return false;
+            }
+            !separating_axis_exists(a.ring(), piece_b, tol)
+        });
+    }
+    if convex_b {
+        return pieces_a.iter().any(|piece_a| {
+            let Some(piece_bounds) = BoundsMm::from_ring(piece_a) else {
+                return true;
+            };
+            if !bounds_may_touch(&piece_bounds, &bounds_b, tol) {
+                return false;
+            }
+            !separating_axis_exists(piece_a, b.ring(), tol)
+        });
+    }
+    pieces_a.iter().any(|piece_a| {
+        let box_a = BoundsMm::from_ring(piece_a);
+        pieces_b.iter().any(|piece_b| {
+            if let (Some(ba), Some(bb)) = (box_a, BoundsMm::from_ring(piece_b)) {
+                if !bounds_may_touch(&ba, &bb, tol) {
+                    return false;
+                }
+            }
+            !separating_axis_exists(piece_a, piece_b, tol)
+        })
+    })
 }
 
 /// Khoảng cách nhỏ nhất giữa hai đoạn thẳng, mm. `0` khi chúng cắt hoặc chạm nhau.
@@ -222,58 +372,16 @@ pub fn bounds_gap_mm(a: &BoundsMm, b: &BoundsMm) -> f64 {
 /// Hình đã lồi thì bỏ hẳn bước phân rã (chi phí `O(n+m)`), nên ca phổ biến nhất cũng
 /// là ca nhanh nhất.
 pub fn rings_overlap(a: &[PointMm], b: &[PointMm], tol: &Tolerance) -> bool {
-    if a.len() < 3 || b.len() < 3 {
-        return false;
-    }
-    // Bước 1 — loại nhanh bằng hộp bao.
-    match (BoundsMm::from_ring(a), BoundsMm::from_ring(b)) {
-        (Some(ba), Some(bb)) => {
-            if !bounds_may_touch(&ba, &bb, tol) {
-                return false;
-            }
-        }
-        _ => return false, // toạ độ không hữu hạn
-    }
-
-    // Bước 2 — cạnh cắt ngang thực sự thì chắc chắn chồng.
-    if any_edges_properly_cross(a, b, tol, || {}) {
-        return true;
-    }
-
-    // Bước 3 — trục phân cách trên các mảnh lồi.
-    let convex_a = super::geometry::is_convex_ring(a, tol);
-    let convex_b = super::geometry::is_convex_ring(b, tol);
-    if convex_a && convex_b {
-        return !separating_axis_exists(a, b, tol);
-    }
-
-    let pieces_a = convex_pieces(a, convex_a, tol);
-    let pieces_b = convex_pieces(b, convex_b, tol);
-    // Không phân rã được nghĩa là contour chưa qua `normalize.rs`. Quan toà không được
-    // "tha" khi không chứng minh được an toàn, nên báo chồng.
-    if pieces_a.is_empty() || pieces_b.is_empty() {
-        return true;
-    }
-    for piece_a in &pieces_a {
-        let box_a = BoundsMm::from_ring(piece_a);
-        for piece_b in &pieces_b {
-            if let (Some(ba), Some(bb)) = (box_a, BoundsMm::from_ring(piece_b)) {
-                if !bounds_may_touch(&ba, &bb, tol) {
-                    continue;
-                }
-            }
-            if !separating_axis_exists(piece_a, piece_b, tol) {
-                return true;
-            }
-        }
-    }
-    false
+    let prepared_a = PreparedRing::new(a);
+    let prepared_b = PreparedRing::new(b);
+    rings_overlap_prepared(&prepared_a, &prepared_b, tol)
 }
 
 #[cfg(test)]
 #[path = "collision_prepared_tests.rs"]
 mod prepared_tests;
 
+#[cfg(test)]
 fn convex_pieces(ring: &[PointMm], already_convex: bool, tol: &Tolerance) -> Vec<Vec<PointMm>> {
     if already_convex {
         vec![ring.to_vec()]
@@ -383,10 +491,21 @@ impl PairVerdict {
 /// trong đúng một dung sai tuyến tính được tha, để hai chi tiết đặt sát đúng `gap`
 /// không bị loại vì nhiễu `f64`.
 pub fn judge_pair(a: &[PointMm], b: &[PointMm], gap_mm: f64, tol: &Tolerance) -> PairVerdict {
-    if rings_overlap(a, b, tol) {
+    let prepared_a = PreparedRing::new(a);
+    let prepared_b = PreparedRing::new(b);
+    judge_pair_prepared(&prepared_a, &prepared_b, gap_mm, tol)
+}
+
+pub(crate) fn judge_pair_prepared(
+    a: &PreparedRing<'_>,
+    b: &PreparedRing<'_>,
+    gap_mm: f64,
+    tol: &Tolerance,
+) -> PairVerdict {
+    if rings_overlap_prepared(a, b, tol) {
         return PairVerdict::Overlap;
     }
-    let measured = min_distance_disjoint_mm(a, b, tol, true);
+    let measured = min_distance_disjoint_mm(a.ring(), b.ring(), tol, true);
     if measured + tol.linear_mm < gap_mm {
         return PairVerdict::ClearanceTooSmall {
             measured_mm: measured,
@@ -410,30 +529,31 @@ pub fn judge_pair_sheet_axis(
     clearance: SheetAxisClearanceMm,
     tol: &Tolerance,
 ) -> PairVerdict {
-    if rings_overlap(a, b, tol) {
+    let prepared_a = PreparedRing::new(a);
+    let prepared_b = PreparedRing::new(b);
+    judge_pair_sheet_axis_prepared(&prepared_a, &prepared_b, clearance, tol)
+}
+
+pub(crate) fn judge_pair_sheet_axis_prepared(
+    a: &PreparedRing<'_>,
+    b: &PreparedRing<'_>,
+    clearance: SheetAxisClearanceMm,
+    tol: &Tolerance,
+) -> PairVerdict {
+    if rings_overlap_prepared(a, b, tol) {
         return PairVerdict::Overlap;
     }
     // PERF (audit 2026-10-01 §NEST-PERF-07): cặp này vừa qua phán quyết
     // overlap. Giữ nguyên phép đo khoảng hở nhưng không lặp cạnh-cạnh/SAT
     // lần hai; áp dụng cùng đường đã dùng cho clearance đẳng hướng.
-    let measured = min_distance_disjoint_mm(a, b, tol, true);
+    let measured = min_distance_disjoint_mm(a.ring(), b.ring(), tol, true);
     if clearance.x_mm <= tol.linear_mm && clearance.y_mm <= tol.linear_mm {
         return PairVerdict::Ok {
             measured_mm: measured,
         };
     }
 
-    let convex_a = super::geometry::is_convex_ring(a, tol);
-    let convex_b = super::geometry::is_convex_ring(b, tol);
-    let pieces_a = convex_pieces(a, convex_a, tol);
-    let pieces_b = convex_pieces(b, convex_b, tol);
-    let safe = !pieces_a.is_empty()
-        && !pieces_b.is_empty()
-        && pieces_a.iter().all(|piece_a| {
-            pieces_b
-                .iter()
-                .all(|piece_b| clearance_separating_axis_exists(piece_a, piece_b, clearance, tol))
-        });
+    let safe = clearance_safe_prepared(a, b, clearance, tol);
     if safe {
         PairVerdict::Ok {
             measured_mm: measured,
@@ -444,6 +564,42 @@ pub fn judge_pair_sheet_axis(
             required_mm: clearance.max_axis_mm(),
         }
     }
+}
+
+fn clearance_safe_prepared(
+    a: &PreparedRing<'_>,
+    b: &PreparedRing<'_>,
+    clearance: SheetAxisClearanceMm,
+    tol: &Tolerance,
+) -> bool {
+    let convex_a = a.is_convex(tol);
+    let convex_b = b.is_convex(tol);
+    if convex_a && convex_b {
+        return clearance_separating_axis_exists(a.ring(), b.ring(), clearance, tol);
+    }
+    if convex_a {
+        let pieces_b = b.concave_pieces(tol);
+        return !pieces_b.is_empty()
+            && pieces_b.iter().all(|piece_b| {
+                clearance_separating_axis_exists(a.ring(), piece_b, clearance, tol)
+            });
+    }
+    if convex_b {
+        let pieces_a = a.concave_pieces(tol);
+        return !pieces_a.is_empty()
+            && pieces_a.iter().all(|piece_a| {
+                clearance_separating_axis_exists(piece_a, b.ring(), clearance, tol)
+            });
+    }
+    let pieces_a = a.concave_pieces(tol);
+    let pieces_b = b.concave_pieces(tol);
+    !pieces_a.is_empty()
+        && !pieces_b.is_empty()
+        && pieces_a.iter().all(|piece_a| {
+            pieces_b
+                .iter()
+                .all(|piece_b| clearance_separating_axis_exists(piece_a, piece_b, clearance, tol))
+        })
 }
 
 fn clearance_separating_axis_exists(

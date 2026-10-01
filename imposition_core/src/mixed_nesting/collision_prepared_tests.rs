@@ -207,3 +207,32 @@ fn prepared_edge_khong_doi_phat_quyet_vong_lom_va_vong_suy_bien() {
         reference_rings_overlap(&degenerate, &crossing, &tolerance)
     );
 }
+
+#[test]
+fn prepared_ring_giu_nguyen_phat_quyet_pair_va_clearance() {
+    let tolerance = tol();
+    let concave = vec![
+        PointMm::new(0.0, 0.0),
+        PointMm::new(30.0, 0.0),
+        PointMm::new(30.0, 10.0),
+        PointMm::new(10.0, 10.0),
+        PointMm::new(10.0, 30.0),
+        PointMm::new(0.0, 30.0),
+    ];
+    let other = rectangle(40.0, 3.0, 8.0, 8.0);
+    let prepared_a = PreparedRing::new(&concave);
+    let prepared_b = PreparedRing::new(&other);
+    assert_eq!(
+        judge_pair_prepared(&prepared_a, &prepared_b, 2.0, &tolerance),
+        judge_pair(&concave, &other, 2.0, &tolerance)
+    );
+
+    let clearance = SheetAxisClearanceMm {
+        x_mm: 2.0,
+        y_mm: 1.0,
+    };
+    assert_eq!(
+        judge_pair_sheet_axis_prepared(&prepared_a, &prepared_b, clearance, &tolerance),
+        judge_pair_sheet_axis(&concave, &other, clearance, &tolerance)
+    );
+}
