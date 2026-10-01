@@ -829,10 +829,10 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
     expect(nestingJobMocks.create).not.toHaveBeenCalled();
   });
 
-  it("B10-6: lưới bắt đầu ở 250ms nhưng nesting chỉ bắt đầu ở 750ms", async () => {
+  it.each([0, 1])("B10-6: S&R %i trang giữ lưới ở 250ms và nesting ở 750ms", async (sourceTotalPages) => {
     vi.useFakeTimers();
     nestingJobMocks.wait.mockImplementation(() => new Promise(() => undefined));
-    const view = render(<TrueShapeParityPreview taskMode="step_repeat" />);
+    const view = render(<TrueShapeParityPreview taskMode="step_repeat" sourceTotalPages={sourceTotalPages} />);
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(249);
@@ -855,6 +855,40 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
       await vi.advanceTimersByTimeAsync(1);
     });
     expect(nestingJobMocks.create).toHaveBeenCalledTimes(1);
+    view.unmount();
+  });
+
+  it.each([2, 13])("S&R %i trang bắt đầu nesting ở 250ms, không gửi preview lưới tạm", async (sourceTotalPages) => {
+    vi.useFakeTimers();
+    nestingJobMocks.wait.mockImplementation(() => new Promise(() => undefined));
+    const view = render(<TrueShapeParityPreview taskMode="step_repeat" sourceTotalPages={sourceTotalPages} />);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(249); });
+    expect(nestingJobMocks.create).not.toHaveBeenCalled();
+    expect(authenticatedFetchMock).not.toHaveBeenCalled();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(nestingJobMocks.create).toHaveBeenCalledTimes(1);
+    expect(authenticatedFetchMock).not.toHaveBeenCalled();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    expect(nestingJobMocks.create).toHaveBeenCalledTimes(1);
+    expect(authenticatedFetchMock).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  it.each([1, 13])("N-Up %i trang vẫn giữ debounce nesting ở 750ms", async (sourceTotalPages) => {
+    vi.useFakeTimers();
+    nestingJobMocks.wait.mockImplementation(() => new Promise(() => undefined));
+    const view = render(<TrueShapeParityPreview taskMode="nup" sourceTotalPages={sourceTotalPages} />);
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(749); });
+    expect(nestingJobMocks.create).not.toHaveBeenCalled();
+    expect(authenticatedFetchMock).not.toHaveBeenCalled();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(nestingJobMocks.create).toHaveBeenCalledTimes(1);
+    expect(authenticatedFetchMock).not.toHaveBeenCalled();
     view.unmount();
   });
 
@@ -1292,20 +1326,10 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
     );
   });
 
-  it("B10-6: cuộn rồi hủy không cache provisional trang cũ dưới trang mới", async () => {
+  it("S&R nhiều trang: cuộn rồi hủy không tạo lưới tạm hoặc cache nhầm trang", async () => {
     const onCapacityChange = vi.fn();
+    const onDiagnosticEvent = vi.fn();
     authenticatedFetchMock.mockReset();
-    authenticatedFetchMock
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: async () => capacityResponse(54, "optimal_auto"),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: async () => capacityResponse(48, "optimal_auto"),
-      });
     nestingJobMocks.wait.mockImplementation(() => new Promise(() => undefined));
     const shapesByPage = { 0: "CUSTOM", 1: "CUSTOM" };
     const shapeParamsByPage = {
@@ -1323,30 +1347,24 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
         targetQuantitiesByPage={targetQuantitiesByPage}
         itemW={pageIdx === 0 ? 20 : 25}
         onCapacityChange={onCapacityChange}
+        onDiagnosticEvent={onDiagnosticEvent}
       />
     );
     const view = render(previewAt(0));
 
-    await waitFor(() => expect(screen.getByText("1 / 54")).toBeTruthy(), {
-      timeout: 3_000,
-    });
     await waitFor(() => expect(nestingJobMocks.create).toHaveBeenCalledTimes(1));
     view.rerender(previewAt(1));
-    expect(authenticatedFetchMock).toHaveBeenCalledTimes(1);
+    expect(authenticatedFetchMock).not.toHaveBeenCalled();
     onCapacityChange.mockClear();
 
     fireEvent.click(screen.getByRole("button", { name: "Hủy preview" }));
-    expect(onCapacityChange).not.toHaveBeenCalled();
-    await waitFor(() => expect(screen.getByText("1 / 48")).toBeTruthy(), {
-      timeout: 3_000,
-    });
-    const secondGridBody = JSON.parse(
-      String(authenticatedFetchMock.mock.calls[1]?.[1]?.body),
-    );
-    expect(secondGridBody.strategy).toBe("optimal_auto");
-    expect(secondGridBody.page_idx).toBe(1);
-    expect(onCapacityChange).toHaveBeenLastCalledWith(48);
+    expect(onCapacityChange).toHaveBeenLastCalledWith(0);
+    expect(onDiagnosticEvent).toHaveBeenLastCalledWith(expect.objectContaining({ phase: "aborted" }));
+    await waitFor(() => expect(nestingJobMocks.cancel).toHaveBeenCalledTimes(1));
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 350)); });
+    expect(authenticatedFetchMock).not.toHaveBeenCalled();
     expect(nestingJobMocks.create).toHaveBeenCalledTimes(1);
+    expect(nestingJobMocks.result).not.toHaveBeenCalled();
   });
 
   it("B10-6: legacy page probe giữ forceLegacyGrid qua pending và failure", async () => {
@@ -1354,11 +1372,6 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
     let failPagePreview!: (response: unknown) => void;
     authenticatedFetchMock.mockReset();
     authenticatedFetchMock
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: async () => capacityResponse(54, "optimal_auto"),
-      })
       .mockImplementationOnce(() => new Promise((resolve) => {
         failPagePreview = resolve;
       }));
@@ -1385,11 +1398,13 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
     await waitFor(() => expect(onDiagnosticEvent).toHaveBeenLastCalledWith(
       expect.objectContaining({ phase: "applied", forceLegacyGrid: true }),
     ), { timeout: 3_000 });
+    expect(screen.getByText("1 / 43")).toBeTruthy();
+    expect(authenticatedFetchMock).not.toHaveBeenCalled();
     view.rerender(previewAt(1));
     await waitFor(() => expect(onDiagnosticEvent).toHaveBeenCalledWith(
       expect.objectContaining({ phase: "pending", forceLegacyGrid: true }),
     ));
-    await waitFor(() => expect(authenticatedFetchMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(authenticatedFetchMock).toHaveBeenCalledTimes(1));
     // PV26.2: đã chốt lưới thì vẫn có trạng thái chờ, nhưng không tái dùng %
     // hay nút hủy của job nesting đã kết thúc trước đó.
     expect(screen.getByTestId("layout-preview-progress").textContent).not.toContain("%");
@@ -1403,7 +1418,7 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
       expect.objectContaining({ phase: "failed", forceLegacyGrid: true }),
     ));
     expect(screen.queryByRole("progressbar")).toBeNull();
-    expect(authenticatedFetchMock).toHaveBeenCalledTimes(2);
+    expect(authenticatedFetchMock).toHaveBeenCalledTimes(1);
     expect(nestingJobMocks.create).toHaveBeenCalledTimes(1);
   });
 
@@ -1713,7 +1728,7 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
     expect(screen.getByRole("button", { name: "►" })).toBeTruthy();
   });
 
-  it("B10-6: true-shape 13 trang chỉ solve một lượt và cuộn chỉ chọn sheet đã có", async () => {
+  it("B10-6: true-shape 13 trang chỉ solve thật một lượt, bỏ preview tạm và cuộn chỉ chọn sheet đã có", async () => {
     const pageIndices = Array.from({ length: 13 }, (_unused, index) => index);
     const shapesByPage: Record<number, string> = Object.fromEntries(
       pageIndices.map((index) => [index, "CUSTOM"]),
@@ -1745,7 +1760,9 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
     });
     expect(nestingJobMocks.create).toHaveBeenCalledTimes(1);
     expect(nestingJobMocks.result).toHaveBeenCalledTimes(1);
-    expect(authenticatedFetchMock).toHaveBeenCalledTimes(1);
+    // S&R nhiều trang đi thẳng vào job authoritative; preview lưới tạm trước đây
+    // chiếm scheduler rồi bị hủy khi job nesting bắt đầu.
+    expect(authenticatedFetchMock).toHaveBeenCalledTimes(0);
 
     // Pager tay không bị effect kéo lại nếu viewer vẫn ở cùng trang.
     fireEvent.click(screen.getByRole("button", { name: "►" }));
@@ -1761,7 +1778,7 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
     });
     expect(nestingJobMocks.create).toHaveBeenCalledTimes(1);
     expect(nestingJobMocks.result).toHaveBeenCalledTimes(1);
-    expect(authenticatedFetchMock).toHaveBeenCalledTimes(1);
+    expect(authenticatedFetchMock).toHaveBeenCalledTimes(0);
   });
 
   it("B10-6: map sheet theo cell.pageIdx, bỏ qua trang SL=0 và không dùng ordinal", async () => {
@@ -1805,18 +1822,14 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
       'rect[fill="rgba(245, 158, 11, 0.20)"]',
     )).not.toBeNull();
     expect(nestingJobMocks.create).toHaveBeenCalledTimes(1);
-    expect(authenticatedFetchMock).toHaveBeenCalledTimes(1);
+    // S&R nhiều trang đi thẳng vào job authoritative nên không còn probe lưới tạm.
+    expect(authenticatedFetchMock).toHaveBeenCalledTimes(0);
   });
 
-  it("B10-6: quality gate legacy chỉ probe grid trang mới, không tạo lại nesting job", async () => {
+  it("S&R nhiều trang: áp dụng legacy authoritative, chỉ probe lưới khi cuộn trang mới", async () => {
     const onDiagnosticEvent = vi.fn();
     authenticatedFetchMock.mockReset();
     authenticatedFetchMock
-      .mockResolvedValueOnce({
-        ok: true,
-        status: 200,
-        json: async () => capacityResponse(54, "optimal_auto"),
-      })
       .mockResolvedValueOnce({
         ok: true,
         status: 200,
@@ -1842,7 +1855,7 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
     );
     const view = render(previewAt(0));
 
-    await waitFor(() => expect(screen.getByText("1 / 54")).toBeTruthy(), {
+    await waitFor(() => expect(screen.getByText("1 / 43")).toBeTruthy(), {
       timeout: 3_000,
     });
     await waitFor(() => expect(onDiagnosticEvent).toHaveBeenLastCalledWith(
@@ -1850,13 +1863,14 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
     ));
     expect(nestingJobMocks.result).toHaveBeenCalledTimes(1);
     expect(nestingJobMocks.create).toHaveBeenCalledTimes(1);
+    expect(authenticatedFetchMock).not.toHaveBeenCalled();
 
     view.rerender(previewAt(1));
     await waitFor(() => expect(screen.getByText("1 / 48")).toBeTruthy(), {
       timeout: 3_000,
     });
     const secondGridBody = JSON.parse(
-      String(authenticatedFetchMock.mock.calls[1]?.[1]?.body),
+      String(authenticatedFetchMock.mock.calls[0]?.[1]?.body),
     );
     expect(secondGridBody.strategy).toBe("optimal_auto");
     expect(secondGridBody.page_idx).toBe(1);
@@ -1864,7 +1878,7 @@ describe("GridPreview — mặt sau mixed đã được backend materialize", ()
     await act(async () => {
       await new Promise((resolve) => window.setTimeout(resolve, 850));
     });
-    expect(authenticatedFetchMock).toHaveBeenCalledTimes(2);
+    expect(authenticatedFetchMock).toHaveBeenCalledTimes(1);
     expect(nestingJobMocks.create).toHaveBeenCalledTimes(1);
     expect(nestingJobMocks.result).toHaveBeenCalledTimes(1);
   });

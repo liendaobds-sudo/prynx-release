@@ -2290,8 +2290,17 @@ export default function GridPreview(props: GridPreviewProps) {
     // gọi endpoint lưới đồng bộ; tuyệt đối không đi lại createNestingPreviewJob.
     const requestUsesLegacyStepRepeat = usesAuthoritativeLegacyStepRepeat;
     const requestUsesTrueShape = usesTrueShape && !requestUsesLegacyStepRepeat;
-    const requestUsesProgressiveStepRepeat = usesProgressiveStepRepeat
-      && requestUsesTrueShape;
+    const requestUsesStepRepeat = usesProgressiveStepRepeat;
+    // PERF (audit 2026-10-01 §NEST-PERF-07): Với S&R nhiều trang, preview lưới
+    // tạm chiếm scheduler/PDFium rồi bị hủy khi job nesting bắt đầu. Bỏ request
+    // tạm và chạy job thật sớm hơn; quyết định legacy/all-page vẫn thuộc cả job.
+    const requestUsesDirectStepRepeat = requestUsesStepRepeat
+      && requestUsesTrueShape
+      && sourceTotalPages != null
+      && sourceTotalPages > 1;
+    const requestUsesProgressiveStepRepeat = requestUsesStepRepeat
+      && requestUsesTrueShape
+      && !requestUsesDirectStepRepeat;
 
     // Clear any pending debounce
     if (debounceRef.current) {
@@ -2415,7 +2424,7 @@ export default function GridPreview(props: GridPreviewProps) {
         && gen === previewGenRef.current
         && diagnosticTraceIdRef.current === diagnosticTraceId
       );
-      // Progressive bắt đầu ở 250 ms; đồng hồ debounce nesting vẫn chạy đủ 750 ms tính từ đây.
+      // Nhánh progressive chờ thêm 500 ms sau lưới tạm để tổng debounce nesting đủ 750 ms.
       const nestingStartDelay: Promise<boolean> = requestUsesProgressiveStepRepeat
         ? waitForAbortableDelay(NESTING_DEBOUNCE_MS - DEBOUNCE_MS, controller.signal)
             .then(() => true, () => false)
@@ -2715,8 +2724,8 @@ export default function GridPreview(props: GridPreviewProps) {
         if (requestUsesTrueShape) {
           // PV-A2: POST tạo job không mang AbortSignal. Nếu request bị supersede trong
           // lúc chờ 202, ta vẫn nhận job_id rồi hủy được; abort POST sẽ tạo job mồ côi.
-          // S&R đã gọi provisional ở mốc 250 ms nhưng vẫn giữ debounce nesting 750 ms để
-          // người dùng gõ liên tục không tạo chuỗi cold solve.
+          // S&R một trang có lưới tạm ở 250 ms, giữ nesting ở 750 ms; S&R nhiều
+          // trang đi thẳng vào job nên không chờ thêm sau debounce 250 ms.
           if (!(await nestingStartDelay) || !isCurrentGeneration()) return;
           const accepted = await createNestingPreviewJob(body);
           if (!accepted.job_id) {
@@ -2927,7 +2936,7 @@ export default function GridPreview(props: GridPreviewProps) {
               && provisional !== null;
             const chosenResult = keepProvisional ? provisional : convertedFinal;
             const forceLegacyGrid = requestUsesLegacyStepRepeat
-              || (requestUsesProgressiveStepRepeat && !backendPublishedAllPage);
+              || (requestUsesStepRepeat && !backendPublishedAllPage);
             const resultMatchesCurrentView = !forceLegacyGrid
               || perViewLayoutFetchKey === latestPerViewLayoutFetchKeyRef.current;
 
@@ -2936,7 +2945,7 @@ export default function GridPreview(props: GridPreviewProps) {
             publicationRef.current = { generation: gen, rank: 2 };
             if (forceLegacyGrid) {
               markAuthoritativeLegacyStepRepeat();
-            } else if (requestUsesProgressiveStepRepeat && backendPublishedAllPage) {
+            } else if (requestUsesStepRepeat && backendPublishedAllPage) {
               // Chỉ sheets có pageIdx đầy đủ mới được đồng bộ theo viewer. Kết quả thiếu
               // contract vẫn hiển thị tờ đầu nhưng không được đoán bằng ordinal nén.
               if (hasReusableStepRepeatSheets(convertedFinal)) {
@@ -3044,7 +3053,7 @@ export default function GridPreview(props: GridPreviewProps) {
           onCapacityChangeRef.current?.(0);
         }
       }
-    }, requestUsesProgressiveStepRepeat
+    }, requestUsesProgressiveStepRepeat || requestUsesDirectStepRepeat
       ? DEBOUNCE_MS
       : (requestUsesTrueShape ? NESTING_DEBOUNCE_MS : DEBOUNCE_MS));
 
