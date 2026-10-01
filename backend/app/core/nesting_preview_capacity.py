@@ -41,6 +41,7 @@ Hai quy ước ngược nhau về Y là có thật trong hợp đồng sẵn có
 from __future__ import annotations
 
 import logging
+import inspect
 import time
 from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
@@ -48,6 +49,82 @@ if TYPE_CHECKING:
     from app.workers.nup_artwork import ManifestPartContext
 
 logger = logging.getLogger(__name__)
+
+# PERF (audit 2026-10-01 §NEST-PERF-04): ``DetectedShape`` đã được detector server
+# dựng trong job nesting. Marker này chỉ đi theo bản request tạm của quality gate/legacy
+# preview, không đi vào settings dùng để băm proof hay handoff export.
+_SERVER_DETECTED_SHAPE_MARKER = "__prynx_server_detected_shape__"
+
+
+def _invoke_legacy_preview(
+    callback: Callable[..., Mapping[str, Any]] | None,
+    page_index: int,
+    detected_shape: Any = None,
+) -> Mapping[str, Any]:
+    """Gọi callback legacy với shape server-owned khi callback hỗ trợ tham số đó.
+
+    Callback một tham số là hợp đồng cũ của các caller/test; dùng ``inspect`` để giữ
+    tương thích mà không nuốt ``TypeError`` phát sinh bên trong chính callback.
+    """
+
+    if callback is None:
+        raise ValueError("Thiếu callback preview legacy.")
+    if detected_shape is None:
+        return callback(int(page_index))
+    try:
+        signature = inspect.signature(callback)
+        positional = [
+            parameter
+            for parameter in signature.parameters.values()
+            if parameter.kind
+            in (parameter.POSITIONAL_ONLY, parameter.POSITIONAL_OR_KEYWORD)
+        ]
+        accepts_varargs = any(
+            parameter.kind is parameter.VAR_POSITIONAL
+            for parameter in signature.parameters.values()
+        )
+        if accepts_varargs or len(positional) >= 2:
+            return callback(int(page_index), detected_shape)
+    except (TypeError, ValueError):
+        # Callable C-extension/partial không lộ signature: giữ contract một tham số.
+        pass
+    return callback(int(page_index))
+
+
+def _settings_for_server_shape_probe(settings: Mapping[str, Any], job: Any) -> Mapping[str, Any]:
+    """Tạo input riêng cho probe lưới từ ``DetectedShape`` của chính job.
+
+    Không sửa ``settings`` gốc: fingerprint proof vẫn phản ánh payload request/export.
+    Map tạm chỉ dùng để bỏ một lượt classify_shape dư trong quality gate.
+    """
+
+    parts = getattr(job, "parts", ()) or ()
+    if len(parts) != 1:
+        return settings
+    shape = getattr(parts[0], "detected_shape", None)
+    if shape is None:
+        return settings
+    try:
+        page_index = int(getattr(parts[0], "page_index"))
+        shape_type = getattr(getattr(shape, "type", None), "name", None)
+        if not shape_type:
+            shape_type = str(getattr(shape, "type", "CUSTOM") or "CUSTOM")
+        shape_props = dict(getattr(shape, "props", None) or {})
+    except (TypeError, ValueError, AttributeError):
+        return settings
+
+    # CUSTOM hợp lệ có props rỗng. Giá trị sentinel chỉ giúp layout_compute biết rằng
+    # detector đã chốt CUSTOM; nó bị loại khỏi output khi compute ép CUSTOM về props={}.
+    if not shape_props and str(shape_type).strip().upper() == "CUSTOM":
+        shape_props = {_SERVER_DETECTED_SHAPE_MARKER: True}
+    probe = dict(settings)
+    shapes = dict(settings.get("detectedShapesByPage") or {})
+    params = dict(settings.get("detectedShapeParamsByPage") or {})
+    shapes[str(page_index)] = shape_type
+    params[str(page_index)] = shape_props
+    probe["detectedShapesByPage"] = shapes
+    probe["detectedShapeParamsByPage"] = params
+    return probe
 
 #: Point trên milimét. Cùng giá trị với `imposition_pdf_form.PT_PER_MM`.
 PT_PER_MM = 72.0 / 25.4
@@ -418,7 +495,10 @@ def build_nesting_preview(
     # trả ngay kết quả 1 tem mà KHÔNG cần dispatch Rust solver (tránh trễ 8-14s GA).
     _single_item_page = _single_item_page_for_fast_path(settings)
     if _single_item_page is not None and legacy_preview_for_page is not None:
-        candidate = legacy_preview_for_page(_single_item_page)
+        candidate = _invoke_legacy_preview(
+            legacy_preview_for_page,
+            _single_item_page,
+        )
         if isinstance(candidate, Mapping) and bool(candidate.get("success")):
             cells = [
                 {**dict(cell), "pageIdx": _single_item_page}
@@ -718,9 +798,12 @@ def _quality_gate_proof_for_session(
     )
     if source is None:
         return None
+    # PERF (audit 2026-10-01 §NEST-PERF-04): probe lưới dùng lại DetectedShape đã
+    # nằm trong job nesting; không mở lại classifier trên cùng PDF snapshot.
+    probe_settings = _settings_for_server_shape_probe(settings, job)
     grid_capacity = grid_capacity_from_settings(
         str(source["source_path"]),
-        settings,
+        probe_settings,
         int(getattr(parts[0], "page_index")),
     )
     if grid_capacity <= 0:
@@ -949,7 +1032,11 @@ def _build_step_repeat_preview(
         total_sheets = 0
         for design_index, job in enumerate(jobs):
             page_index = int(job.parts[0].page_index)
-            candidate = legacy_preview_for_page(page_index)
+            candidate = _invoke_legacy_preview(
+                legacy_preview_for_page,
+                page_index,
+                getattr(job.parts[0], "detected_shape", None),
+            )
             if isinstance(candidate, Mapping) and bool(candidate.get("success")):
                 cells = [
                     {**dict(cell), "pageIdx": page_index}
@@ -1180,7 +1267,11 @@ def _build_step_repeat_preview(
         legacy_result: Mapping[str, Any] | None = None
         if grid_selected and legacy_preview_for_page is not None:
             try:
-                candidate = legacy_preview_for_page(page_index)
+                candidate = _invoke_legacy_preview(
+                    legacy_preview_for_page,
+                    page_index,
+                    getattr(job.parts[0], "detected_shape", None),
+                )
                 if isinstance(candidate, Mapping) and bool(candidate.get("success")):
                     legacy_result = candidate
             except Exception:  # noqa: BLE001 - gate lỗi không được che layout nesting hợp lệ

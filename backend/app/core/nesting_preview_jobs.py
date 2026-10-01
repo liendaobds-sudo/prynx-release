@@ -97,23 +97,41 @@ def _default_runner(request: Any, **kwargs: Any) -> dict[str, Any]:
     license_info = kwargs.pop("license_info", None)
     effective_license = license_info if isinstance(license_info, dict) else {}
 
-    def _legacy_preview_for_page(page_index: int) -> Mapping[str, Any]:
+    def _legacy_preview_for_page(
+        page_index: int,
+        detected_shape: Any = None,
+    ) -> Mapping[str, Any]:
         """Dựng đúng layout legacy của một mẫu bằng route production hiện có."""
 
         updates: dict[str, Any] = {
             "strategy": GRID_PROBE_STRATEGY,
             "page_idx": int(page_index),
         }
-        shapes = getattr(request, "detected_shapes_by_page", None)
-        if isinstance(shapes, Mapping):
-            shape = shapes.get(str(page_index), shapes.get(page_index))
-            if shape is not None:
-                updates["shape_type"] = shape
-        params = getattr(request, "detected_shape_params_by_page", None)
-        if isinstance(params, Mapping):
-            shape_props = params.get(str(page_index), params.get(page_index))
-            if isinstance(shape_props, Mapping):
-                updates["shape_props"] = dict(shape_props)
+        if detected_shape is not None:
+            # PERF (audit 2026-10-01 §NEST-PERF-04): quality gate/legacy preview dùng
+            # lại shape server-owned của job; không classify lại cùng trang PDF.
+            shape_type = getattr(getattr(detected_shape, "type", None), "name", None)
+            updates["shape_type"] = str(shape_type or "CUSTOM")
+            shape_props = dict(getattr(detected_shape, "props", None) or {})
+            if (
+                not shape_props
+                and str(updates["shape_type"]).strip().upper() == "CUSTOM"
+            ):
+                # Sentinel chỉ để layout_compute bỏ nhánh auto-classifier; CUSTOM cuối
+                # cùng vẫn ép props={} nên không đổi hình học hay output contract.
+                shape_props["__prynx_server_detected_shape__"] = True
+            updates["shape_props"] = shape_props
+        else:
+            shapes = getattr(request, "detected_shapes_by_page", None)
+            if isinstance(shapes, Mapping):
+                shape = shapes.get(str(page_index), shapes.get(page_index))
+                if shape is not None:
+                    updates["shape_type"] = shape
+            params = getattr(request, "detected_shape_params_by_page", None)
+            if isinstance(params, Mapping):
+                shape_props = params.get(str(page_index), params.get(page_index))
+                if isinstance(shape_props, Mapping):
+                    updates["shape_props"] = dict(shape_props)
         return preview_layout(request.model_copy(update=updates), effective_license)
 
     try:

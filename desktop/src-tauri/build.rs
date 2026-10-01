@@ -68,6 +68,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=PRYNX_FRONTEND_HASH");
     println!("cargo:rerun-if-env-changed=PRYNX_FEATURE_GATING_ENABLED");
     println!("cargo:rerun-if-env-changed=PRYNX_LOGO_REBUILD_ENABLED");
+    println!("cargo:rerun-if-env-changed=PRYNX_TRUE_SHAPE_NESTING_ENABLED");
     println!("cargo:rerun-if-env-changed=TAURI_CONFIG");
     println!("cargo:rerun-if-env-changed=DEP_TAURI_DEV");
     if let Err(error) = validate_release_packaging_inputs(

@@ -39,7 +39,7 @@ use super::model::{
     LayoutAlignment, ManifestStatus, PlacementRecord, RunStats, TerminationReason, UnplacedRecord,
 };
 use super::normalize::{BoundsMm, NormalizedRequest};
-use super::score::{score_layout, sheet_envelopes, LayoutScore};
+use super::score::{score_layout, LayoutScore};
 use super::solver::{plan_trials, run_trial, TrialError, TrialPlan, TrialResult};
 use super::transform::place_ring_checked;
 use super::validator::{
@@ -447,16 +447,16 @@ fn align_for_publication(
     let Some(production) = request.production_contract.as_ref() else {
         return placements.to_vec();
     };
-    let Some(envelopes) = sheet_envelopes(request, placements) else {
-        return placements.to_vec();
-    };
-
     let tol = request.tolerance;
     let parts = request
         .parts
         .iter()
         .map(|part| (part.part_id.as_str(), part))
         .collect::<BTreeMap<_, _>>();
+    // PERF (audit 2026-10-01 §NEST-PERF-08): envelope và khoảng dịch đều cần
+    // đúng một contour đã đặt. Gom hai phép duyệt thành một, giữ nguyên thứ tự
+    // placement và phép min/max của `sheet_envelopes`.
+    let mut envelopes: BTreeMap<u32, BoundsMm> = BTreeMap::new();
     let mut shift_intervals: BTreeMap<u32, BoundsMm> = BTreeMap::new();
     for record in placements {
         let Some(part) = parts.get(record.part_id.as_str()) else {
@@ -469,6 +469,17 @@ fn align_for_publication(
         let Some(bounds) = BoundsMm::from_ring(&ring) else {
             return placements.to_vec();
         };
+        envelopes
+            .entry(record.sheet_index)
+            .and_modify(|current| {
+                *current = BoundsMm {
+                    min_x: current.min_x.min(bounds.min_x),
+                    min_y: current.min_y.min(bounds.min_y),
+                    max_x: current.max_x.max(bounds.max_x),
+                    max_y: current.max_y.max(bounds.max_y),
+                };
+            })
+            .or_insert(bounds);
         let effective = request.placement_bounds_for(part);
         let interval = BoundsMm {
             min_x: effective.min_x - tol.linear_mm - bounds.min_x,

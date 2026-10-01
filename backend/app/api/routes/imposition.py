@@ -2269,19 +2269,33 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
 
         _nesting_source = _resolve_nesting_preview_source(req)
 
-        def _legacy_preview_for_page(page_index: int):
+        def _legacy_preview_for_page(page_index: int, detected_shape: Any = None):
             updates = {
                 "strategy": GRID_PROBE_STRATEGY,
                 "page_idx": int(page_index),
             }
-            shapes = req.detected_shapes_by_page or {}
-            shape = shapes.get(str(page_index), shapes.get(page_index))
-            if shape is not None:
-                updates["shape_type"] = shape
-            params = req.detected_shape_params_by_page or {}
-            shape_props = params.get(str(page_index), params.get(page_index))
-            if isinstance(shape_props, dict):
-                updates["shape_props"] = dict(shape_props)
+            if detected_shape is not None:
+                # PERF (audit 2026-10-01 §NEST-PERF-04): callback nhận shape đã dò
+                # trong job nesting, tránh phân loại lại khi quality gate chọn lưới.
+                shape_type = getattr(getattr(detected_shape, "type", None), "name", None)
+                updates["shape_type"] = str(shape_type or "CUSTOM")
+                shape_props = dict(getattr(detected_shape, "props", None) or {})
+                if (
+                    not shape_props
+                    and str(updates["shape_type"]).strip().upper() == "CUSTOM"
+                ):
+                    # layout_compute sẽ bỏ sentinel khi ép CUSTOM về props rỗng.
+                    shape_props["__prynx_server_detected_shape__"] = True
+                updates["shape_props"] = shape_props
+            else:
+                shapes = req.detected_shapes_by_page or {}
+                shape = shapes.get(str(page_index), shapes.get(page_index))
+                if shape is not None:
+                    updates["shape_type"] = shape
+                params = req.detected_shape_params_by_page or {}
+                shape_props = params.get(str(page_index), params.get(page_index))
+                if isinstance(shape_props, dict):
+                    updates["shape_props"] = dict(shape_props)
             return preview_layout(req.model_copy(update=updates), license_info)
 
         try:

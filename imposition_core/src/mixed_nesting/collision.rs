@@ -341,7 +341,10 @@ pub fn judge_pair_sheet_axis(
     if rings_overlap(a, b, tol) {
         return PairVerdict::Overlap;
     }
-    let measured = min_distance_mm(a, b, tol);
+    // PERF (audit 2026-10-01 §NEST-PERF-07): cặp này vừa qua phán quyết
+    // overlap. Giữ nguyên phép đo khoảng hở nhưng không lặp cạnh-cạnh/SAT
+    // lần hai; áp dụng cùng đường đã dùng cho clearance đẳng hướng.
+    let measured = min_distance_disjoint_mm(a, b, tol, true);
     if clearance.x_mm <= tol.linear_mm && clearance.y_mm <= tol.linear_mm {
         return PairVerdict::Ok {
             measured_mm: measured,
@@ -456,5 +459,176 @@ pub fn signed_margin_to_bounds_mm(ring: &[PointMm], bounds: &BoundsMm) -> f64 {
         0.0
     } else {
         worst
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rectangle(x: f64, y: f64, width: f64, height: f64) -> Vec<PointMm> {
+        vec![
+            PointMm::new(x, y),
+            PointMm::new(x + width, y),
+            PointMm::new(x + width, y + height),
+            PointMm::new(x, y + height),
+        ]
+    }
+
+    // Giữ đường cũ để so cả loại phán quyết và từng bit khoảng cách đo được.
+    // Reference cố ý kiểm overlap lần hai qua API công khai min_distance_mm.
+    fn sheet_axis_reference(
+        a: &[PointMm],
+        b: &[PointMm],
+        clearance: SheetAxisClearanceMm,
+        tol: &Tolerance,
+    ) -> PairVerdict {
+        if rings_overlap(a, b, tol) {
+            return PairVerdict::Overlap;
+        }
+        let measured = min_distance_mm(a, b, tol);
+        if clearance.x_mm <= tol.linear_mm && clearance.y_mm <= tol.linear_mm {
+            return PairVerdict::Ok {
+                measured_mm: measured,
+            };
+        }
+        let pieces_a = convex_pieces(a, super::super::geometry::is_convex_ring(a, tol), tol);
+        let pieces_b = convex_pieces(b, super::super::geometry::is_convex_ring(b, tol), tol);
+        let safe = !pieces_a.is_empty()
+            && !pieces_b.is_empty()
+            && pieces_a.iter().all(|piece_a| {
+                pieces_b.iter().all(|piece_b| {
+                    clearance_separating_axis_exists(piece_a, piece_b, clearance, tol)
+                })
+            });
+        if safe {
+            PairVerdict::Ok {
+                measured_mm: measured,
+            }
+        } else {
+            PairVerdict::ClearanceTooSmall {
+                measured_mm: measured,
+                required_mm: clearance.max_axis_mm(),
+            }
+        }
+    }
+
+    fn assert_same_verdict(actual: PairVerdict, expected: PairVerdict) {
+        assert_eq!(actual, expected);
+        match (actual, expected) {
+            (PairVerdict::Ok { measured_mm: a }, PairVerdict::Ok { measured_mm: b })
+            | (
+                PairVerdict::ClearanceTooSmall { measured_mm: a, .. },
+                PairVerdict::ClearanceTooSmall { measured_mm: b, .. },
+            ) => assert_eq!(a.to_bits(), b.to_bits()),
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn sheet_axis_bo_overlap_lap_giu_nguyen_phan_quyet_va_khoang_cach() {
+        let tol = Tolerance::v1();
+        let convex = rectangle(0.0, 0.0, 10.0, 10.0);
+        let concave = vec![
+            PointMm::new(0.0, 0.0),
+            PointMm::new(30.0, 0.0),
+            PointMm::new(30.0, 10.0),
+            PointMm::new(10.0, 10.0),
+            PointMm::new(10.0, 30.0),
+            PointMm::new(0.0, 30.0),
+        ];
+        let (sin, cos) = 17.0_f64.to_radians().sin_cos();
+        let rotated: Vec<_> = convex
+            .iter()
+            .map(|p| PointMm::new(cos * p.x - sin * p.y + 14.0, sin * p.x + cos * p.y))
+            .collect();
+        let others = [
+            rectangle(0.0, 0.0, 10.0, 10.0),
+            rectangle(9.0, 0.0, 10.0, 10.0),
+            rectangle(10.0, 0.0, 10.0, 10.0),
+            rectangle(10.0, 10.0, 10.0, 10.0),
+            rectangle(12.0 - 0.5 * tol.linear_mm, 0.0, 10.0, 10.0),
+            rectangle(12.0 - 2.0 * tol.linear_mm, 0.0, 10.0, 10.0),
+            rectangle(11.5, 10.75, 10.0, 10.0),
+            rectangle(12.0, 12.0, 8.0, 8.0),
+            rectangle(40.0, 40.0, 5.0, 5.0),
+            rotated,
+            concave.clone(),
+        ];
+        let clearances = [
+            SheetAxisClearanceMm::zero(),
+            SheetAxisClearanceMm {
+                x_mm: 2.0,
+                y_mm: 0.5,
+            },
+            SheetAxisClearanceMm {
+                x_mm: 0.0,
+                y_mm: 2.0,
+            },
+            SheetAxisClearanceMm {
+                x_mm: 2.0,
+                y_mm: 0.0,
+            },
+            SheetAxisClearanceMm {
+                x_mm: 2.0,
+                y_mm: 2.0,
+            },
+        ];
+        for subject in [&convex, &concave] {
+            for other in &others {
+                for clearance in clearances {
+                    for (a, b) in [(subject, other), (other, subject)] {
+                        assert_same_verdict(
+                            judge_pair_sheet_axis(a, b, clearance, &tol),
+                            sheet_axis_reference(a, b, clearance, &tol),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn sheet_axis_giu_ranh_gioi_overlap_gap_va_dung_sai() {
+        let tol = Tolerance::v1();
+        let a = rectangle(0.0, 0.0, 10.0, 10.0);
+        let clearance = SheetAxisClearanceMm {
+            x_mm: 2.0,
+            y_mm: 0.5,
+        };
+        assert_eq!(
+            judge_pair_sheet_axis(&a, &rectangle(9.0, 0.0, 10.0, 10.0), clearance, &tol),
+            PairVerdict::Overlap,
+        );
+        assert_eq!(
+            judge_pair_sheet_axis(
+                &a,
+                &rectangle(10.0, 0.0, 10.0, 10.0),
+                SheetAxisClearanceMm::zero(),
+                &tol,
+            ),
+            PairVerdict::Ok { measured_mm: 0.0 },
+        );
+        assert!(judge_pair_sheet_axis(
+            &a,
+            &rectangle(12.0 - 0.5 * tol.linear_mm, 0.0, 10.0, 10.0),
+            clearance,
+            &tol,
+        )
+        .is_ok());
+        assert!(matches!(
+            judge_pair_sheet_axis(
+                &a,
+                &rectangle(12.0 - 2.0 * tol.linear_mm, 0.0, 10.0, 10.0),
+                clearance,
+                &tol,
+            ),
+            PairVerdict::ClearanceTooSmall { .. },
+        ));
+        // Trục X chưa đủ gap nhưng trục Y đã đủ khoảng hở dị hướng.
+        assert!(
+            judge_pair_sheet_axis(&a, &rectangle(11.5, 10.75, 10.0, 10.0), clearance, &tol,)
+                .is_ok()
+        );
     }
 }

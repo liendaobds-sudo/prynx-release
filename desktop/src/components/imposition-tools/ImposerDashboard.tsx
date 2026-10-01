@@ -202,7 +202,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
         detectedShapeType, detectedShapeParams, setDetectedShapeType, setDetectedShapeParams,
         detectedShapesByPage, setDetectedShapesByPage,
         detectedDimensionsByPage, setDetectedDimensionsByPage,
-        detectedShapeParamsByPage, setDetectedShapeParamsByPage, viewerActivePage, pdfUrl,
+        detectedShapeParamsByPage, setDetectedShapeParamsByPage, viewerActivePage, setViewerActivePage, pdfUrl,
         selectionFileId, setSelectionFileId, hiddenOcgLayerIds, ocgVisibilityProvenance
     } = useWorkspaceStore(useShallow(state => ({
         isProcessing: state.isProcessing, error: state.error, file: state.file, viewerPageOrder: state.viewerPageOrder, viewerPageInstanceIds: state.viewerPageInstanceIds, viewerPageRotations: state.viewerPageRotations, viewerNumPages: state.viewerNumPages,
@@ -210,7 +210,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
         detectedShapeType: state.detectedShapeType, detectedShapeParams: state.detectedShapeParams, setDetectedShapeType: state.setDetectedShapeType, setDetectedShapeParams: state.setDetectedShapeParams,
         detectedShapesByPage: state.detectedShapesByPage, setDetectedShapesByPage: state.setDetectedShapesByPage,
         detectedDimensionsByPage: state.detectedDimensionsByPage, setDetectedDimensionsByPage: state.setDetectedDimensionsByPage,
-        detectedShapeParamsByPage: state.detectedShapeParamsByPage, setDetectedShapeParamsByPage: state.setDetectedShapeParamsByPage, viewerActivePage: state.viewerActivePage, pdfUrl: state.pdfUrl,
+        detectedShapeParamsByPage: state.detectedShapeParamsByPage, setDetectedShapeParamsByPage: state.setDetectedShapeParamsByPage, viewerActivePage: state.viewerActivePage, setViewerActivePage: state.setViewerActivePage, pdfUrl: state.pdfUrl,
         selectionFileId: state.selectionFileId,
         setSelectionFileId: state.setSelectionFileId,
         hiddenOcgLayerIds: state.hiddenOcgLayerIds,
@@ -2355,6 +2355,9 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                                 filePath={((window as RuntimeWindow).__TAURI_INTERNALS__) ? ((pdfFile as WorkspaceFileLike)?.path || undefined) : undefined}
                                 // B10-6: pageIdx là trang viewer thật; shapePageIdx chỉ chọn geometry master.
                                 pageIdx={safePageIdx}
+                                // UIUX (fix 2026-10-01 §PREVIEW-PAGER): legacy preview
+                                // không có sheets[] vẫn phải đổi đúng trang của tab hiện tại.
+                                onPageChange={(nextPageIdx) => setViewerActivePage(nextPageIdx + 1)}
                                 bleed={s.bleed}
                                 cutBorder={cutBorderCapable ? s.cutBorder : undefined}
                                 cutType={activeTool === 'sticker_imposer' ? s.cutType : undefined}

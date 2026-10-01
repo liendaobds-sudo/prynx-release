@@ -145,6 +145,8 @@ export interface GridPreviewProps {
   /** Mã đối chiếu cục bộ của một tab/tài liệu; không chứa tên hay đường dẫn file. */
   diagnosticTraceId?: string;
   onDiagnosticEvent?: (event: GridPreviewDiagnosticEvent) => void;
+  /** Chuyển trang nguồn trong preview legacy khi backend không trả sheets[]. */
+  onPageChange?: (page: number) => void;
 }
 
 export interface GridPreviewDiagnosticEvent {
@@ -1482,6 +1484,7 @@ export default function GridPreview(props: GridPreviewProps) {
     previewSourceKey,
     diagnosticTraceId = "",
     onDiagnosticEvent,
+    onPageChange,
   } = props;
 
   const usableW = Math.max(0, sheetWidth - marginLeft - marginRight);
@@ -2011,6 +2014,9 @@ export default function GridPreview(props: GridPreviewProps) {
       rws: requiresWorkingSource,
       // Tab nền vẫn mounted trong App; đổi active phải chạy cleanup để hủy job cũ.
       active: isActive !== false,
+      // BUILD/UIUX (fix 2026-10-01 §PREVIEW-PAGER): layout legacy theo từng
+      // trang phải mất cache khi người dùng chuyển trang nguồn.
+      p: _layoutIgnoresViewPage ? undefined : pageIdx,
       detecting: shouldDeferPreviewLayout(!!isDieCut, !!isDetectingShape),
     });
   }, [
@@ -2039,6 +2045,7 @@ export default function GridPreview(props: GridPreviewProps) {
     pageSheetMode,
     duplexFlipEdge,
     sourceTotalPages,
+    pageIdx,
     sheetWidth,
     sheetHeight,
     marginLeft,
@@ -2069,6 +2076,7 @@ export default function GridPreview(props: GridPreviewProps) {
     targetQuantity,
     targetQuantitiesByPage,
     isStepRepeatLayout,
+    _layoutIgnoresViewPage,
     stepRepeatQuantityLayoutKey,
     imposerMode,
     cncTwoSided,
@@ -2099,6 +2107,7 @@ export default function GridPreview(props: GridPreviewProps) {
       canonical.ih = 0;
       canonical.st = _shapesByPageKey;
       canonical.sp = _shapeParamsByPageKey;
+      delete canonical.p;
       canonical.detecting = false;
       canonical.srAll = true;
       return JSON.stringify(canonical);
@@ -2739,9 +2748,22 @@ export default function GridPreview(props: GridPreviewProps) {
             signal: controller.signal,
             onStatus: (status) => {
               if (!isCurrentGeneration()) return false;
-              setNestingProgress(status.progress ?? {
+              const nextProgress: PreviewNestingProgress = status.progress ?? {
                 phase: status.status,
                 elapsedMs: 0,
+              };
+              setNestingProgress((previous) => {
+                // PERF (audit 2026-10-01 §NEST-PERF-03): polling thường lặp lại cùng
+                // phase/%; giữ object cũ để không buộc Canvas vẽ lại toàn bộ cell.
+                if (
+                  previous
+                  && previous.phase === nextProgress.phase
+                  && previous.progress === nextProgress.progress
+                  && previous.messageCode === nextProgress.messageCode
+                ) {
+                  return previous;
+                }
+                return nextProgress;
               });
               return true;
             },
@@ -3269,6 +3291,36 @@ export default function GridPreview(props: GridPreviewProps) {
     isDieCut,
   ]);
 
+  // PERF (audit 2026-10-01 §NEST-PERF-03): progress polling không được tạo callback
+  // mới ở mỗi render. GridPreviewCanvas đưa hai callback này vào dependency của effect
+  // vẽ; giữ identity ổn định giúp poll chỉ cập nhật thanh tiến độ mà không redraw cell.
+  const _isCncPreview = !!layoutResult?.isCncPreview;
+  const _cncShortFlip =
+    _isCncPreview &&
+    (layoutResult?.cncFlipEdge || cncFlipEdge) === "short";
+  const _isPairDuplex = duplexFlow === "double" &&
+    (_isRatioStack || layoutType === "sequential" || _isMixedGuillotine);
+  const cellLabel = React.useCallback((blockId: number, isBack: boolean): string | number => {
+    if (_isPairDuplex)
+      return `${Math.floor(blockId / 2) + 1}${isBack ? "b" : "a"}`;
+    if (isBack && _isCncPreview && layoutResult?.cncTwoSided)
+      return blockId + 2;
+    return blockId + 1;
+  }, [_isPairDuplex, _isCncPreview, layoutResult?.cncTwoSided]);
+  const colorIndexFor = React.useCallback(
+    (blockId: number): number =>
+      _isMixedGuillotine && _isPairDuplex ? Math.floor(blockId / 2) : blockId,
+    [_isMixedGuillotine, _isPairDuplex],
+  );
+  const clusterCutHex = useMemo(() => {
+    if (!clusterCutCmyk) return undefined;
+    const [c, m, y, k] = clusterCutCmyk;
+    const r = Math.round(255 * (1 - c / 100) * (1 - k / 100));
+    const g = Math.round(255 * (1 - m / 100) * (1 - k / 100));
+    const b = Math.round(255 * (1 - y / 100) * (1 - k / 100));
+    return `rgb(${r}, ${g}, ${b})`;
+  }, [clusterCutCmyk]);
+
   // Sau khi MỌI hook đã chạy mới được return sớm (xem ghi chú phía trên).
   if (sheetWidth <= 0 || sheetHeight <= 0) return null;
 
@@ -3309,20 +3361,7 @@ export default function GridPreview(props: GridPreviewProps) {
   const cutVpx = cutSegmentsPx.length === 0 ? (_cutLines?.v || []).map((v) => pad + v * scale) : [];
   const cutHpx = cutSegmentsPx.length === 0 ? (_cutLines?.h || []).map((h) => pad + (sheetHeight - h) * scale) : [];
 
-  const clusterCutHex = useMemo(() => {
-    if (!clusterCutCmyk) return undefined;
-    const [c, m, y, k] = clusterCutCmyk;
-    const r = Math.round(255 * (1 - c / 100) * (1 - k / 100));
-    const g = Math.round(255 * (1 - m / 100) * (1 - k / 100));
-    const b = Math.round(255 * (1 - y / 100) * (1 - k / 100));
-    return `rgb(${r}, ${g}, ${b})`;
-  }, [clusterCutCmyk]);
-
   // Lật gương Mặt sau theo cạnh lật (CNC). Mặc định long-edge = lật ngang.
-  const _isCncPreview = !!layoutResult?.isCncPreview;
-  const _cncShortFlip =
-    _isCncPreview &&
-    (layoutResult?.cncFlipEdge || cncFlipEdge) === "short";
   // CNC mặt sau = PHẢN CHIẾU thật, KHỚP output cnc_render (mirror_x/mirror_y):
   //   long-edge → lật NGANG quanh tâm tờ; short-edge → lật DỌC.
   // Phép scale ở mức GROUP phản chiếu CẢ vị trí lẫn nội dung (giống duplex thường),
@@ -3340,27 +3379,6 @@ export default function GridPreview(props: GridPreviewProps) {
   // (a=mặt trước, b=mặt sau). Mỗi loại = cặp trang trước/sau; blockId là trang chẵn 2u
   // (0-based) nên loại = floor(blockId/2)+1. Không đổi → hiện số trang thô gây hiểu lầm
   // (loại 7 hiện "13" thay vì "7a"). Các mode 1 mặt giữ số trang thô.
-  const _isPairDuplex = duplexFlow === "double" &&
-    (_isRatioStack || layoutType === "sequential" || _isMixedGuillotine);
-  const cellLabel = (blockId: number, isBack: boolean): string | number => {
-    // MIXED-GUILLOTINE: blockId ở đây là pageIdx THÔ (mặt trước=trang chẵn,
-    // mặt sau=trang lẻ) do resolvePreviewCellType ghi đè bằng pageIdx. Vì thế
-    // loại = floor(blockId/2)+1 — DÙNG CHUNG công thức cặp duplex ở dưới, không
-    // được +1 thẳng (từng làm mặt sau trang 1 hiện "2b" và sản phẩm 2 hiện "3a").
-    if (_isPairDuplex)
-      return `${Math.floor(blockId / 2) + 1}${isBack ? "b" : "a"}`;
-    if (isBack && _isCncPreview && layoutResult?.cncTwoSided)
-      return blockId + 2;
-    return blockId + 1;
-  };
-
-  // MIXED-GUILLOTINE: màu ô phải theo LOẠI SẢN PHẨM, không theo pageIdx thô —
-  // nếu không mặt trước (trang chẵn) và mặt sau (trang lẻ) của cùng sản phẩm sẽ
-  // đổi màu khi lật. CHỈ áp cho mixed_guillotine để không đổi hành vi màu của
-  // ratio_stack/sequential (giữ nguyên phân biệt mặt trước/sau như cũ).
-  const colorIndexFor = (blockId: number): number =>
-    _isMixedGuillotine && _isPairDuplex ? Math.floor(blockId / 2) : blockId;
-
   // Mặt sau dùng CHÍNH ô mặt trước — phản chiếu do backGroupTransform đảm nhiệm.
   const cncBackCells = svgCells;
 
@@ -3572,6 +3590,12 @@ export default function GridPreview(props: GridPreviewProps) {
     : _isMixedGuillotine && _activeSheetMeta
     ? `${t('imposition.gridPreview:to')} ${(_activeSheetMeta.physicalSheetIndex ?? activeSheet) + 1} · ${t(_mixedBackFace ? 'imposition.gridPreview:mat_sau' : 'imposition.gridPreview:mat_truoc')}`
     : `${t('imposition.gridPreview:to')} ${activeSheet + 1} / ${layoutResult?.sheets?.length || 1}`;
+  const showSourcePagePager = Boolean(
+    onPageChange
+    && isStepRepeatLayout
+    && (sourceTotalPages || 0) > 1
+    && (!layoutResult?.sheets || layoutResult.sheets.length <= 1),
+  );
 
 
   // ── N-Up "Dàn nhiều mẫu": số ô vẽ trên tờ (đại diện) = min(tổng con, sức chứa). ──
@@ -3859,6 +3883,36 @@ export default function GridPreview(props: GridPreviewProps) {
                 type="button"
                 onClick={() => setActiveSheet((s) => Math.min((layoutResult.sheets?.length || 1) - 1, s + 1))}
                 disabled={activeSheet >= (layoutResult.sheets.length - 1)}
+                className="w-7 h-7 flex items-center justify-center rounded border border-slate-300 dark:border-white/20 bg-white dark:bg-zinc-900 text-slate-600 dark:text-zinc-300 disabled:opacity-40 hover:border-indigo-500 disabled:hover:border-slate-300"
+              >
+                ►
+              </button>
+            </div>
+          )}
+          {showSourcePagePager && (
+            <div
+              className="flex items-center gap-3 text-[13px] font-medium"
+              data-testid="preview-source-page-pager"
+            >
+              <button
+                type="button"
+                aria-label={t('imposition.gridPreview:trang_truoc', 'Trang trước')}
+                data-testid="preview-source-page-prev"
+                onClick={() => onPageChange?.(Math.max(0, pageIdx - 1))}
+                disabled={pageIdx <= 0}
+                className="w-7 h-7 flex items-center justify-center rounded border border-slate-300 dark:border-white/20 bg-white dark:bg-zinc-900 text-slate-600 dark:text-zinc-300 disabled:opacity-40 hover:border-indigo-500 disabled:hover:border-slate-300"
+              >
+                ◄
+              </button>
+              <span className="text-slate-700 dark:text-zinc-200 tabular-nums">
+                {t('imposition.gridPreview:trang', 'Trang')} {pageIdx + 1} / {sourceTotalPages}
+              </span>
+              <button
+                type="button"
+                aria-label={t('imposition.gridPreview:trang_sau', 'Trang sau')}
+                data-testid="preview-source-page-next"
+                onClick={() => onPageChange?.(Math.min((sourceTotalPages || 1) - 1, pageIdx + 1))}
+                disabled={pageIdx >= (sourceTotalPages || 1) - 1}
                 className="w-7 h-7 flex items-center justify-center rounded border border-slate-300 dark:border-white/20 bg-white dark:bg-zinc-900 text-slate-600 dark:text-zinc-300 disabled:opacity-40 hover:border-indigo-500 disabled:hover:border-slate-300"
               >
                 ►

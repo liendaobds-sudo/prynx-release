@@ -561,23 +561,67 @@ fn self_forbidden(
     control: &RunControl,
 ) -> Result<RegionMm, BaselineError> {
     let mut regions = Vec::new();
-    for fixed in &motif.members {
-        for moving in &motif.members {
-            control.checkpoint_cancel_only()?;
-            // Cache NFP dùng vòng local không mang phase; thay phase của motif chỉ
-            // dịch vùng đã có, không phân rã/Minkowski lại cùng cặp contour.
-            let region = cache.grown_nfp_with_clearance(
-                &fixed.ring,
-                &moving.ring,
-                part_clearance_for_request(request),
-                &request.tolerance,
-            )?;
-            let delta = PointMm::new(
-                fixed.offset.x - moving.offset.x,
-                fixed.offset.y - moving.offset.y,
-            );
-            regions.extend(region.iter().map(|ring| shifted(ring, delta)));
+    if motif.members.len() < 2 || !cache.allows_parallel_batch() {
+        // Grant một worker (và motif một member) giữ nguyên đường nóng cũ, tránh
+        // cấp phát metadata batch cho một cold-miss không thể chạy song song.
+        for fixed in &motif.members {
+            for moving in &motif.members {
+                control.checkpoint_cancel_only()?;
+                // Cache NFP dùng vòng local không mang phase; thay phase của motif chỉ
+                // dịch vùng đã có, không phân rã/Minkowski lại cùng cặp contour.
+                let region = cache.grown_nfp_with_clearance(
+                    &fixed.ring,
+                    &moving.ring,
+                    part_clearance_for_request(request),
+                    &request.tolerance,
+                )?;
+                let delta = PointMm::new(
+                    fixed.offset.x - moving.offset.x,
+                    fixed.offset.y - moving.offset.y,
+                );
+                regions.extend(region.iter().map(|ring| shifted(ring, delta)));
+            }
         }
+        return Ok(kernel::union_many(&regions).map_err(NfpError::from)?);
+    }
+    // PERF (audit 2026-10-01 §NEST-NATIVE-PERIODIC): một motif nhiều member trước đây
+    // dựng các NFP theo vòng lặp tuần tự, dù NfpCache đã có grant worker. Gom toàn bộ
+    // cặp contour vào một batch để các cold-miss khác moving vẫn chạy song song; replay
+    // theo thứ tự fixed→moving cũ để union/kernel và pose tie-break vẫn ổn định.
+    let pairs: Vec<(&[PointMm], &[PointMm])> = motif
+        .members
+        .iter()
+        .flat_map(|fixed| {
+            motif
+                .members
+                .iter()
+                .map(move |moving| (fixed.ring.as_slice(), moving.ring.as_slice()))
+        })
+        .collect();
+    let should_stop = || control.checkpoint_cancel_only().is_err();
+    let Some(batch) = cache.grown_nfps_pairs_batch_with_clearance(
+        &pairs,
+        part_clearance_for_request(request),
+        &request.tolerance,
+        Some(&should_stop),
+    )?
+    else {
+        // `None` chỉ được trả khi closure báo hủy; kiểm lại để chuyển đúng
+        // interrupt, không nuốt cancel thành một vùng cấm rỗng.
+        control.checkpoint_cancel_only()?;
+        unreachable!("batch NFP dừng mà không có cancel");
+    };
+    for ((fixed, moving), region) in motif
+        .members
+        .iter()
+        .flat_map(|fixed| motif.members.iter().map(move |moving| (fixed, moving)))
+        .zip(batch)
+    {
+        let delta = PointMm::new(
+            fixed.offset.x - moving.offset.x,
+            fixed.offset.y - moving.offset.y,
+        );
+        regions.extend(region.iter().map(|ring| shifted(ring, delta)));
     }
     Ok(kernel::union_many(&regions).map_err(NfpError::from)?)
 }

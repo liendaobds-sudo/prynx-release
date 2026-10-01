@@ -79,6 +79,10 @@ fn emit_build_identity(manifest_dir: &Path) {
     for path in [
         manifest_dir.join("src"),
         manifest_dir.join("Cargo.toml"),
+        // BUILD (audit 2026-10-01): solver nằm ở crate path dependency này;
+        // đổi imposition_core phải làm mới provenance của native artifact.
+        repo_root.join("imposition_core/src"),
+        repo_root.join("imposition_core/Cargo.toml"),
         repo_root.join("print_engine/src"),
         repo_root.join("print_engine/Cargo.toml"),
         repo_root.join(".git/HEAD"),

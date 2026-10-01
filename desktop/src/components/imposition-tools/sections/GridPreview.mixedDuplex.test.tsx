@@ -2287,6 +2287,30 @@ describe("GridPreview — hướng xoay Inking", () => {
     expect(nestingJobMocks.create).not.toHaveBeenCalled();
   });
 
+  it('hiển thị pager trang nguồn khi legacy S&R không trả sheets[]', async () => {
+    const onPageChange = vi.fn();
+    authenticatedFetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => capacityResponse(48, 'simple_auto'),
+    });
+
+    render(<GridPreview taskMode="step_repeat" isDieCut layoutType="repeat"
+      gridStrategy="simple_auto" columns={0} rows={0} gapX={2} gapY={2}
+      sheetWidth={320} sheetHeight={450} marginTop={3} marginBottom={3}
+      marginLeft={3} marginRight={3} align="center" shapeType="RECTANGLE"
+      itemW={20} itemH={20} targetQuantity={0} targetQuantitiesByPage={{}}
+      sourceTotalPages={2} pageIdx={0} onPageChange={onPageChange}
+      filePath="C:\\legacy-sr.pdf" />);
+
+    await waitFor(() => expect(screen.getByTestId('preview-source-page-pager')).toBeTruthy(), {
+      timeout: 3_000,
+    });
+    expect(screen.getByText('Trang 1 / 2')).toBeTruthy();
+    fireEvent.click(screen.getByTestId('preview-source-page-next'));
+    expect(onPageChange).toHaveBeenCalledWith(1);
+  });
+
   it('M72 hiển thị 8 bố cục, 800 tờ và số lần in khi đổi bố cục', async () => {
     const data = {
       ...stepRepeatSheetsResponse(Array.from({ length: 8 }, (_, i) => i)),

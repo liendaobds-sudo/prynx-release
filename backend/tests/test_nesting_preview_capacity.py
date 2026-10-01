@@ -96,6 +96,56 @@ def _request(**overrides) -> SimpleNamespace:
     return SimpleNamespace(**base)
 
 
+def test_quality_gate_probe_ke_thua_detected_shape_server_owned_khong_doi_settings():
+    """Probe tạm dùng shape của job, nhưng fingerprint request gốc giữ nguyên."""
+
+    from app.core import nesting_preview_capacity as cap
+
+    shape = SimpleNamespace(
+        type=SimpleNamespace(name="CUSTOM"),
+        props={},
+    )
+    job = SimpleNamespace(
+        parts=[SimpleNamespace(page_index=3, detected_shape=shape)]
+    )
+    original = {
+        "detectedShapesByPage": {"3": "CUSTOM"},
+        "detectedShapeParamsByPage": {},
+        "targetQuantity": 0,
+    }
+
+    probe = cap._settings_for_server_shape_probe(original, job)
+
+    assert original["detectedShapeParamsByPage"] == {}
+    assert probe is not original
+    assert probe["detectedShapesByPage"]["3"] == "CUSTOM"
+    assert probe["detectedShapeParamsByPage"]["3"][
+        "__prynx_server_detected_shape__"
+    ] is True
+
+
+def test_legacy_callback_nhan_shape_server_owned_giu_tuong_thich_callback_cu():
+    """Callback mới nhận shape; callback cũ một tham số vẫn được gọi đúng."""
+
+    from app.core import nesting_preview_capacity as cap
+
+    shape = SimpleNamespace(type=SimpleNamespace(name="RECTANGLE"), props={})
+    seen: list[object] = []
+
+    def _new(page_index, detected_shape):
+        seen.append((page_index, detected_shape))
+        return {"success": True}
+
+    def _old(page_index):
+        seen.append(page_index)
+        return {"success": True}
+
+    cap._invoke_legacy_preview(_new, 4, shape)
+    cap._invoke_legacy_preview(_old, 5, shape)
+
+    assert seen == [(4, shape), 5]
+
+
 @pytest.fixture(autouse=True)
 def _kho_phien_sach():
     reset_preview_session_store()

@@ -167,9 +167,10 @@ struct PreparedNfp {
 }
 
 #[derive(Debug)]
-struct NfpBuildTask {
+struct NfpBuildTask<'a> {
     key: NfpKey,
     canonical_obstacle: Vec<PointMm>,
+    moving: &'a [PointMm],
 }
 
 #[derive(Debug)]
@@ -318,18 +319,53 @@ impl NfpCache {
         tol: &Tolerance,
         should_stop: Option<&dyn Fn() -> bool>,
     ) -> Result<Option<Vec<RegionMm>>, NfpError> {
-        if obstacles.is_empty() {
+        self.grown_nfps_pairs_iter_with_clearance(
+            obstacles.iter().map(|&obstacle| (obstacle, moving)),
+            clearance,
+            tol,
+            should_stop,
+        )
+    }
+
+    /// PERF (audit 2026-10-01 §NEST-NATIVE-PERIODIC): gom toàn bộ cặp của motif,
+    /// kể cả các contour moving khác nhau, để các cold-miss được dùng chung grant.
+    /// Dùng cùng core với feasible_region nhằm giữ một hợp đồng budget/cancel/replay.
+    pub(crate) fn grown_nfps_pairs_batch_with_clearance(
+        &mut self,
+        pairs: &[(&[PointMm], &[PointMm])],
+        clearance: NfpClearance,
+        tol: &Tolerance,
+        should_stop: Option<&dyn Fn() -> bool>,
+    ) -> Result<Option<Vec<RegionMm>>, NfpError> {
+        self.grown_nfps_pairs_iter_with_clearance(
+            pairs.iter().copied(),
+            clearance,
+            tol,
+            should_stop,
+        )
+    }
+
+    fn grown_nfps_pairs_iter_with_clearance<'a, I>(
+        &mut self,
+        pairs: I,
+        clearance: NfpClearance,
+        tol: &Tolerance,
+        should_stop: Option<&dyn Fn() -> bool>,
+    ) -> Result<Option<Vec<RegionMm>>, NfpError>
+    where
+        I: ExactSizeIterator<Item = (&'a [PointMm], &'a [PointMm])> + Clone,
+    {
+        if pairs.len() == 0 {
             return Ok(Some(Vec::new()));
         }
 
         let mut cold_by_key: HashMap<NfpKey, usize> = HashMap::new();
-        let mut tasks: Vec<NfpBuildTask> = Vec::new();
-        let mut occurrences: Vec<BatchOccurrence> = Vec::with_capacity(obstacles.len());
-        for obstacle in obstacles {
+        let mut tasks: Vec<NfpBuildTask<'_>> = Vec::new();
+        let mut occurrences: Vec<BatchOccurrence> = Vec::with_capacity(pairs.len());
+        for (obstacle, moving) in pairs.clone() {
             let Some(prepared) = prepare_nfp(obstacle, moving, clearance) else {
-                return self.grown_nfps_sequential_with_clearance(
-                    obstacles,
-                    moving,
+                return self.grown_nfps_pairs_sequential_with_clearance(
+                    pairs,
                     clearance,
                     tol,
                     should_stop,
@@ -356,8 +392,35 @@ impl NfpCache {
                 tasks.push(NfpBuildTask {
                     key: prepared.key,
                     canonical_obstacle: prepared.canonical_obstacle,
+                    moving,
                 });
             }
+        }
+
+        if tasks.is_empty() {
+            // Motif kế tiếp thường đã có đủ NFP: replay ngay để không chuẩn hoá
+            // và cấp phát lại bốn cache key chỉ để đi qua fallback tuần tự.
+            let mut regions = Vec::with_capacity(occurrences.len());
+            for occurrence in occurrences {
+                if should_stop.is_some_and(|stop| stop()) {
+                    return Ok(None);
+                }
+                let BatchOccurrence::Cached {
+                    key,
+                    obstacle_anchor,
+                } = occurrence
+                else {
+                    unreachable!("batch không có cold task chỉ chứa cache hit");
+                };
+                let canonical = self
+                    .entries
+                    .get(&key)
+                    .expect("cache hit đã kiểm trong batch");
+                regions.push(translate_region(canonical, obstacle_anchor));
+                self.hits = self.hits.saturating_add(1);
+                self.record(NfpTelemetryMetric::CacheHit);
+            }
+            return Ok(Some(regions));
         }
 
         let worker_count = self.worker_grant.min(tasks.len());
@@ -373,9 +436,8 @@ impl NfpCache {
             || !batch_fits_entries
             || minimum_batch_bytes > remaining_bytes
         {
-            return self.grown_nfps_sequential_with_clearance(
-                obstacles,
-                moving,
+            return self.grown_nfps_pairs_sequential_with_clearance(
+                pairs,
                 clearance,
                 tol,
                 should_stop,
@@ -404,7 +466,7 @@ impl NfpCache {
                 return Ok(None);
             }
             peak_workers = peak_workers.max(wave.len());
-            let wave_attempts = build_parallel(wave, moving, clearance, *tol);
+            let wave_attempts = build_parallel(wave, clearance, *tol);
             staging_estimated_bytes = wave.iter().zip(&wave_attempts).fold(
                 staging_estimated_bytes,
                 |total, (task, attempt)| {
@@ -424,9 +486,8 @@ impl NfpCache {
                     wall_time_us: elapsed_us(batch_started),
                 });
                 drop(attempts);
-                return self.grown_nfps_sequential_with_clearance(
-                    obstacles,
-                    moving,
+                return self.grown_nfps_pairs_sequential_with_clearance(
+                    pairs,
                     clearance,
                     tol,
                     should_stop,
@@ -530,16 +591,18 @@ impl NfpCache {
         compute_canonical(obstacle, moving, clearance, tol)
     }
 
-    fn grown_nfps_sequential_with_clearance(
+    fn grown_nfps_pairs_sequential_with_clearance<'a, I>(
         &mut self,
-        obstacles: &[&[PointMm]],
-        moving: &[PointMm],
+        pairs: I,
         clearance: NfpClearance,
         tol: &Tolerance,
         should_stop: Option<&dyn Fn() -> bool>,
-    ) -> Result<Option<Vec<RegionMm>>, NfpError> {
-        let mut regions = Vec::with_capacity(obstacles.len());
-        for obstacle in obstacles {
+    ) -> Result<Option<Vec<RegionMm>>, NfpError>
+    where
+        I: ExactSizeIterator<Item = (&'a [PointMm], &'a [PointMm])>,
+    {
+        let mut regions = Vec::with_capacity(pairs.len());
+        for (obstacle, moving) in pairs {
             if should_stop.is_some_and(|stop| stop()) {
                 return Ok(None);
             }
@@ -594,8 +657,7 @@ fn prepare_nfp(
 }
 
 fn build_parallel(
-    tasks: &[NfpBuildTask],
-    moving: &[PointMm],
+    tasks: &[NfpBuildTask<'_>],
     clearance: NfpClearance,
     tol: Tolerance,
 ) -> Vec<NfpBuildAttempt> {
@@ -605,7 +667,8 @@ fn build_parallel(
             let sender = sender.clone();
             scope.spawn(move || {
                 let started = Instant::now();
-                let result = compute_canonical(&task.canonical_obstacle, moving, clearance, &tol);
+                let result =
+                    compute_canonical(&task.canonical_obstacle, task.moving, clearance, &tol);
                 let attempt = NfpBuildAttempt {
                     result,
                     elapsed_us: elapsed_us(started),
@@ -695,6 +758,7 @@ pub(crate) fn parallel_budget_probe(
         ordered.push(NfpBuildTask {
             key: prepared.key,
             canonical_obstacle: prepared.canonical_obstacle,
+            moving,
         });
     }
     let preflight_key_bytes = ordered.iter().fold(0_u64, |total, task| {
@@ -717,3 +781,7 @@ impl NfpError {
         NfpError::Kernel(error)
     }
 }
+
+#[cfg(test)]
+#[path = "nfp_cache_pair_tests.rs"]
+mod pair_tests;

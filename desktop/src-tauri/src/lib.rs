@@ -577,7 +577,7 @@ const NUITKA_ONEFILE_STATE_ENV_KEYS: [&str; 5] = [
 // trình cha. Sidecar release được dựng bằng `env_clear()` rồi chỉ nhận giá trị
 // an toàn do host đặt tường minh bên dưới; không truyền nguyên các override này.
 #[cfg(any(test, all(not(debug_assertions), target_os = "windows")))]
-const SIDECAR_SECURITY_ENV_KEYS: [&str; 21] = [
+const SIDECAR_SECURITY_ENV_KEYS: [&str; 22] = [
     "DEV_MODE",
     "PRYNX_CLK_KEY_FILE",
     "PRYNX_CLOCK_GUARD_FILE",
@@ -601,6 +601,9 @@ const SIDECAR_SECURITY_ENV_KEYS: [&str; 21] = [
     "PRYNX_EDIT_BUG_LOG_PATH",
     "PRYNX_EDIT_TEXT_MOVE_LOG",
     "PRYNX_EDIT_TEXT_MOVE_LOG_PATH",
+    // BUILD (fix 2026-10-01 §NEST-RELEASE): cờ rollout được nung vào host,
+    // không nhận giá trị tùy ý từ môi trường của máy khách.
+    "PRYNX_TRUE_SHAPE_NESTING_ENABLED",
     "STICKER_DEBUG",
 ];
 
@@ -626,6 +629,14 @@ where
 #[cfg(all(not(debug_assertions), target_os = "windows"))]
 fn filtered_sidecar_environment() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
     filter_sidecar_environment(std::env::vars_os())
+}
+
+#[cfg(all(not(debug_assertions), target_os = "windows"))]
+fn sidecar_true_shape_nesting_enabled() -> &'static str {
+    // BUILD (fix 2026-10-01 §NEST-RELEASE): option_env! lấy đúng giá trị
+    // build_production.ps1 đã kiểm tra trước khi bundle. Không có giá trị thì
+    // fail-closed về false, tránh dùng nesting khác với frontend.
+    option_env!("PRYNX_TRUE_SHAPE_NESTING_ENABLED").unwrap_or("false")
 }
 
 #[cfg(any(test, all(not(debug_assertions), target_os = "windows")))]
@@ -971,6 +982,10 @@ fn spawn_sidecar_process<R: tauri::Runtime>(
             (
                 "PRYNX_LOGO_REBUILD_ENABLED",
                 option_env!("PRYNX_LOGO_REBUILD_ENABLED").unwrap_or("false"),
+            ),
+            (
+                "PRYNX_TRUE_SHAPE_NESTING_ENABLED",
+                sidecar_true_shape_nesting_enabled(),
             ),
             ("PRYNX_MAX_TOKEN_LIFETIME_SECONDS", "691200"),
         ])
@@ -1604,6 +1619,10 @@ mod sidecar_startup_tests {
             (
                 OsString::from("PRYNX_ENFORCE_CLOCK_ANCHOR"),
                 OsString::from("0"),
+            ),
+            (
+                OsString::from("prynx_true_shape_nesting_enabled"),
+                OsString::from("true"),
             ),
             (
                 OsString::from("PRYNX_LICENSE_PUBLIC_KEY"),
@@ -8953,6 +8972,10 @@ pub fn run() {
                             (
                                 "PRYNX_LOGO_REBUILD_ENABLED",
                                 option_env!("PRYNX_LOGO_REBUILD_ENABLED").unwrap_or("false"),
+                            ),
+                            (
+                                "PRYNX_TRUE_SHAPE_NESTING_ENABLED",
+                                sidecar_true_shape_nesting_enabled(),
                             ),
                             // Cận chống-lùi-giờ PHẢI ≥ TTL token edge function cấp.
                             // Set qua env để override default compiled cũ mà KHÔNG cần recompile Nuitka.
