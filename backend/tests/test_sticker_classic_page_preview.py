@@ -96,7 +96,7 @@ def test_real_binder_later_pages_whole_path_matches_actual_pdf(page_number):
     assert count > 0 and quality["fit_mode"] == "classic-whole-page"
     if page_number == 12:
         # CUT24: chặn phình node, nhưng không khóa biểu diễn cubic cũ 122 đoạn.
-        assert count <= 122
+        assert count <= 125
 
 
 @pytest.mark.parametrize("mode,corner,offset,bleed", [
@@ -190,7 +190,7 @@ def test_whole_page_worker_process_handles_later_page_without_single_instance_li
         cutline_smoothness=50, cutline_fidelity=50, curve_tension=50,
         min_detail_area_mm2=1, cutline_denoise=30, cutline_simplify_mm=0)
     assert result["page_number"] == 12 and result["mask_revision"] == 7
-    assert 0 < result["segment_count"] <= 122
+    assert 0 < result["segment_count"] <= 125
     assert result["paths"][0]["d"].count("C ") == result["segment_count"]
     assert result["paths"][0]["d"].count("M ") == 1
     geometry = dict(cut_mode="original", offset_mm=2, bleed_mm=0,

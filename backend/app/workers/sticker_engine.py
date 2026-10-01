@@ -11537,7 +11537,7 @@ class StickerEngine:
                             cut_poly = dieline_poly
                         elif (
                             alpha_source_contour
-                            or raster_alpha_boundary
+                            or (raster_alpha_boundary and shape_mode == "contour")
                             or approved_contour_page
                         ) and preserve_contour:
                             # QUALITY (audit 2026-08-04 §ALPHA.1–2): ưu tiên fit
