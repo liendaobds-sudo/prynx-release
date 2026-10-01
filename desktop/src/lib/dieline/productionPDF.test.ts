@@ -6,6 +6,7 @@ import { DEFAULT_NESTING_CONFIG, NestingResult } from './nestingTypes';
 
 import { runDielineEngine } from './engine';
 import { splitTrayDieline } from './trayParts';
+import { splitRigidMagneticDieline } from './RigidMagneticBox';
 import { withBleedPaths } from './bleedContours';
 import { PDFDocument } from 'pdf-lib';
 
@@ -100,6 +101,47 @@ describe('tray/sleeve production PDF', () => {
             );
             await writeFile(`${directory}/tray-${mode}.pdf`, Buffer.from(await blob.arrayBuffer()));
         }
+    });
+
+    it('writes rigid magnetic tray and wrap as two material parts', async () => {
+        const config = {
+            ...structuredClone(DEFAULT_NESTING_CONFIG),
+            sheet: { width: 1000, height: 700 },
+            sleeveSheet: { width: 1000, height: 700 },
+            margin: { top: 10, right: 10, bottom: 10, left: 10 },
+            trayNestingMode: 'combined' as const,
+        };
+        const response = runDielineEngine({
+            params: {
+                ...DEFAULT_PARAMS,
+                boxType: 'rigid_magnetic',
+                L: 220,
+                W: 160,
+                D: 60,
+                T: 2,
+                rigidLip: 2,
+                rigidFlapH: 35,
+                rigidTurnIn: 15,
+                rigidMagnetD: 10,
+                rigidMagnetOffset: 12,
+            },
+            nestingConfig: config,
+        });
+        const blob = await buildProductionTrayNestingPdf(
+            response.dieline,
+            response.nestingResult!,
+            response.sleeveNestingResult!,
+            config,
+        );
+        const pdf = await PDFDocument.load(await blob.arrayBuffer());
+        expect(pdf.getPageCount()).toBe(1);
+
+        const parts = splitRigidMagneticDieline(response.dieline)!;
+        const expectedBleedCommands = parts.sleeve.allPaths.filter(path => path.tag === 'BLEED').length
+            * response.sleeveNestingResult!.positions.length;
+        const text = await blob.text();
+        expect(expectedBleedCommands).toBeGreaterThan(0);
+        expect((text.match(/\/CSBleed CS/g) || []).length).toBe(expectedBleedCommands);
     });
 
 });

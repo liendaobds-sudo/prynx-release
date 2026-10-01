@@ -16,6 +16,7 @@ import { useWorkspaceStore } from '@/stores/useWorkspaceStore';
 import { tagArtifactLeaseToken } from '@/lib/artifactLease';
 import { useTranslation } from 'react-i18next';
 import { tv } from '@/i18n';
+import VdpProofPreview from './VdpProofPreview';
 
 // ─── CMYK ↔ Hex Conversion Helpers ──────────────────────
 function hexToCmyk(hex: string): { c: number; m: number; y: number; k: number } {
@@ -164,6 +165,22 @@ type DataMergeChange = Partial<DataMergeField>;
 
 function errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Lấy record xem trước theo chỉ số 1-based mà không lặp lại dòng cuối mẫu.
+ * Excel/Google Sheets chỉ trả một mẫu tối đa 20 dòng; các record còn lại phải
+ * hiện trạng thái chưa có mẫu để tránh người dùng tưởng đang xem đúng dữ liệu.
+ */
+export function getPreviewRecordForIndex(
+    previewRows: Record<string, string>[],
+    previewTotal: number,
+    requestedIndex: number,
+): { index: number; record: Record<string, string> | null } {
+    const total = Math.max(0, Number.isFinite(previewTotal) ? Math.floor(previewTotal) : 0);
+    if (total === 0) return { index: 1, record: null };
+    const index = Math.max(1, Math.min(total, Math.floor(Number(requestedIndex) || 1)));
+    return { index, record: index <= previewRows.length ? (previewRows[index - 1] ?? null) : null };
 }
 
 /**
@@ -551,6 +568,7 @@ export default function DataMergeTool({
         : undefined;
     const [csvData, setCsvData] = useState<Record<string, string>[]>([]);
     const [csvHeaders, setCsvHeaders] = useState<string[]>([]);
+    const [csvHasHeader, setCsvHasHeader] = useState(true);
     const [dataMode, setDataMode] = useState<'csv' | 'manual' | 'xlsx' | 'gsheet'>('csv');
     const [manualText, setManualText] = useState('');
     const [manualColName, setManualColName] = useState('Noidung');
@@ -562,6 +580,20 @@ export default function DataMergeTool({
     const selectionFileId = useWorkspaceStore((s) => s.selectionFileId);
     const vdpLivePreview = useWorkspaceStore((s) => s.vdpLivePreview);
     const setVdpLivePreview = useWorkspaceStore((s) => s.setVdpLivePreview);
+    // UIUX (audit 2026-10-01 §VDP): phản hồi của PDF/tab cũ không được thêm
+    // trường hoặc thay phôi hiện tại, kể cả khi quay lại đúng file trước đó.
+    const documentOwner = React.useMemo(() => ({}), [pdfFile, selectionFileId, tabId, isActive]);
+    const documentOwnerRef = useRef(documentOwner);
+    documentOwnerRef.current = documentOwner;
+    const mountedRef = useRef(true);
+    const tagRequestRef = useRef(0);
+    useEffect(() => {
+        mountedRef.current = true;
+        return () => { mountedRef.current = false; };
+    }, []);
+    useEffect(() => {
+        setIsScanningTags(false);
+    }, [documentOwner]);
     const [showMainHelp, setShowMainHelp] = useState(false);
     const [helpTab, setHelpTab] = useState<'workflow' | 'hotkeys' | 'fields_syntax'>('workflow');
     const [helpModalOffset, setHelpModalOffset] = useState({ x: 0, y: 0 });
@@ -627,6 +659,10 @@ export default function DataMergeTool({
     }, [showMainHelp, isActive]);
 
     const handleAutoDetectTags = async () => {
+        if (!isActive) return;
+        const owner = documentOwnerRef.current;
+        const requestId = ++tagRequestRef.current;
+        const isCurrent = () => mountedRef.current && owner === documentOwnerRef.current && requestId === tagRequestRef.current;
         const fid = selectionFileId || (pdfFile as any)?.path;
         if (!fid) {
             toast.error(t('Chưa có file PDF mẫu để quét thẻ.'));
@@ -635,6 +671,7 @@ export default function DataMergeTool({
         try {
             setIsScanningTags(true);
             const res = await autoDetectVdpTags(fid, 0, true);
+            if (!isCurrent()) return;
             if (!res.detected_count || res.detected_count === 0) {
                 toast.info(t('Không tìm thấy thẻ dạng {{...}} hoặc [[...]] trên trang 1.'));
                 return;
@@ -650,14 +687,16 @@ export default function DataMergeTool({
                         sourceFid: fid,
                         workingFid: res.working_fid,
                         workingPdfUrl: res.working_pdf_url,
-                        workingPdfPath: res.working_pdf_path
+                        workingPdfPath: res.working_pdf_path,
+                        artifact_lease: res.artifact_lease,
                     }
                 }));
             }
         } catch (err: any) {
+            if (!isCurrent()) return;
             toast.error(err.message || 'Lỗi khi quét thẻ tự động');
         } finally {
-            setIsScanningTags(false);
+            if (isCurrent()) setIsScanningTags(false);
         }
     };
 
@@ -688,6 +727,7 @@ export default function DataMergeTool({
     const [sourceRecordCount, setSourceRecordCount] = useState<number | null>(null);
     const [sourceError, setSourceError] = useState<string>('');     // thông báo lỗi tiếng Việt
     const [sourceLoading, setSourceLoading] = useState(false);
+    const sourceRequestRef = useRef(0);
     const [xlsxFile, setXlsxFile] = useState<File | null>(null);    // file .xlsx đang chọn
     const [sheetList, setSheetList] = useState<string[]>([]);       // danh sách sheet của file
     const [selectedSheet, setSelectedSheet] = useState<string>(''); // sheet đang đọc
@@ -695,12 +735,36 @@ export default function DataMergeTool({
 
     // ── Chỉ số record đang xem realtime trên View chính ──
     const [previewIndex, setPreviewIndex] = useState(1);            // chỉ số yêu cầu (1-based)
+    const [selectedPreview, setSelectedPreview] = useState<{
+        sourceRevision: number;
+        index: number;
+        record: Record<string, string> | null;
+    } | null>(null);
 
     // ── Gating validate + xuất báo cáo lỗi (task 14.4, Req 4.7/4.8/5.8/5.9/5.10) ──
     const [validateGating, setValidateGating] = useState<VdpGating | null>(null); // null = chưa kiểm tra
     const [validateIssues, setValidateIssues] = useState<VdpIssue[]>([]);
     const [validating, setValidating] = useState(false);
     const [reportLoading, setReportLoading] = useState(false);
+
+    // Kết quả validate chỉ hợp lệ với đúng nguồn + cấu hình đã gửi lên backend.
+    // Khi bất kỳ đầu vào nào đổi, xoá gating cũ để nút Sinh lô không dùng lại
+    // kết quả của nguồn hoặc bộ field trước đó.
+    const validationInputs = React.useMemo(() => ({}), [
+        dataMode, csvHasHeader, csvData, csvHeaders, sourceRecordCount,
+        xlsxFile, selectedSheet, gsheetUrl, vdpFields, documentOwner,
+    ]);
+    const validationInputsRef = useRef(validationInputs);
+    const validationRequestRef = useRef(0);
+    validationInputsRef.current = validationInputs;
+    useEffect(() => {
+        validationRequestRef.current += 1;
+        setValidateGating(null);
+        setValidateIssues(prev => prev.length === 0 ? prev : []);
+        setValidating(false);
+    }, [validationInputs]);
+
+    useEffect(() => () => { sourceRequestRef.current += 1; }, []);
 
     // Hủy polling VDP khi component unmount để không poll vô hạn nền (#13).
     const pollAbortRef = useRef<AbortController | null>(null);
@@ -757,19 +821,27 @@ export default function DataMergeTool({
     };
 
     const loadCsvIntoState = (file: File, hasHeader: boolean) => {
+        const requestId = ++sourceRequestRef.current;
+        clearSourceState();
         setStatusMessage(t('preprocess.dataMerge:dang_doc_file_csv'));
         parseCsv(file, hasHeader).then(({ headers, data, duplicated }) => {
+            if (requestId !== sourceRequestRef.current) return;
             if (data.length > 0) {
                 warnMissingMappedColumns(headers); // UIUX (audit 2026-07-27 §D-04)
                 setCsvHeaders(headers);
                 setCsvData(data);
+                setSourceRecordCount(null);
                 if (duplicated.length > 0) setStatusMessage(t('preprocess.dataMerge:da_tai_n_dong_cot_trung_ten', { n: data.length, cols: duplicated.join(', ') }));
                 else setStatusMessage(t('preprocess.dataMerge:da_tai_n_dong_du_lieu', { n: data.length }));
             } else {
-                setCsvHeaders([]); setCsvData([]);
+                setCsvHeaders([]); setCsvData([]); setSourceRecordCount(null);
                 setStatusMessage(t('preprocess.dataMerge:file_csv_rong_hoac_loi_dinh_dang'));
             }
-        }).catch((err) => { console.error("CSV Parse Error:", err); setStatusMessage(t('preprocess.dataMerge:loi_doc_file_csv')); });
+        }).catch((err) => {
+            if (requestId !== sourceRequestRef.current) return;
+            console.error("CSV Parse Error:", err);
+            setStatusMessage(t('preprocess.dataMerge:loi_doc_file_csv'));
+        });
     };
 
     const handleCsvFiles = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -808,22 +880,28 @@ export default function DataMergeTool({
         setCsvHeaders([]);
         setCsvData([]);
         setSourceRecordCount(null);
+        setPreviewIndex(1);
+        setSelectedPreview(null);
     };
 
     // Đọc dữ liệu một sheet của file .xlsx hiện chọn qua /vdp/datasource.
-    const loadXlsxSheet = async (file: File, sheet: string) => {
+    const loadXlsxSheet = async (file: File, sheet: string, hasHeader = csvHasHeader) => {
+        const requestId = ++sourceRequestRef.current;
+        clearSourceState();
         setSourceLoading(true);
         setSourceError('');
         setStatusMessage(t('preprocess.dataMerge:dang_doc_sheet_x', { x: sheet }));
         try {
-            const result = await readVdpDatasource({ kind: 'xlsx', file, sheet, hasHeader: csvHasHeader });
+            const result = await readVdpDatasource({ kind: 'xlsx', file, sheet, hasHeader });
+            if (requestId !== sourceRequestRef.current) return;
             applySourceResult(result, `Excel · ${sheet}`);
         } catch (err: unknown) {
+            if (requestId !== sourceRequestRef.current) return;
             clearSourceState();
             setSourceError(errorMessage(err) || t('preprocess.dataMerge:khong_doc_duoc_file_excel'));
             setStatusMessage(t('preprocess.dataMerge:loi_doc_file_excel'));
         } finally {
-            setSourceLoading(false);
+            if (requestId === sourceRequestRef.current) setSourceLoading(false);
         }
     };
 
@@ -832,6 +910,7 @@ export default function DataMergeTool({
         const file = Array.from(e.target.files || []).find(f => /\.xlsx$/i.test(f.name)) || null;
         e.currentTarget.value = '';
         if (!file) return;
+        const requestId = ++sourceRequestRef.current;
         setXlsxFile(file);
         setSheetList([]);
         setSelectedSheet('');
@@ -841,6 +920,7 @@ export default function DataMergeTool({
         setStatusMessage(t('preprocess.dataMerge:dang_doc_danh_sach_sheet'));
         try {
             const sheets = await listVdpSheets(file);
+            if (requestId !== sourceRequestRef.current) return;
             setSheetList(sheets);
             const first = sheets[0] || '';
             setSelectedSheet(first);
@@ -852,6 +932,7 @@ export default function DataMergeTool({
                 setStatusMessage(t('preprocess.dataMerge:file_excel_rong'));
             }
         } catch (err: unknown) {
+            if (requestId !== sourceRequestRef.current) return;
             setSourceLoading(false);
             setXlsxFile(null);
             setSourceError(errorMessage(err) || t('preprocess.dataMerge:khong_doc_duoc_file_excel'));
@@ -866,30 +947,36 @@ export default function DataMergeTool({
     };
 
     // Nạp dữ liệu từ link Google Sheets công khai qua /vdp/datasource.
-    const loadGsheet = async () => {
+    const loadGsheet = async (hasHeader = csvHasHeader) => {
         const url = gsheetUrl.trim();
         if (!url) { setSourceError(t('preprocess.dataMerge:hay_dan_link_google_sheets')); return; }
+        const requestId = ++sourceRequestRef.current;
+        clearSourceState();
         setSourceLoading(true);
         setSourceError('');
         setStatusMessage(t('preprocess.dataMerge:dang_lay_du_lieu_google_sheets'));
         try {
-            const result = await readVdpDatasource({ kind: 'gsheet', url, hasHeader: csvHasHeader });
+            const result = await readVdpDatasource({ kind: 'gsheet', url, hasHeader });
+            if (requestId !== sourceRequestRef.current) return;
             applySourceResult(result, 'Google Sheets');
         } catch (err: unknown) {
+            if (requestId !== sourceRequestRef.current) return;
             clearSourceState();
             setSourceError(errorMessage(err) || t('preprocess.dataMerge:khong_lay_duoc_du_lieu_google_sheets'));
             setStatusMessage(t('preprocess.dataMerge:loi_lay_du_lieu_google_sheets'));
         } finally {
-            setSourceLoading(false);
+            if (requestId === sourceRequestRef.current) setSourceLoading(false);
         }
     };
 
     // Nhập tay: mỗi DÒNG = 1 bản ghi, gộp dưới một cột (mặc định "Noidung").
     // 1 dòng → 1 trang; nhiều dòng → nhiều trang. Field nào muốn dùng thì map vào cột này.
     const applyManualData = (text: string, colRaw: string) => {
+        sourceRequestRef.current += 1;
         const col = ((colRaw || '').trim()) || 'Noidung';
         const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
         setBatchFiles([]); // chế độ nhập tay không dùng chạy hàng loạt
+        setSourceRecordCount(null);
         if (lines.length === 0) {
             setCsvHeaders([]); setCsvData([]);
             setStatusMessage(t('preprocess.dataMerge:nhap_tay_chua_co_noi_dung_moi_dong_1'));
@@ -898,6 +985,39 @@ export default function DataMergeTool({
         setCsvHeaders([col]);
         setCsvData(lines.map(l => ({ [col]: l })));
         setStatusMessage(t('preprocess.dataMerge:nhap_tay_x_ban_ghi_cot_y', { x: lines.length, y: col }));
+    };
+
+    /**
+     * Đổi loại nguồn phải bắt đầu từ trạng thái rỗng. Giữ lại csvData hoặc
+     * URL/sheet cũ làm cho preview và validate trỏ nhầm nguồn sau khi đổi tab.
+     */
+    const handleDataModeChange = (nextMode: 'csv' | 'manual' | 'xlsx' | 'gsheet') => {
+        if (dataMode === nextMode) return;
+        sourceRequestRef.current += 1;
+        setDataMode(nextMode);
+        setCsvHeaders([]);
+        setCsvData([]);
+        setSourceRecordCount(null);
+        setSourceError('');
+        setSourceLoading(false);
+        setStatusMessage('');
+        setXlsxFile(null);
+        setSheetList([]);
+        setSelectedSheet('');
+        setGsheetUrl('');
+        setBatchFiles([]);
+        lastCsvFileRef.current = null;
+        setPreviewIndex(1);
+        setVdpLivePreview(prev => ({
+            ...prev,
+            recordIndex: 1,
+            totalRecords: 0,
+            currentRecord: null,
+            sourceTitle: undefined,
+        }));
+        if (nextMode === 'manual') {
+            applyManualData(manualText, manualColName);
+        }
     };
 
     const updateSelectedField = (changes: DataMergeChange) => {
@@ -1001,7 +1121,6 @@ export default function DataMergeTool({
         window.addEventListener('keydown', onKey);
         return () => window.removeEventListener('keydown', onKey);
     }, [showQuickHelp, isActive]);
-    const [csvHasHeader, setCsvHasHeader] = useState(true);
     const lastCsvFileRef = useRef<File | null>(null);
     const [batchFiles, setBatchFiles] = useState<File[]>([]);
     const [showBatchInfo, setShowBatchInfo] = useState(false);
@@ -1216,17 +1335,46 @@ export default function DataMergeTool({
         ? (sourceRecordCount ?? csvData.length)
         : csvData.length;
 
+    // UIUX (audit 2026-10-01 §VDP.04): đọc riêng record nằm ngoài mẫu 20 dòng.
+    // Response cũ không được áp nếu user đã đổi nguồn hoặc chuyển record khác.
+    useEffect(() => {
+        const { index } = getPreviewRecordForIndex(csvData, previewTotal, previewIndex);
+        if (index <= csvData.length || previewTotal <= 0 || (dataMode !== 'xlsx' && dataMode !== 'gsheet')) return;
+        if ((dataMode === 'xlsx' && !xlsxFile) || (dataMode === 'gsheet' && !gsheetUrl.trim())) return;
+        const sourceRevision = sourceRequestRef.current;
+        const controller = new AbortController();
+        setSelectedPreview(null);
+        void readVdpDatasource({
+            kind: dataMode,
+            ...(dataMode === 'xlsx' ? { file: xlsxFile!, sheet: selectedSheet } : { url: gsheetUrl.trim() }),
+            hasHeader: csvHasHeader,
+            recordIndex: index,
+            signal: controller.signal,
+        }).then(result => {
+            if (controller.signal.aborted || sourceRevision !== sourceRequestRef.current) return;
+            setSelectedPreview({ sourceRevision, index, record: result.preview_rows[0] ?? null });
+        }).catch(error => {
+            if (controller.signal.aborted || sourceRevision !== sourceRequestRef.current) return;
+            setSourceError(errorMessage(error) || t('preprocess.dataMerge:khong_doc_duoc_ban_ghi_xem_truoc', 'Không đọc được bản ghi xem trước.'));
+        });
+        return () => controller.abort();
+    }, [csvData, previewTotal, previewIndex, dataMode, xlsxFile, selectedSheet, gsheetUrl, csvHasHeader, t]);
+
     // Đồng bộ dữ liệu record hiện tại và tổng số record lên workspace store để LivePageFrame render realtime
     useEffect(() => {
-        if (!csvData || csvData.length === 0) {
+        if (previewTotal <= 0) {
             setVdpLivePreview(prev => {
                 if (prev.totalRecords === 0 && prev.currentRecord === null) return prev;
                 return { ...prev, totalRecords: 0, currentRecord: null };
             });
             return;
         }
-        const safeIdx = Math.max(1, Math.min(csvData.length, previewIndex));
-        const curRow = csvData[safeIdx - 1] || null;
+        const { index: safeIdx, record: sampledRow } = getPreviewRecordForIndex(csvData, previewTotal, previewIndex);
+        const curRow = sampledRow ?? (
+            selectedPreview?.sourceRevision === sourceRequestRef.current && selectedPreview.index === safeIdx
+                ? selectedPreview.record
+                : null
+        );
         let title = 'Bảng dữ liệu';
         if (dataMode === 'xlsx' && xlsxFile) title = `Excel: ${xlsxFile.name}`;
         else if (dataMode === 'csv' && lastCsvFileRef.current) title = `CSV: ${lastCsvFileRef.current.name}`;
@@ -1234,24 +1382,29 @@ export default function DataMergeTool({
 
         setVdpLivePreview({
             recordIndex: safeIdx,
-            totalRecords: previewTotal > 0 ? previewTotal : csvData.length,
+            totalRecords: previewTotal,
             currentRecord: curRow,
             sourceTitle: title,
         });
-    }, [csvData, previewIndex, previewTotal, dataMode, xlsxFile, setVdpLivePreview]);
+    }, [csvData, previewIndex, previewTotal, dataMode, xlsxFile, selectedPreview, setVdpLivePreview]);
 
     // Lắng nghe sự kiện đổi record từ view chính (LivePageFrame) để đồng bộ ngược về sidebar
     useEffect(() => {
         const handleIndexChange = (e: Event) => {
-            const ce = e as CustomEvent<{ index: number }>;
-            const idx = ce.detail?.index;
+            if (!isActive) return;
+            const ce = e as CustomEvent<{ index: number; tabId?: string | null }>;
+            const detail = ce.detail;
+            // Global event luôn phải có chủ sở hữu rõ ràng; tab nền hoặc caller
+            // legacy không truyền tabId không được tự ý đổi preview của tab này.
+            if (!tabId || detail?.tabId !== tabId) return;
+            const idx = detail?.index;
             if (typeof idx === 'number' && idx >= 1 && idx !== previewIndex) {
                 setPreviewIndex(idx);
             }
         };
         window.addEventListener('vdp-preview-index-change', handleIndexChange);
         return () => window.removeEventListener('vdp-preview-index-change', handleIndexChange);
-    }, [previewIndex]);
+    }, [isActive, tabId, previewIndex]);
 
     // ─── Gating validate + xuất báo cáo lỗi (task 14.4) ─────────────────────
     // Dựng tham số nguồn dữ liệu cho validate/error-report giống runPreview:
@@ -1297,7 +1450,9 @@ export default function DataMergeTool({
 
     // Chạy validate qua backend, cập nhật gating + issues vào state. Trả kết quả
     // gating để caller (handleGenerate / nút kiểm tra) quyết định hành vi.
-    const runValidate = async (): Promise<{ gating: VdpGating; issues: VdpIssue[] } | null> => {
+    const runValidate = async (requestId: number): Promise<{ gating: VdpGating; issues: VdpIssue[] } | null> => {
+        const inputSnapshot = validationInputsRef.current;
+        const isCurrent = () => mountedRef.current && inputSnapshot === validationInputsRef.current && requestId === validationRequestRef.current;
         const src = buildSourceParams();
         const params: Parameters<typeof validateVdp>[0] = {
             fields: vdpFields,
@@ -1307,19 +1462,27 @@ export default function DataMergeTool({
         // sheet đi kèm xlsx (buildSourceParams giữ kind/file; bổ sung sheet ở đây).
         if (src.kind === 'xlsx' && selectedSheet) params.sheet = selectedSheet;
 
-        const result = await validateVdp(params);
-        setValidateGating(result.gating);
-        setValidateIssues(result.issues);
-        return result;
+        try {
+            const result = await validateVdp(params);
+            if (!isCurrent()) return null;
+            setValidateGating(result.gating);
+            setValidateIssues(result.issues);
+            return result;
+        } catch (error) {
+            if (!isCurrent()) return null;
+            throw error;
+        }
     };
 
     // Nút "Kiểm tra (validate)" thủ công — hiển thị gating + danh sách issue.
     const handleManualValidate = async () => {
+        const inputSnapshot = validationInputsRef.current;
+        const requestId = ++validationRequestRef.current;
         if (vdpFields.length === 0) { setStatusMessage(t('preprocess.dataMerge:chua_co_truong_du_lieu_vdp_field_nao')); return; }
         setValidating(true);
         setStatusMessage(t('preprocess.dataMerge:dang_kiem_tra_du_lieu'));
         try {
-            const result = await runValidate();
+            const result = await runValidate(requestId);
             if (!result) return;
             const errCount = result.issues.filter(i => i.severity === 'error').length;
             const warnCount = result.issues.filter(i => i.severity === 'warning').length;
@@ -1329,17 +1492,19 @@ export default function DataMergeTool({
         } catch (err: unknown) {
             setStatusMessage(t('preprocess.dataMerge:loi_kiem_tra_du_lieu_x', { x: errorMessage(err) }));
         } finally {
-            setValidating(false);
+            if (mountedRef.current && inputSnapshot === validationInputsRef.current && requestId === validationRequestRef.current) setValidating(false);
         }
     };
 
     // Gating trước khi sinh lô: chặn nếu có lỗi (Req 5.8), hỏi xác nhận nếu chỉ
     // cảnh báo (Req 5.9), cho chạy nếu sạch (Req 5.10). Trả true nếu được tiếp tục.
     const runPreGenerateValidation = async (): Promise<boolean> => {
+        const inputSnapshot = validationInputsRef.current;
+        const requestId = ++validationRequestRef.current;
         setValidating(true);
         setStatusMessage(t('preprocess.dataMerge:dang_kiem_tra_du_lieu_truoc_khi_sinh_lo'));
         try {
-            const result = await runValidate();
+            const result = await runValidate(requestId);
             if (!result) return false;
             const errCount = result.issues.filter(i => i.severity === 'error').length;
             const warnCount = result.issues.filter(i => i.severity === 'warning').length;
@@ -1358,6 +1523,7 @@ export default function DataMergeTool({
                     cancelText: t('preprocess.dataMerge:xem_lai', 'Xem lại'),
                     danger: true,
                 });
+                if (!mountedRef.current || inputSnapshot !== validationInputsRef.current || requestId !== validationRequestRef.current) return false;
                 if (!ok) {
                     setStatusMessage(t('preprocess.dataMerge:da_huy_sinh_lo_do_con_canh_bao_chua_xu'));
                     return false;
@@ -1369,7 +1535,7 @@ export default function DataMergeTool({
             setStatusMessage(t('preprocess.dataMerge:loi_kiem_tra_du_lieu_x', { x: errorMessage(err) }));
             return false;
         } finally {
-            setValidating(false);
+            if (mountedRef.current && inputSnapshot === validationInputsRef.current && requestId === validationRequestRef.current) setValidating(false);
         }
     };
 
@@ -1398,6 +1564,7 @@ export default function DataMergeTool({
     };
 
     const handleGenerate = async () => {
+        const inputSnapshot = validationInputsRef.current;
         if (vdpFields.length === 0) {
             setStatusMessage(t('preprocess.dataMerge:chua_co_truong_du_lieu_vdp_field_nao'));
             return;
@@ -1414,7 +1581,7 @@ export default function DataMergeTool({
         // Gating validate TRƯỚC khi sinh lô (Req 5.8/5.9/5.10): chặn nếu có lỗi,
         // hỏi xác nhận nếu chỉ có cảnh báo, cho chạy nếu sạch.
         const allowed = await runPreGenerateValidation();
-        if (!allowed) return;
+        if (!allowed || !mountedRef.current || inputSnapshot !== validationInputsRef.current) return;
 
         setIsGenerating(true);
         try {
@@ -1425,6 +1592,7 @@ export default function DataMergeTool({
             // Nguồn xlsx/gsheet: csvData chỉ là 20 dòng PREVIEW. Đọc lại TOÀN BỘ
             // record ở backend trước khi sinh lô, tránh xuất thiếu dữ liệu âm thầm.
             const fullData = await resolveFullSourceData();
+            if (!mountedRef.current || inputSnapshot !== validationInputsRef.current) return;
             const transportFile = dataMode === 'csv' ? (lastCsvFileRef.current ?? undefined) : undefined;
             const jobId = await startVdpJobBackend(templateFile, vdpFields, fullData, 'vdp.datamerge', transportFile, csvHasHeader);
             activeVdpJobRef.current = jobId;
@@ -1808,19 +1976,19 @@ export default function DataMergeTool({
             <VdpSection step="1" title={t('preprocess.dataMerge:du_lieu_csv_excel_sheets_nhap_tay')} defaultOpen>
                 <div className="grid grid-cols-2 gap-1 mb-3 p-0.5 bg-slate-100 dark:bg-zinc-800 rounded-md">
                     <button
-                        onClick={() => setDataMode('csv')}
+                        onClick={() => handleDataModeChange('csv')}
                         className={`h-8 text-[12px] font-semibold rounded transition-colors ${dataMode === 'csv' ? 'bg-white dark:bg-zinc-700 text-blue-600 dark:text-blue-300 shadow-sm' : 'text-slate-500 dark:text-zinc-400 hover:text-slate-700'}`}
                     >{t('preprocess.dataMerge:tai_csv')}</button>
                     <button
-                        onClick={() => setDataMode('xlsx')}
+                        onClick={() => handleDataModeChange('xlsx')}
                         className={`h-8 text-[12px] font-semibold rounded transition-colors ${dataMode === 'xlsx' ? 'bg-white dark:bg-zinc-700 text-blue-600 dark:text-blue-300 shadow-sm' : 'text-slate-500 dark:text-zinc-400 hover:text-slate-700'}`}
                     >📊 Excel</button>
                     <button
-                        onClick={() => setDataMode('gsheet')}
+                        onClick={() => handleDataModeChange('gsheet')}
                         className={`h-8 text-[12px] font-semibold rounded transition-colors ${dataMode === 'gsheet' ? 'bg-white dark:bg-zinc-700 text-blue-600 dark:text-blue-300 shadow-sm' : 'text-slate-500 dark:text-zinc-400 hover:text-slate-700'}`}
                     >🔗 Sheets</button>
                     <button
-                        onClick={() => { setDataMode('manual'); applyManualData(manualText, manualColName); }}
+                        onClick={() => handleDataModeChange('manual')}
                         className={`h-8 text-[12px] font-semibold rounded transition-colors ${dataMode === 'manual' ? 'bg-white dark:bg-zinc-700 text-blue-600 dark:text-blue-300 shadow-sm' : 'text-slate-500 dark:text-zinc-400 hover:text-slate-700'}`}
                     >{t('preprocess.dataMerge:nhap_tay')}</button>
                 </div>
@@ -1908,7 +2076,7 @@ export default function DataMergeTool({
                     onChange={(e) => {
                         const v = e.target.checked;
                         setCsvHasHeader(v);
-                        if (xlsxFile && selectedSheet) loadXlsxSheet(xlsxFile, selectedSheet);
+                        if (xlsxFile && selectedSheet) void loadXlsxSheet(xlsxFile, selectedSheet, v);
                     }}
                     className="w-4 h-4 accent-emerald-500"
                 />
@@ -1922,7 +2090,13 @@ export default function DataMergeTool({
                 <input
                     type="url"
                     value={gsheetUrl}
-                    onChange={(e) => setGsheetUrl(e.target.value)}
+                    onChange={(e) => {
+                        sourceRequestRef.current += 1;
+                        setGsheetUrl(e.target.value);
+                        setSourceLoading(false);
+                        setSourceError('');
+                        clearSourceState();
+                    }}
                     onKeyDown={(e) => { if (e.key === 'Enter') loadGsheet(); }}
                     placeholder="https://docs.google.com/spreadsheets/d/.../edit"
                     className="w-full h-8 px-2 text-[12px] bg-white dark:bg-zinc-900 border border-slate-300 dark:border-white/20 rounded-md focus:outline-none focus:border-blue-500"
@@ -1931,13 +2105,17 @@ export default function DataMergeTool({
                     <input
                         type="checkbox"
                         checked={csvHasHeader}
-                        onChange={(e) => setCsvHasHeader(e.target.checked)}
+                    onChange={(e) => {
+                        const v = e.target.checked;
+                        setCsvHasHeader(v);
+                        if (gsheetUrl.trim()) void loadGsheet(v);
+                    }}
                         className="w-4 h-4 accent-blue-500"
                     />
                     <span className="text-[12px] font-medium text-slate-600 dark:text-zinc-300">{t('preprocess.dataMerge:hang_dau_la_tieu_de_cot')}</span>
                 </label>
                 <button
-                    onClick={loadGsheet}
+                    onClick={() => { void loadGsheet(); }}
                     disabled={sourceLoading || !gsheetUrl.trim()}
                     className="self-start h-8 px-4 text-[12px] font-semibold bg-blue-500 text-white rounded-md hover:bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                 >
@@ -1969,7 +2147,7 @@ export default function DataMergeTool({
                 {batchFiles.length < 2 && (
                 <div className="flex items-center justify-between">
                     <span>{t('preprocess.dataMerge:so_ban_ghi')}</span>
-                    <span className="font-bold">{sourceRecordCount ?? csvData.length}</span>
+                    <span className="font-bold">{previewTotal}</span>
                 </div>
                 )}
                 <div className="flex items-center justify-between">
@@ -2846,6 +3024,19 @@ export default function DataMergeTool({
                         >
                             {reportLoading ? t('preprocess.dataMerge:dang_tao') : t('preprocess.dataMerge:xuat_bao_cao_loi_csv')}
                         </button>
+                        <VdpProofPreview
+                            fields={vdpFields}
+                            requestedIndex={previewIndex}
+                            templateFile={pdfFile}
+                            getWorkingFile={getWorkingFile}
+                            rows={(dataMode === 'csv' || dataMode === 'manual') ? csvData : undefined}
+                            kind={dataMode === 'xlsx' || dataMode === 'gsheet' ? dataMode : undefined}
+                            sourceFile={dataMode === 'xlsx' ? xlsxFile ?? undefined : undefined}
+                            url={dataMode === 'gsheet' ? gsheetUrl : undefined}
+                            sheet={dataMode === 'xlsx' ? selectedSheet : undefined}
+                            hasHeader={csvHasHeader}
+                            disabled={previewTotal <= 0 || sourceLoading || isGenerating}
+                        />
                     </div>
 
                     {/* Trạng thái gating */}
@@ -2876,7 +3067,7 @@ export default function DataMergeTool({
                                     }`}
                                 >
                                     <span className="font-mono font-bold uppercase">[{iss.severity === 'error' ? t('preprocess.dataMerge:loi') : t('preprocess.dataMerge:canh_bao')}]</span>{' '}
-                                    {iss.record_idx != null && <span className="font-semibold">dòng {iss.record_idx}</span>}
+                                    {iss.record_idx != null && <span className="font-semibold">dòng {iss.record_idx + 1}</span>}
                                     {iss.field ? <span> · {iss.field}</span> : null}
                                     {iss.reason ? <span> — {iss.reason}</span> : null}
                                 </div>

@@ -3,7 +3,7 @@
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import { render as rtlRender, screen, fireEvent } from '@testing-library/react';
-import DataMergeTool, { getFieldMappedColumns } from './DataMergeTool';
+import DataMergeTool, { getFieldMappedColumns, getPreviewRecordForIndex } from './DataMergeTool';
 import { createWorkspaceStore, WorkspaceContext } from '@/stores/useWorkspaceStore';
 
 // Polyfill PointerEvent cho môi trường JSDOM
@@ -91,6 +91,19 @@ describe('DataMergeTool - getFieldMappedColumns', () => {
     it('khớp placeholder trong imagePath của ảnh biến đổi', () => {
         const field = { name: 'Ảnh', imagePath: 'D:\\photos\\{Avatar_Img}.jpg' };
         expect(getFieldMappedColumns(field, csvHeaders)).toEqual(['Avatar_Img']);
+    });
+});
+
+describe('DataMergeTool - record xem trước theo mẫu nguồn', () => {
+    const rows = [{ name: 'A' }, { name: 'B' }];
+
+    it('giữ chỉ số yêu cầu và không lặp dòng mẫu cuối khi record vượt preview_rows', () => {
+        expect(getPreviewRecordForIndex(rows, 25, 21)).toEqual({ index: 21, record: null });
+    });
+
+    it('trả đúng dòng mẫu và kẹp chỉ số ngoài khoảng', () => {
+        expect(getPreviewRecordForIndex(rows, 2, 2)).toEqual({ index: 2, record: { name: 'B' } });
+        expect(getPreviewRecordForIndex(rows, 2, 99)).toEqual({ index: 2, record: { name: 'B' } });
     });
 });
 

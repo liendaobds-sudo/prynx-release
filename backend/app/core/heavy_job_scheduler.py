@@ -236,6 +236,8 @@ def process_pool_admission(
     except ValueError:
         forced = 0
     if forced > 0:
+        if queue_cancelled is not None and queue_cancelled():
+            raise HeavyJobQueueCancelled("Job đã bị hủy khi đang chờ bộ nhớ.")
         logger.info("[POOL_ADMISSION] kind=%s workers=%d override=%s", kind, planned, env_override)
         yield planned
         return
@@ -247,6 +249,8 @@ def process_pool_admission(
             raise HeavyJobQueueCancelled("Job đã bị hủy khi đang chờ bộ nhớ.")
         budget = provider()
         if budget is None:
+            if queue_cancelled is not None and queue_cancelled():
+                raise HeavyJobQueueCancelled("Job đã bị hủy khi đang chờ bộ nhớ.")
             logger.info("[POOL_ADMISSION] kind=%s workers=%d memory=unknown", kind, planned)
             yield planned
             return
@@ -418,9 +422,37 @@ async def _acquire_semaphore_async(
         semaphore.release()
         raise HeavyJobQueueCancelled("Job đã bị hủy khi đang chờ tài nguyên.")
 
+def _acquire_semaphore_sync(
+    semaphore: threading.BoundedSemaphore,
+    queue_cancelled: Callable[[], bool] | None,
+) -> None:
+    """Chờ semaphore đồng bộ nhưng vẫn quan sát tín hiệu hủy của job.
+
+    Các worker VDP chạy trong executor riêng nên việc sleep ngắn ở đây không
+    chặn event loop. Dùng acquire không-blocking để job đang xếp hàng có thể
+    rời hàng ngay khi người dùng hủy, thay vì chờ một job khác kết thúc.
+    """
+    while True:
+        if queue_cancelled is not None and queue_cancelled():
+            raise HeavyJobQueueCancelled("Job đã bị hủy khi đang chờ tài nguyên.")
+        try:
+            acquired = bool(semaphore.acquire(blocking=False))
+        except TypeError:
+            # Tương thích test-double/legacy semaphore chỉ có acquire().
+            acquired = bool(semaphore.acquire())
+        if acquired:
+            break
+        time.sleep(0.05)
+    if queue_cancelled is not None and queue_cancelled():
+        semaphore.release()
+        raise HeavyJobQueueCancelled("Job đã bị hủy khi đang chờ tài nguyên.")
+
 
 @contextmanager
-def heavy_job_slot(kind: str) -> Iterator[None]:
+def heavy_job_slot(
+    kind: str,
+    queue_cancelled: Callable[[], bool] | None = None,
+) -> Iterator[None]:
     """Wait for a shared heavy slot and release it on every exit path.
 
     PERF (audit 2026-07-29 §C.3b): lấy trần PHỤ theo loại việc TRƯỚC, rồi mới lấy suất
@@ -433,15 +465,27 @@ def heavy_job_slot(kind: str) -> Iterator[None]:
     with _STATE_LOCK:
         _WAITING_BY_KIND[kind] = _WAITING_BY_KIND.get(kind, 0) + 1
     if gate is not None:
-        gate.acquire()
+        try:
+            _acquire_semaphore_sync(gate, queue_cancelled)
+        except BaseException:
+            with _STATE_LOCK:
+                _WAITING_BY_KIND[kind] -= 1
+            raise
     try:
-        _HEAVY_JOB_SLOTS.acquire()
+        _acquire_semaphore_sync(_HEAVY_JOB_SLOTS, queue_cancelled)
     except BaseException:
         if gate is not None:
             gate.release()
         with _STATE_LOCK:
             _WAITING_BY_KIND[kind] -= 1
         raise
+    if queue_cancelled is not None and queue_cancelled():
+        _HEAVY_JOB_SLOTS.release()
+        if gate is not None:
+            gate.release()
+        with _STATE_LOCK:
+            _WAITING_BY_KIND[kind] -= 1
+        raise HeavyJobQueueCancelled("Job đã bị hủy khi đang chờ tài nguyên.")
     with _STATE_LOCK:
         _WAITING_BY_KIND[kind] -= 1
         _ACTIVE_BY_KIND[kind] = _ACTIVE_BY_KIND.get(kind, 0) + 1
@@ -505,13 +549,34 @@ async def async_heavy_job_slot(
             gate.release()
 
 
-def scheduled_job(kind: str) -> Callable[[Callable[..., T]], Callable[..., T]]:
-    """Decorate a fixed-executor worker with shared heavy-job admission."""
+def scheduled_job(
+    kind: str,
+    *,
+    queue_cancelled_factory: Callable[..., Callable[[], bool] | None] | None = None,
+    swallow_queue_cancelled: bool = False,
+) -> Callable[[Callable[..., T]], Callable[..., T]]:
+    """Decorate a fixed-executor worker with shared heavy-job admission.
+
+    ``queue_cancelled_factory`` là tùy chọn để các route có job id truyền vào
+    callback hủy trước khi worker chiếm slot. ``swallow_queue_cancelled`` dành
+    cho worker đã có trạng thái hủy được route công bố; khi future vẫn chạy sau
+    khi hủy, worker chỉ cần thoát êm thay vì phát lại ngoại lệ admission.
+    """
     def decorate(function: Callable[..., T]) -> Callable[..., T]:
         @functools.wraps(function)
         def wrapped(*args: Any, **kwargs: Any) -> T:
-            with heavy_job_slot(kind):
-                return function(*args, **kwargs)
+            queue_cancelled = (
+                queue_cancelled_factory(*args, **kwargs)
+                if queue_cancelled_factory is not None
+                else None
+            )
+            try:
+                with heavy_job_slot(kind, queue_cancelled):
+                    return function(*args, **kwargs)
+            except HeavyJobQueueCancelled:
+                if not swallow_queue_cancelled:
+                    raise
+                return None  # type: ignore[return-value]
         return wrapped
     return decorate
 

@@ -17,6 +17,7 @@ import { useTranslation } from 'react-i18next';
 import { tagArtifactLeaseToken } from '@/lib/artifactLease';
 
 interface Props {
+  tabId?: string;
   pdfFile: File | null;
   getWorkingFile?: () => Promise<File>;
   vdpFields?: VdpToolField[];
@@ -361,6 +362,7 @@ function FinishingPreviewDiagram({
 }
 
 export default function NumberingTool({
+  tabId,
   pdfFile,
   getWorkingFile,
   vdpFields = [],
@@ -923,7 +925,8 @@ export default function NumberingTool({
     // Lắng nghe sự kiện chuyển record từ thanh điều hướng Canvas về sidebar
     useEffect(() => {
         const handleIndexChange = (e: Event) => {
-            const ce = e as CustomEvent<{ index: number }>;
+            const ce = e as CustomEvent<{ index: number; tabId?: string }>;
+            if (!tabId || ce.detail?.tabId !== tabId) return;
             const idx = ce.detail?.index;
             if (typeof idx === 'number' && idx >= 1 && idx !== previewIndex) {
                 setPreviewIndex(idx);
@@ -931,7 +934,7 @@ export default function NumberingTool({
         };
         window.addEventListener('vdp-preview-index-change', handleIndexChange);
         return () => window.removeEventListener('vdp-preview-index-change', handleIndexChange);
-    }, [previewIndex]);
+    }, [previewIndex, tabId]);
 
     // Đảm bảo activeConfigSlotId hợp lệ
     useEffect(() => {

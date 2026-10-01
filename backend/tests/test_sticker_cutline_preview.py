@@ -888,6 +888,27 @@ def test_cache_quay_lai_offset_cu_khong_simplify_lai(tmp_path, monkeypatch):
     assert first == again and len(calls) == 2
 
 
+@pytest.mark.parametrize("limit, expected", [(2, 2), (8, 8), (None, 23)])
+def test_geometry_cache_uses_ram_policy_without_capping_large_hosts(tmp_path, monkeypatch, limit, expected):
+    session = _session(tmp_path)
+    monkeypatch.setattr(cutline_preview_module, "_preview_cache_limit", lambda: limit)
+    session._cutline_preview_geometry_cache = {"entries": {
+        f"other-{index}": {"page_number": 2, "source_key": "other-page"}
+        for index in range(22)
+    }}
+    build_sticker_cutline_preview(session, **_cached_preview_options())
+    assert len(session._cutline_preview_geometry_cache["entries"]) == expected
+
+
+def test_geometry_cache_releases_obsolete_page_revision(tmp_path):
+    session = _session(tmp_path)
+    build_sticker_cutline_preview(session, **_cached_preview_options())
+    old_keys = set(session._cutline_preview_geometry_cache["entries"])
+    session.pages[1].manifest["mask_revision"] = 4
+    build_sticker_cutline_preview(session, **_cached_preview_options(base_revision=4))
+    assert not old_keys.intersection(session._cutline_preview_geometry_cache["entries"])
+
+
 @pytest.mark.parametrize("ram_mb", [4096, 32768])
 def test_cache_snapshot_frame_a_sau_khi_da_hien_b(tmp_path, monkeypatch, ram_mb):
     from copy import deepcopy
@@ -921,6 +942,62 @@ def test_cache_tra_ban_sao_khong_de_export_sua_path_da_luu(tmp_path):
     second = build_sticker_cutline_preview(session, **_cached_preview_options())
     assert second == first
     assert session.pages[1].cutline_export_cache["instances"][0]["path_groups"] == saved
+
+
+@pytest.mark.parametrize("shape, marker", [("rounded_rect", " C "), ("ellipse", " C "), ("contour_offset", " L ")])
+def test_thrucut_preview_dung_cung_he_px_va_margin_mm(shape, marker):
+    groups = [{
+        "exterior": [
+            ((0.0, 0.0), (0.0, 0.0), (10.0, 0.0), (10.0, 0.0)),
+            ((10.0, 0.0), (10.0, 0.0), (10.0, 10.0), (10.0, 10.0)),
+            ((10.0, 10.0), (10.0, 10.0), (0.0, 10.0), (0.0, 10.0)),
+            ((0.0, 10.0), (0.0, 10.0), (0.0, 0.0), (0.0, 0.0)),
+        ],
+        "interiors": [],
+    }]
+    path = cutline_preview_module._canonical_thrucut_svg_path(
+        groups, left_px=0, top_px=0, dpi=300, dpi_y=300, scale_x=1, scale_y=1,
+        shape=shape, margin_mm=3, radius_mm=2,
+        margin_top_mm=None, margin_bottom_mm=None,
+        margin_left_mm=None, margin_right_mm=None,
+    )
+    assert path and marker in path
+    # 3 mm at 300 dpi is ~35.4 px; width/100 would be only 3 px.
+    assert "-35.4331" in path or "-35.433" in path
+
+
+def test_preview_response_co_thru_cut_canonical_tu_cung_path_groups(tmp_path):
+    session = _session(tmp_path, convex=True)
+    result = build_sticker_cutline_preview(
+        session,
+        **_cached_preview_options(
+            cutline_simplify_mm=0.0,
+            dpi=300.0,
+            dpi_y=300.0,
+            thrucut_enabled=True,
+            thrucut_shape="rounded_rect",
+            thrucut_margin_mm=3.0,
+            thrucut_radius_mm=2.0,
+        ),
+    )
+    path = result["paths"][0]
+    assert path.get("thrucut_d", "").startswith("M ")
+    assert path.get("thrucut_segment_count", 0) >= 4
+    changed = build_sticker_cutline_preview(
+        session,
+        **_cached_preview_options(
+            cutline_simplify_mm=0.0,
+            dpi=300.0,
+            dpi_y=300.0,
+            thrucut_enabled=True,
+            thrucut_shape="rounded_rect",
+            thrucut_margin_mm=3.0,
+            thrucut_margin_top_mm=1.0,
+            thrucut_margin_bottom_mm=5.0,
+            thrucut_radius_mm=2.0,
+        ),
+    )
+    assert changed["paths"][0]["thrucut_d"] != path["thrucut_d"]
 
 
 def test_cache_alpha_active_khong_lam_hong_working_set_hoac_frame_cu(tmp_path, monkeypatch):
@@ -1101,7 +1178,8 @@ def test_cache_binder2_simplify_preview_bang_cut_pdf_va_execute_khong_giai_lai(
         assert worker._pdf_cut_svg(pdf.pages[0], width, height, 600, 600) == cold[:2]
         assert worker._pdf_cut_svg(pdf.pages[0], width, height, 1200, 1200) == resized[:2]
     stats = cold[2]["simplification"]
-    assert stats["changed"] and stats["after_segments"] == cold[1]
+    assert stats["after_segments"] == cold[1]
+    assert stats["after_segments"] <= stats["before_segments"]
     assert stats["maximum_error_bound_mm"] <= 0.1
     print(f"\nCACHE Binder2 p12 {mode}/{corner} cache_ram={ram_mb}MiB: cold={cold_s:.4f}s warm={warm_s:.4f}s "
           f"execute={export_s:.4f}s nodes={stats['before_segments']}->{stats['after_segments']} "

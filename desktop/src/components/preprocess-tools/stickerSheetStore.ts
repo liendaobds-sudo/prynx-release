@@ -14,6 +14,7 @@ import {
     type StickerSheetModel,
     type StickerShadowCleanup,
     type StickerCutlinePreview,
+    type StickerThruCutPreviewOptions,
     type StickerSourceDetection,
     type StickerSourceInspection,
 } from '../../lib/stickerSheetApi';
@@ -262,6 +263,7 @@ function cutlinePreviewFrameCacheKey(tabId: string, req: StickerCutlinePreviewRe
         req.minDetailAreaMm2,
         req.cutlineDenoise,
         req.cutlineSimplifyMm,
+        JSON.stringify(req.thrucut),
         editsKey,
     ].join(':');
 }
@@ -278,12 +280,40 @@ function sameStickerOutputSettings(
         && left.bleedMm === right.bleedMm
         && left.bleedColorType === right.bleedColorType
         && left.cropToSticker === right.cropToSticker
+        && left.thrucutEnabled === right.thrucutEnabled
+        && left.thrucutShape === right.thrucutShape
+        && left.thrucutMarginMm === right.thrucutMarginMm
+        && left.thrucutMarginLinked === right.thrucutMarginLinked
+        && left.thrucutMarginTopMm === right.thrucutMarginTopMm
+        && left.thrucutMarginBottomMm === right.thrucutMarginBottomMm
+        && left.thrucutMarginLeftMm === right.thrucutMarginLeftMm
+        && left.thrucutMarginRightMm === right.thrucutMarginRightMm
+        && left.thrucutRadiusMm === right.thrucutRadiusMm
+        && left.thrucutSpotName === right.thrucutSpotName
+        && left.thrucutColorHex === right.thrucutColorHex
+        && left.thrucutColorCmyk.every((value, index) => value === right.thrucutColorCmyk[index])
         && left.solidBleedCmyk.every((value, index) => value === right.solidBleedCmyk[index])
     );
 }
 
 type CutlineGeometrySettings = Pick<StickerOutputSettings,
-    'cutMode' | 'offsetMm' | 'cornerStyle' | 'fillHoles' | 'bleedMm'>;
+    'cutMode' | 'offsetMm' | 'cornerStyle' | 'fillHoles' | 'bleedMm'
+    | 'thrucutEnabled' | 'thrucutShape' | 'thrucutMarginMm' | 'thrucutMarginLinked'
+    | 'thrucutMarginTopMm' | 'thrucutMarginBottomMm' | 'thrucutMarginLeftMm'
+    | 'thrucutMarginRightMm' | 'thrucutRadiusMm'>;
+
+function thrucutPreviewOptions(settings: CutlineGeometrySettings): StickerThruCutPreviewOptions {
+    return {
+        thrucutEnabled: settings.thrucutEnabled,
+        thrucutShape: settings.thrucutShape,
+        thrucutMarginMm: settings.thrucutMarginMm,
+        thrucutMarginTopMm: settings.thrucutMarginLinked ? settings.thrucutMarginMm : settings.thrucutMarginTopMm,
+        thrucutMarginBottomMm: settings.thrucutMarginLinked ? settings.thrucutMarginMm : settings.thrucutMarginBottomMm,
+        thrucutMarginLeftMm: settings.thrucutMarginLinked ? settings.thrucutMarginMm : settings.thrucutMarginLeftMm,
+        thrucutMarginRightMm: settings.thrucutMarginLinked ? settings.thrucutMarginMm : settings.thrucutMarginRightMm,
+        thrucutRadiusMm: settings.thrucutRadiusMm,
+    };
+}
 
 function cutlineGeometryChanged(
     previous: CutlineGeometrySettings,
@@ -294,6 +324,7 @@ function cutlineGeometryChanged(
         || previous.offsetMm !== next.offsetMm
         || previous.cornerStyle !== next.cornerStyle
         || previous.fillHoles !== next.fillHoles
+        || JSON.stringify(thrucutPreviewOptions(previous)) !== JSON.stringify(thrucutPreviewOptions(next))
     ) return true;
 
     // PERF (feedback 2026-08-11 §CUTLINE.NOREBUILD1): màu/crop không đi vào
@@ -301,6 +332,21 @@ function cutlineGeometryChanged(
     return (
         (previous.cutMode === 'bleed' || next.cutMode === 'bleed')
         && previous.bleedMm !== next.bleedMm
+    );
+}
+
+function cutlineRequestGeometryChanged(
+    previous: StickerCutlinePreviewRequest,
+    next: StickerOutputSettings,
+): boolean {
+    return (
+        previous.cutMode !== next.cutMode
+        || previous.offsetMm !== next.offsetMm
+        || previous.cornerStyle !== next.cornerStyle
+        || previous.fillHoles !== next.fillHoles
+        || ((previous.cutMode === 'bleed' || next.cutMode === 'bleed')
+            && previous.bleedMm !== next.bleedMm)
+        || JSON.stringify(previous.thrucut) !== JSON.stringify(thrucutPreviewOptions(next))
     );
 }
 
@@ -1181,6 +1227,7 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                 strategy,
                 model: previous.model,
                 alphaThreshold: previousPage.alphaThreshold,
+                shadowCleanup: previousPage.shadowCleanup,
                 pageNumber,
                 signal: controller.signal,
             });
@@ -1600,7 +1647,7 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
         if (!exportStarted) return null;
         let exportSucceeded = false;
         try {
-            const canPreserveOriginal = exportPages.every(item => Boolean(
+            const canPreserveOriginal = !tab.outputSettings.thrucutEnabled && exportPages.every(item => Boolean(
                 item.state.preserveExistingCut
                 && item.state.edits.length === 0
                 && item.state.manifest?.boundary_source === 'existing-cut'
@@ -1639,6 +1686,22 @@ export const useStickerSheetStore = create<StickerSheetStore>((set, get) => ({
                 solidBleedCmyk: settings.solidBleedCmyk,
                 shapeMode: 'contour',
                 drawCutContour: canPreserveOriginal || settings.cutMode !== 'none',
+                thrucutEnabled: settings.thrucutEnabled,
+                thrucutShape: settings.thrucutShape,
+                thrucutMarginMm: settings.thrucutMarginMm,
+                thrucutMarginTopMm: settings.thrucutMarginLinked
+                    ? settings.thrucutMarginMm : settings.thrucutMarginTopMm,
+                thrucutMarginBottomMm: settings.thrucutMarginLinked
+                    ? settings.thrucutMarginMm : settings.thrucutMarginBottomMm,
+                thrucutMarginLeftMm: settings.thrucutMarginLinked
+                    ? settings.thrucutMarginMm : settings.thrucutMarginLeftMm,
+                thrucutMarginRightMm: settings.thrucutMarginLinked
+                    ? settings.thrucutMarginMm : settings.thrucutMarginRightMm,
+                thrucutRadiusMm: settings.thrucutRadiusMm,
+                thrucutSpotName: settings.thrucutSpotName,
+                // CUTLINE (audit 2026-10-01): API nhận cả chuỗi CMYK qua field
+                // legacy này; giữ bốn kênh, không chuyển qua RGB làm mất K.
+                thrucutColorHex: settings.thrucutColorCmyk.join(','),
                 preserveExistingCut: canPreserveOriginal,
                 outputFormat,
                 cutlineSmoothness: exportPages[0].state.cutlineSmoothness,
@@ -2073,6 +2136,7 @@ async function runMaskRefinement(tabId: string, pageNumber: number): Promise<voi
 }
 
 type StickerCutlinePreviewRequest = {
+    thrucut: StickerThruCutPreviewOptions;
     sessionId: string;
     pageNumber: number;
     maskRevision: number;
@@ -2147,6 +2211,7 @@ function scheduleCurrentCutlinePreview(
         || !['mask-review', 'mask-ready'].includes(page.status)
     ) return;
     const request: StickerCutlinePreviewRequest = {
+        thrucut: thrucutPreviewOptions(tab.outputSettings),
         sessionId: page.manifest.session_id,
         pageNumber,
         maskRevision: page.manifest.mask_revision ?? 1,
@@ -2253,6 +2318,7 @@ async function runCutlinePreview(tabId: string, pageNumber: number): Promise<voi
     const { controller, generation } = nextRequest(key);
     try {
         const payload = await previewStickerCutline(requested.sessionId, {
+            ...requested.thrucut,
             baseRevision: requested.maskRevision,
             pageNumber,
             edits: requested.edits,
@@ -2293,7 +2359,7 @@ async function runCutlinePreview(tabId: string, pageNumber: number): Promise<voi
             // Không để phản hồi cũ (.1/0 hoặc offset cũ) lấp cache vừa xóa;
             // mở lại trang phải dựng đúng hình học/mức AUTO sẽ dùng khi xuất.
             // Trang đang kéo slider vẫn được hiện frame trung gian khi có lượt mới chờ.
-            if (!queued && (cutlineGeometryChanged(requested, current.outputSettings)
+            if (!queued && (cutlineRequestGeometryChanged(requested, current.outputSettings)
                 || requested.cutlineSimplifyMm !== resolveStickerSheetAutoSimplifyMm(
                     currentPage.manifest, current.outputSettings.cutMode,
                 ))) return state;

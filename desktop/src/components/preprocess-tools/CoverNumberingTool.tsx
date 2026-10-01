@@ -19,6 +19,7 @@ import { getFileArrayBuffer } from '@/lib/utils';
 import { tagArtifactLeaseToken } from '@/lib/artifactLease';
 
 interface Props {
+    tabId?: string;
     pdfFile: File | null;
     getWorkingFile?: () => Promise<File>;
     workingPageCount?: number;
@@ -50,7 +51,7 @@ function fieldRole(f: VdpToolField): 'X' | 'Y' | 'Z' | null {
 const EMPTY_VDP_FIELDS: VdpToolField[] = [];
 
 export default function CoverNumberingTool({
-    pdfFile, getWorkingFile, workingPageCount, vdpFields = EMPTY_VDP_FIELDS, setVdpFields,
+    tabId, pdfFile, getWorkingFile, workingPageCount, vdpFields = EMPTY_VDP_FIELDS, setVdpFields,
     selectedFieldIds = [], onSelectField, onSpawnTab, onApplyResult, isActive = true,
 }: Props) {
   const { t } = useTranslation();
@@ -284,7 +285,8 @@ export default function CoverNumberingTool({
     // Lắng nghe sự kiện đổi record từ view chính để đồng bộ về sidebar
     useEffect(() => {
         const handleIndexChange = (e: Event) => {
-            const ce = e as CustomEvent<{ index: number }>;
+            const ce = e as CustomEvent<{ index: number; tabId?: string }>;
+            if (!tabId || ce.detail?.tabId !== tabId) return;
             const idx = ce.detail?.index;
             if (typeof idx === 'number' && idx >= 1 && idx !== previewIndex) {
                 setPreviewIndex(idx);
@@ -292,7 +294,7 @@ export default function CoverNumberingTool({
         };
         window.addEventListener('vdp-preview-index-change', handleIndexChange);
         return () => window.removeEventListener('vdp-preview-index-change', handleIndexChange);
-    }, [previewIndex]);
+    }, [previewIndex, tabId]);
 
     const handleGenerate = async () => {
         try {

@@ -165,6 +165,54 @@ def test_pick_curved_text_font_size(tmp_path):
     assert field["curveRadius"] > 0
 
 
+def test_pick_curved_text_writes_cleaned_template(tmp_path):
+    """Bóc chữ cong phải ghi phôi sạch; nếu không field mới sẽ chồng lên chữ cũ."""
+    import math
+
+    pdf_path = str(tmp_path / "curved_text_clean_source.pdf")
+    out_pdf = str(tmp_path / "curved_text_cleaned.pdf")
+    c = canvas.Canvas(pdf_path, pagesize=(400, 400))
+    c.setFont("Helvetica", 24)
+    for ch, angle in zip("NGUYEN", (-30, -18, -6, 6, 18, 30)):
+        c.saveState()
+        rad = math.radians(angle + 90)
+        c.translate(200 + 80 * math.cos(rad), 200 + 80 * math.sin(rad))
+        c.rotate(angle)
+        c.drawString(0, 0, ch)
+        c.restoreState()
+    c.save()
+
+    objects = geometry_reader.list_objects(pdf_path, 0, include_text_props=True)
+    result = pick_text_to_vdp_field(
+        pdf_path,
+        0,
+        objects[0].drawIndex,
+        remove_original=True,
+        output_path=out_pdf,
+    )
+
+    assert result["cleanedPdfPath"] == out_pdf
+    assert os.path.isfile(out_pdf)
+    assert not [obj for obj in geometry_reader.list_objects(out_pdf, 0, include_text_props=True) if obj.type == "text"]
+
+
+def test_pick_text_fails_closed_when_template_cleanup_fails(sample_vdp_pdf, tmp_path, monkeypatch):
+    """Không trả field thành công nếu PDF sạch không được ghi."""
+    metas = geometry_reader.list_objects(sample_vdp_pdf, 0, include_text_props=True)
+    target = metas[0]
+    out_pdf = str(tmp_path / "cleanup_failure.pdf")
+
+    def fail_delete(*_args, **_kwargs):
+        raise RuntimeError("synthetic delete failure")
+
+    monkeypatch.setattr("app.workers.vdp_text_picker.stream_editor.delete_objects", fail_delete)
+    with pytest.raises(ValueError, match="template VDP đã làm sạch"):
+        pick_text_to_vdp_field(
+            sample_vdp_pdf, 0, target.drawIndex, remove_original=True, output_path=out_pdf
+        )
+    assert not os.path.exists(out_pdf)
+
+
 def test_pick_text_baseline_parity(tmp_path):
     """Kiểm tra baseline parity: ReportLab phải vẽ baseline trùng khít 100% với baseline_y gốc của chữ."""
     pdf_path = str(tmp_path / "baseline_test.pdf")

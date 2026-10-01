@@ -1,0 +1,59 @@
+{
+  "audit_date": "2026-10-01",
+  "purpose": "VDP output benchmark evidence; no production tuning",
+  "source_head": "a6163b38da74381b10f15ca26763ba44a7170dc8",
+  "machine": {
+    "platform": "Windows-10-10.0.26200-SP0",
+    "python": "3.11.9",
+    "cpu_name": "13th Gen Intel(R) Core(TM) i5-13400",
+    "logical_cpus": 16,
+    "installed_ram_mib": 32768.0,
+    "usable_ram_mib": 32527.9140625,
+    "available_ram_mib": 15969.65625,
+    "env": {
+      "PRYNX_VDP_WORKERS": null,
+      "PRYNX_MAX_VDP_JOBS": null,
+      "PRYNX_MAX_HEAVY_JOBS": null,
+      "PRYNX_MIN_FREE_DISK_MB": null
+    }
+  },
+  "workloads": [
+    {
+      "records": 100,
+      "status": "success",
+      "evidence": "output-100-text-qr.json",
+      "engine_seconds": 7.89861709999768,
+      "controller_seconds": 8.89453879999928,
+      "peak_tree_rss_mib": 327.246,
+      "output_bytes": 686476,
+      "pages": 100,
+      "artifact_pass": true
+    },
+    {
+      "records": 5000,
+      "status": "success",
+      "evidence": "output-5000-text-qr.json",
+      "engine_seconds": 45.4887333999977,
+      "controller_seconds": 47.59382079999705,
+      "peak_tree_rss_mib": 13372.5546875,
+      "peak_tree_private_mib": 13240.72265625,
+      "output_bytes": 14065614,
+      "pages": 5000,
+      "artifact_pass": true
+    },
+    {
+      "records": 10000,
+      "status": "blocked",
+      "evidence": "output-10000-text-qr-blocked.json",
+      "reason": "Controller mất khả năng gọi CreateToolhelp32Snapshot khi 15 worker đang tăng working set; WinError 1455 / Windows Error 0xe0000008. Worker tree đã được dừng và không có process benchmark còn lại; không coi đây là throughput/RSS result."
+    }
+  ],
+  "limitations": [
+    "Một run mỗi workload; không có p95 hay baseline control.",
+    "Dev Python engine trực tiếp, không phải packaged Tauri/UI.",
+    "Peak working set là tổng process tree, private bytes ghi riêng; lấy mẫu khoảng 50ms.",
+    "Ca 5k/10k dùng profile mặc định máy mạnh: planner 15 worker; không hard-cap.",
+    "Workload synthetic A6, text Arial Type0 + QR unique; không ảnh biến đổi, CJK/emoji/RTL, font subset collision hoặc Illustrator editability.",
+    "Ca 10k bị blocked nên chưa có số đo production 10k."
+  ]
+}

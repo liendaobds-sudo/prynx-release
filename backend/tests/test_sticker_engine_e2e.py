@@ -53,6 +53,7 @@ from app.workers.sticker_engine import (
     _edge_color_sampling_warning,
     _EXISTING_CONTOUR_SOURCE_PIXEL_BUDGET,
     _fit_alpha_bezier_paths,
+    _fit_alpha_cubic_fallback_paths,
     _fit_alpha_simplified_anchor_paths,
     _fit_preserved_contour_paths,
     _budgeted_hausdorff_distance,
@@ -2603,6 +2604,80 @@ def test_alpha_cutline_filters_raster_steps_in_exported_pdf(tmp_path):
         assert 8 < curve_count < 100
 
 
+def test_alpha_preserve_fitter_rejection_keeps_safe_cubic_fallback(
+    tmp_path,
+    monkeypatch,
+):
+    """Alpha không được rơi thẳng về ``m/l/h`` khi cubic chính bị từ chối."""
+    from app.workers import sticker_engine as sticker_module
+
+    src = str(tmp_path / "alpha_fallback_circle.pdf")
+    out = str(tmp_path / "alpha_fallback_circle_cut.pdf")
+    _make_page_touching_circle_pdf(src, transparent=True)
+
+    # Ép đúng tình huống guard của fitter chính và nhánh Catmull an toàn đều
+    # không trả ứng viên. Fallback mới phải tự tìm cubic có guard hình học.
+    captured_policy = {}
+
+    def reject_alpha_fit(*_args, **kwargs):
+        captured_policy["value"] = kwargs.get("corner_policy")
+        return None
+
+    monkeypatch.setattr(sticker_module, "_fit_alpha_bezier_paths", reject_alpha_fit)
+    monkeypatch.setattr(
+        sticker_module,
+        "_safe_alpha_bezier_tension",
+        lambda *_args, **_kwargs: None,
+    )
+
+    success, _meta = StickerEngine(dpi=300).process_pdf(
+        input_path=src,
+        output_path=out,
+        cut_mode="alpha",
+        offset_mm=0.0,
+        corner_style="preserve",
+        bleed_mm=0.0,
+        fill_holes=True,
+        remove_white_bg=False,
+        draw_cut_contour=True,
+        shape_mode="contour",
+        alpha_corner_policy="adaptive",
+    )
+
+    assert success is True
+    with pikepdf.Pdf.open(out) as result:
+        machine_paths = _parse_cut_machine_paths(result.pages[0])
+    assert len(machine_paths) == 1
+    assert all(segment.kind == "cubic" for segment in machine_paths[0])
+    assert captured_policy["value"] == "adaptive"
+
+
+def test_alpha_cubic_fallback_rejects_true_corners():
+    """Spline cứu biên trơn không được làm mất góc vuông thật."""
+    mm_to_pts = _PT_PER_MM
+    edge = 40
+    width_mm = 20.0
+    height_mm = 10.0
+    points = []
+    for index in range(edge):
+        points.append((index * width_mm / edge * mm_to_pts, 0.0))
+    for index in range(edge):
+        points.append((width_mm * mm_to_pts, index * height_mm / edge * mm_to_pts))
+    for index in range(edge):
+        points.append(((edge - index) * width_mm / edge * mm_to_pts, height_mm * mm_to_pts))
+    for index in range(edge):
+        points.append((0.0, (edge - index) * height_mm / edge * mm_to_pts))
+    geometry = Polygon(points)
+
+    assert _fit_alpha_cubic_fallback_paths(
+        geometry,
+        geometry,
+        total_offset_pts=0.0,
+        mm_to_pts=mm_to_pts,
+        source_pixel_mm=25.4 / 300.0,
+    ) is None
+
+
 def test_alpha_wavy_shell_pdf_has_no_artificial_joins_or_short_commands(tmp_path):
     """Regression đọc lại lệnh PDF thật của viền hữu cơ ở chế độ Ảnh AI."""
     src = str(tmp_path / "alpha_wavy_shell.pdf")
@@ -2688,6 +2763,37 @@ def test_original_cut_uses_reviewed_alpha_without_page_rectangle_or_inset(tmp_pa
     assert page_width_mm - box["w_mm"] > 2.0
     assert page_height_mm - box["h_mm"] > 2.0
 
+    with pikepdf.Pdf.open(out) as result:
+        machine_paths = _parse_cut_machine_paths(result.pages[0])
+    assert len(machine_paths) == 1
+    assert all(segment.kind == "cubic" for segment in machine_paths[0])
+    machine = _summarize_machine_paths(machine_paths)
+    assert machine["short"] == 0
+    assert machine["sharp_joins"] == 0
+
+
+@pytest.mark.parametrize("source_dpi", [72.0, 150.0, 300.0])
+def test_original_transparent_page_routes_smask_to_alpha_fitter(tmp_path, source_dpi):
+    """``original`` trên PNG có SMask phải xuất cubic theo biên Alpha thật."""
+    src = str(tmp_path / "original_smask_wavy.pdf")
+    out = str(tmp_path / "original_smask_wavy_cut.pdf")
+    _make_wavy_shell_alpha_pdf(src, source_dpi=source_dpi)
+
+    success, meta = StickerEngine(dpi=300).process_pdf(
+        input_path=src,
+        output_path=out,
+        cut_mode="original",
+        offset_mm=0.0,
+        corner_style="preserve",
+        bleed_mm=0.0,
+        fill_holes=True,
+        remove_white_bg=False,
+        draw_cut_contour=True,
+        shape_mode="contour",
+    )
+
+    assert success is True
+    assert meta["contour_source"] == "alpha"
     with pikepdf.Pdf.open(out) as result:
         machine_paths = _parse_cut_machine_paths(result.pages[0])
     assert len(machine_paths) == 1

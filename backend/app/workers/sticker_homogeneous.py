@@ -499,6 +499,7 @@ def build_homogeneous_layout(
     secondary_gap: Optional[float] = None,
     quantities: Optional[Sequence[int]] = None,
     layout_fn: Optional[Any] = None,
+    auto_fill: bool = True,
 ) -> HomogeneousLayout:
     """Dựng layout đồng nhất: nesting shape-aware từ master ĐÚNG MỘT LẦN rồi gán nội dung.
 
@@ -533,19 +534,28 @@ def build_homogeneous_layout(
     items = tuple(result.get("items", []) or [])
     C = len(items)
     seq = expand_by_quantity(plan.content_pages, quantities)
-    is_auto_fill = not quantities or sum(int(q or 0) for q in quantities) <= 0
-    if is_auto_fill and C > 0 and seq:
-        # Mỗi mẫu phải xuất hiện ít nhất một lần và các ô cùng mẫu phải LIỀN NHAU
-        # để dễ gom thành phẩm: 1,1,1 → 2,2,2 → 3,3,3 (không xen 1,2,3,1,2,3).
-        # Chia tổng ô cân bằng nhất có thể; phần dư ưu tiên các mẫu đầu.
-        # 45 mẫu / sức chứa 60 => mẫu 1..15 mỗi mẫu 2 ô, mẫu 16..45 mỗi mẫu 1 ô.
-        full_count = ((len(seq) + C - 1) // C) * C
-        base_count, remainder = divmod(full_count, len(seq))
-        seq = [
-            src
-            for i, src in enumerate(seq)
-            for _ in range(base_count + (1 if i < remainder else 0))
-        ]
+    is_blank_quantity = not quantities or sum(int(q or 0) for q in quantities) <= 0
+    if auto_fill and C > 0 and seq:
+        if is_blank_quantity:
+            # Tự lấp đầy khi để trống số lượng: nhân bản các mẫu để lấp kín tờ
+            full_count = ((len(seq) + C - 1) // C) * C
+            base_count, remainder = divmod(full_count, len(seq))
+            # Giữ các bản cùng loại liền nhau để dễ gom thành phẩm; phần dư
+            # ưu tiên các loại đầu tiên theo thứ tự thumbnail.
+            seq = [
+                src
+                for index, src in enumerate(seq)
+                for _ in range(base_count + (1 if index < remainder else 0))
+            ]
+        else:
+            # Tự lấp đầy khi có số lượng cụ thể: nhân bản thêm tem để lấp kín tờ CUỐI CÙNG
+            rem = len(seq) % C
+            if rem > 0:
+                extra_needed = C - rem
+                seq = seq + [seq[k % len(seq)] for k in range(extra_needed)]
+    elif is_blank_quantity and not auto_fill:
+        # Khi tắt tự lấp đầy và để trống số lượng: mỗi mẫu in đúng 1 bản
+        seq = list(plan.content_pages)
     cell_contents = tuple(assign_contents(seq, C if C > 0 else 1))
     num_sheets = 0 if not cell_contents else (cell_contents[-1].sheet_index + 1)
 

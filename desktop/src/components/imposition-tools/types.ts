@@ -175,6 +175,7 @@ export interface NupSettings {
     columns: number;
     rows: number;
     targetQuantity?: number;
+    autoFill?: boolean;
     targetQuantitiesByPage?: Record<number, number>;
     hiddenOcgLayerIds?: number[];
     gridStrategy: GridStrategyKind;

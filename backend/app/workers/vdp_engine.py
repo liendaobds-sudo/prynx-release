@@ -21,7 +21,7 @@ from app.workers.vdp_conditions import resolve_field_content, ConditionError
 from app.core.pdfium_lock import pdfium_guard
 from app.core.disk_space_guard import ensure_job_disk_space, estimate_vdp_disk
 from app.core.system_memory import plan_worker_count
-from app.schemas.vdp import VdpField
+from app.schemas.vdp import VdpField, validate_vdp_field_contract
 from app.workers.vdp_text_picker import resolve_font_file
 from typing import List, Dict
 
@@ -552,8 +552,9 @@ def _merge_overlay_direct(out_pdf, target_page_obj, overlay_bytes: bytes, resour
     và khả năng chọn/sửa văn bản bằng Type tool.
 
     PERF (audit 2026-09-30 §VDP.PERF): Sử dụng copy_foreign và resource_cache để tái sử dụng
-    font indirect object duy nhất cho toàn bộ các trang trong chunk, triệt tiêu bloat phình file
-    và tăng tốc xuất bản gấp 10-20 lần.
+    font indirect object duy nhất cho toàn bộ các trang trong chunk, giảm việc sao chép
+    resource lặp lại. Mức cải thiện thời gian còn phụ thuộc số trang, font và dữ liệu;
+    không coi comment này là benchmark định lượng.
     """
     if not overlay_bytes:
         return
@@ -1510,6 +1511,30 @@ def process_chunk(args) -> str:
     job_id = args[6] if len(args) > 6 else None
     if _vdp_cancel_file_exists(cancel_file):
         return ""
+
+    # VDP (audit 2026-10-01 §VDP.S12): kiểm tra lại ở
+    # worker để các đường gọi trực tiếp/legacy không thể tạo artifact với id
+    # trùng hoặc pageNum không hợp lệ (đây là khóa của handled_by_pdfium).
+    _seen_field_ids: dict[str, int] = {}
+    for _field_index, _field in enumerate(fields_dict):
+        _field_id = _field.get("id")
+        if not isinstance(_field_id, str) or not _field_id.strip():
+            raise ValueError(f"VDP field id không hợp lệ tại vị trí {_field_index}")
+        if _field_id in _seen_field_ids:
+            raise ValueError(
+                f"VDP field id bị trùng: {_field_id!r} "
+                f"(vị trí {_seen_field_ids[_field_id]} và {_field_index})"
+            )
+        _seen_field_ids[_field_id] = _field_index
+        _page_num = _field.get("pageNum")
+        if _page_num is not None and (
+            isinstance(_page_num, bool)
+            or not isinstance(_page_num, int)
+            or _page_num < 1
+        ):
+            raise ValueError(
+                f"VDP pageNum không hợp lệ tại field {_field_id!r}: {_page_num!r}"
+            )
     
     doc_template = pdf_lib.open(template_path)
     template_page_count = len(doc_template)
@@ -1588,6 +1613,18 @@ def process_chunk(args) -> str:
             return ""
         global_idx = chunk_start_idx + idx
         t_idx = global_idx % template_page_count
+        template_page_num = t_idx + 1
+
+        # VDP (audit 2026-10-01 §VDP.01): pageNum là số trang template 1-based.
+        # Field không có pageNum là
+        # field dùng chung, giữ tương thích với payload VDP cũ.
+        active_field_pairs = [
+            (field, rect)
+            for field, rect in zip(fields_dict, field_rects)
+            if field.get("pageNum") is None or field.get("pageNum") == template_page_num
+        ]
+        page_fields = [field for field, _rect in active_field_pairs]
+        page_field_rects = [rect for _field, rect in active_field_pairs]
         
         td = template_dims[t_idx]
         pw = td['pw']
@@ -1632,11 +1669,11 @@ def process_chunk(args) -> str:
         handled_by_pdfium = set()
         pdfium_renderer = PdfiumVdpTextRenderer(pw, ph, font_bytes_cache=font_bytes_cache)
         try:
-            for f_idx, field in enumerate(fields_dict):
+            for f_idx, field in enumerate(page_fields):
                 curve_mode = str(field.get('curveMode') or 'none').lower()
                 if field.get('type') == 'text' and curve_mode not in ('arc_top', 'arc_bottom', 'wave'):
                     f_id = field.get('id', str(f_idx))
-                    f_rect = field_rects[f_idx]
+                    f_rect = page_field_rects[f_idx]
                     try:
                         resolved = resolve_field_content(field, row)
                     except Exception:
@@ -1742,13 +1779,27 @@ def process_chunk(args) -> str:
 
         # [VDP-TYPE0-LIVE-TEXT] 2. Các trường còn lại (barcode, QR, image, curved text, hoặc text thiếu font file)
         # tiếp tục được vẽ qua ReportLab và ghép trực tiếp không qua Form XObject.
-        remaining_fields = [f for idx, f in enumerate(fields_dict) if f.get('id', str(idx)) not in handled_by_pdfium]
+        remaining_fields = [
+            f for idx, f in enumerate(page_fields)
+            if f.get('id', str(idx)) not in handled_by_pdfium
+        ]
         if count < 3 and remaining_fields:
             logger.debug("[VDP][CHUNK] Record %d: remaining_field_count=%d", count, len(remaining_fields))
         if remaining_fields:
             buf = io.BytesIO()
             c = canvas.Canvas(buf, pagesize=(pw, ph))
-            render_one_record(c, fields_dict, row, field_rects, pw, ph, field_font_variants, skip_field_ids=handled_by_pdfium, qr_cache=qr_cache, image_cache=image_cache)
+            render_one_record(
+                c,
+                page_fields,
+                row,
+                page_field_rects,
+                pw,
+                ph,
+                field_font_variants,
+                skip_field_ids=handled_by_pdfium,
+                qr_cache=qr_cache,
+                image_cache=image_cache,
+            )
             c.showPage()
             c.save()
             _merge_overlay_direct(out_doc._pdf, page._page.obj, buf.getvalue(), resource_cache=resource_cache)
@@ -2107,6 +2158,9 @@ def run_vdp_engine(template_path: str, fields: List[VdpField], data: List[Dict[s
                 pass
         raise VdpCancelledError("VDP job cancelled")
 
+    # VDP (audit 2026-10-01 §VDP.S12): kiểm trước chuẩn hóa/fan-out để không sinh artifact
+    # một phần hoặc làm rơi field do khóa id trùng.
+    validate_vdp_field_contract(fields)
     abort_if_requested()
     fields_dict = [f.model_dump() for f in fields]
     num_workers, CHUNK_SIZE, worker_reason = _plan_vdp_parallelism(len(data))
@@ -2173,6 +2227,7 @@ def run_vdp_engine(template_path: str, fields: List[VdpField], data: List[Dict[s
         with process_pool_admission(
             "vdp", max(1, num_workers), per_worker_mb,
             env_override="PRYNX_VDP_WORKERS",
+            queue_cancelled=cancellation_requested,
         ) as admitted_workers:
             if admitted_workers <= 1 or len(args_list) == 1:
                 for args in args_list:

@@ -1348,13 +1348,25 @@ def pick_text_to_vdp_field(
                     target_page.Contents = pdf.make_stream(pikepdf.unparse_content_stream(new_instructions))
                     removed_draw_indices = [g["obj"].drawIndex for g in curved_group]
                 else:
-                    stream_editor.delete_objects(
+                    delete_result = stream_editor.delete_objects(
                         target_page,
                         [g["obj"] for g in curved_group],
                         pdf,
                         all_obj_metas=all_objects,
                     )
+                    if not getattr(delete_result, "changed", True):
+                        raise ValueError("Không xoá được chữ cong khỏi phôi.")
                     removed_draw_indices = [g["obj"].drawIndex for g in curved_group]
+
+                # Nhánh chữ cong cũng phải hoàn tất cùng hợp đồng với nhánh chữ
+                # thường: dọn operator/font chết rồi ghi ra template sạch. Trước
+                # đây fallback delete_objects chỉ sửa PDF trong bộ nhớ, nhưng
+                # không save nên API trả field thành công trong khi nền vẫn còn
+                # chữ cũ (field mới bị đắp chồng và trông như nhân bản).
+                from app.workers.vdp_engine import _clean_template_dead_text_ops_and_fonts
+                _clean_template_dead_text_ops_and_fonts(target_page, pdf)
+                pdf.save(output_path)
+                cleaned_path = output_path
             else:
                 # Tiền kiểm tra ánh xạ an toàn: chỉ xóa các object map được duy nhất,
                 # tránh ObjectMapError làm dừng cả quá trình tạo trường VDP.
@@ -1373,12 +1385,14 @@ def pick_text_to_vdp_field(
                             pass
 
                 try:
-                    stream_editor.delete_objects(
+                    delete_result = stream_editor.delete_objects(
                         target_page,
                         verified_delete_objs,
                         pdf,
                         all_obj_metas=all_objects,
                     )
+                    if not getattr(delete_result, "changed", True):
+                        raise ValueError("Không xoá được placeholder khỏi phôi.")
                     removed_draw_indices = [o.drawIndex for o in verified_delete_objs]
                     # [VDP-TYPE0-LIVE-TEXT] Dọn dẹp dead Tf và ghost fonts trong template sạch
                     from app.workers.vdp_engine import _clean_template_dead_text_ops_and_fonts
@@ -1394,6 +1408,12 @@ def pick_text_to_vdp_field(
                 os.remove(output_path)
             except OSError:
                 pass
+
+        # Không được coi là thành công nếu remove_original đã yêu cầu template
+        # sạch nhưng thao tác xoá/ghi file thất bại. Frontend chỉ được thêm field
+        # sau khi có working template mới; nếu không sẽ tạo đúng lỗi nhân bản.
+        if cleaned_path is None:
+            raise ValueError("Không tạo được template VDP đã làm sạch.")
 
     return {
         "success": True,

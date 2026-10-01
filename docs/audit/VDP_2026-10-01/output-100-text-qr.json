@@ -1,0 +1,271 @@
+{
+  "date_utc": "2026-10-01T05:34:04.851399+00:00",
+  "exit_code": 0,
+  "workload": {
+    "kind": "A6 text + unique QR per record",
+    "template_pages": 1,
+    "fields": 2,
+    "font": "Arial TTF Type0",
+    "text": "unique VDP-00000 + 4 Vietnamese variants",
+    "qr": "unique URL, errorCorrection=M",
+    "images": 0
+  },
+  "controller_wall_seconds": 8.894538799999282,
+  "memory_sample_interval_seconds": 0.05,
+  "memory_sample_count": 128,
+  "memory_peaks": {
+    "all": {
+      "rss_mib": 327.24609375,
+      "private_mib": 309.61328125,
+      "process_count": 4,
+      "rss_peak_processes": [
+        {
+          "pid": 1920,
+          "rss_mib": 323.15234375,
+          "private_mib": 308.78125
+        },
+        {
+          "pid": 24844,
+          "rss_mib": 4.09375,
+          "private_mib": 0.83203125
+        }
+      ],
+      "rss_peak_elapsed_seconds": 8.541826199998468
+    },
+    "startup": {
+      "rss_mib": 51.171875,
+      "private_mib": 36.4921875,
+      "process_count": 3,
+      "rss_peak_processes": [
+        {
+          "pid": 1920,
+          "rss_mib": 47.078125,
+          "private_mib": 35.66015625
+        },
+        {
+          "pid": 24844,
+          "rss_mib": 4.09375,
+          "private_mib": 0.83203125
+        }
+      ],
+      "rss_peak_elapsed_seconds": 0.4830321000008553
+    },
+    "setup": {
+      "rss_mib": 65.08984375,
+      "private_mib": 72.30078125,
+      "process_count": 4,
+      "rss_peak_processes": [
+        {
+          "pid": 1920,
+          "rss_mib": 47.9765625,
+          "private_mib": 36.1171875
+        },
+        {
+          "pid": 11560,
+          "rss_mib": 6.37109375,
+          "private_mib": 1.5625
+        },
+        {
+          "pid": 17468,
+          "rss_mib": 6.6484375,
+          "private_mib": 33.7890625
+        },
+        {
+          "pid": 24844,
+          "rss_mib": 4.09375,
+          "private_mib": 0.83203125
+        }
+      ],
+      "rss_peak_elapsed_seconds": 0.5419887999996718
+    },
+    "engine": {
+      "rss_mib": 324.6875,
+      "private_mib": 308.26953125,
+      "process_count": 2,
+      "rss_peak_processes": [
+        {
+          "pid": 1920,
+          "rss_mib": 320.59375,
+          "private_mib": 307.4375
+        },
+        {
+          "pid": 24844,
+          "rss_mib": 4.09375,
+          "private_mib": 0.83203125
+        }
+      ],
+      "rss_peak_elapsed_seconds": 8.263764499999525
+    },
+    "save": {
+      "rss_mib": 325.921875,
+      "private_mib": 308.51953125,
+      "process_count": 2,
+      "rss_peak_processes": [
+        {
+          "pid": 1920,
+          "rss_mib": 321.828125,
+          "private_mib": 307.6875
+        },
+        {
+          "pid": 24844,
+          "rss_mib": 4.09375,
+          "private_mib": 0.83203125
+        }
+      ],
+      "rss_peak_elapsed_seconds": 8.47660840000026
+    },
+    "verify": {
+      "rss_mib": 327.24609375,
+      "private_mib": 309.61328125,
+      "process_count": 2,
+      "rss_peak_processes": [
+        {
+          "pid": 1920,
+          "rss_mib": 323.15234375,
+          "private_mib": 308.78125
+        },
+        {
+          "pid": 24844,
+          "rss_mib": 4.09375,
+          "private_mib": 0.83203125
+        }
+      ],
+      "rss_peak_elapsed_seconds": 8.541834499999823
+    },
+    "done": {
+      "rss_mib": 318.703125,
+      "private_mib": 300.90625,
+      "process_count": 2,
+      "rss_peak_processes": [
+        {
+          "pid": 1920,
+          "rss_mib": 314.609375,
+          "private_mib": 300.07421875
+        },
+        {
+          "pid": 24844,
+          "rss_mib": 4.09375,
+          "private_mib": 0.83203125
+        }
+      ],
+      "rss_peak_elapsed_seconds": 8.704986100001406
+    }
+  },
+  "worker": {
+    "machine": {
+      "platform": "Windows-10-10.0.26200-SP0",
+      "python": "3.11.9",
+      "cpu_name": "13th Gen Intel(R) Core(TM) i5-13400",
+      "logical_cpus": 16,
+      "installed_ram_mib": 32768.0,
+      "usable_ram_mib": 32527.9140625,
+      "available_ram_mib": 18184.109375,
+      "env": {
+        "PRYNX_VDP_WORKERS": null,
+        "PRYNX_MAX_VDP_JOBS": null,
+        "PRYNX_MAX_HEAVY_JOBS": null,
+        "PRYNX_MIN_FREE_DISK_MB": null
+      }
+    },
+    "records": 100,
+    "planner": {
+      "workers": 1,
+      "chunk_size": 100,
+      "chunks": 1,
+      "reason": "vdp: workers=15 (cpu=16, base=15, ram_installed_mb=32768, ram_usable_mb=32528, ram_tier_mb=32768->cap15)"
+    },
+    "source_start": {
+      "head": "a6163b38da74381b10f15ca26763ba44a7170dc8",
+      "files": {
+        "backend/app/workers/vdp_engine.py": "08e3e4f21ac9edd20e3f67da63bd1a908a16f33122a1f654a0d65807fca65021",
+        "backend/app/schemas/vdp.py": "f54f65b7e7f8174067e7abcb5fbf9116929a57e9954ee7dd2a33cea25d7f8127",
+        "backend/app/core/heavy_job_scheduler.py": "8b3a1313cb1ee5138114563b535c091521627bea5c93c1e9e8e75ecbd7109289",
+        "backend/app/core/system_memory.py": "c3452d87c7c4475ae9e4339602a92ef542b5477a1d58b9bb4d9ba25f1e52bbcd"
+      }
+    },
+    "font_sha256": "b3658eadae55e682b5f69eb64c439c1ecc8f196c0bb8d4756d145d13bc86476a",
+    "template_bytes": 1480,
+    "engine_wall_seconds": 7.898617099999683,
+    "save_wall_seconds": 0.1004425999999512,
+    "render_chunks_wall_seconds": 7.798174499999732,
+    "records_per_second": 12.660444066848616,
+    "output_bytes": 686476,
+    "output_sha256": "6f6f2ae09bafdeef4b649dca1996687dd74fb9d86b6fb6a6e5eb723d240f9947",
+    "output_path": "D:\\pdfcompare\\.tmp\\vdp-output-benchmark-2026-10-01\\100\\vdp-100.pdf",
+    "page_count": 100,
+    "sample_checks": [
+      {
+        "index_zero_based": 0,
+        "expected": "VDP-00000 Tiếng Việt",
+        "text_found": true,
+        "qr_has_dark_pixels": true,
+        "extracted_text": "PrynX synthetic VDP 2026-10-01\r\nVDP-00000 Tiếng Việt"
+      },
+      {
+        "index_zero_based": 1,
+        "expected": "VDP-00001 Đặng Hồng",
+        "text_found": true,
+        "qr_has_dark_pixels": true,
+        "extracted_text": "PrynX synthetic VDP 2026-10-01\r\nVDP-00001 Đặng Hồng"
+      },
+      {
+        "index_zero_based": 2,
+        "expected": "VDP-00002 Cộng hòa",
+        "text_found": true,
+        "qr_has_dark_pixels": true,
+        "extracted_text": "PrynX synthetic VDP 2026-10-01\r\nVDP-00002 Cộng hòa"
+      },
+      {
+        "index_zero_based": 3,
+        "expected": "VDP-00003 In dữ liệu",
+        "text_found": true,
+        "qr_has_dark_pixels": true,
+        "extracted_text": "PrynX synthetic VDP 2026-10-01\r\nVDP-00003 In dữ liệu"
+      },
+      {
+        "index_zero_based": 50,
+        "expected": "VDP-00050 Cộng hòa",
+        "text_found": true,
+        "qr_has_dark_pixels": true,
+        "extracted_text": "PrynX synthetic VDP 2026-10-01\r\nVDP-00050 Cộng hòa"
+      },
+      {
+        "index_zero_based": 98,
+        "expected": "VDP-00098 Cộng hòa",
+        "text_found": true,
+        "qr_has_dark_pixels": true,
+        "extracted_text": "PrynX synthetic VDP 2026-10-01\r\nVDP-00098 Cộng hòa"
+      },
+      {
+        "index_zero_based": 99,
+        "expected": "VDP-00099 In dữ liệu",
+        "text_found": true,
+        "qr_has_dark_pixels": true,
+        "extracted_text": "PrynX synthetic VDP 2026-10-01\r\nVDP-00099 In dữ liệu"
+      }
+    ],
+    "artifact_pass": true,
+    "source_finish": {
+      "head": "a6163b38da74381b10f15ca26763ba44a7170dc8",
+      "files": {
+        "backend/app/workers/vdp_engine.py": "08e3e4f21ac9edd20e3f67da63bd1a908a16f33122a1f654a0d65807fca65021",
+        "backend/app/schemas/vdp.py": "f54f65b7e7f8174067e7abcb5fbf9116929a57e9954ee7dd2a33cea25d7f8127",
+        "backend/app/core/heavy_job_scheduler.py": "8b3a1313cb1ee5138114563b535c091521627bea5c93c1e9e8e75ecbd7109289",
+        "backend/app/core/system_memory.py": "c3452d87c7c4475ae9e4339602a92ef542b5477a1d58b9bb4d9ba25f1e52bbcd"
+      }
+    },
+    "source_unchanged": true
+  },
+  "harness_path": "D:\\pdfcompare\\.tmp\\vdp_output_benchmark.py",
+  "harness_sha256": "9bc004f83ea382d6629226b8fc131f4b15d4c63862c36d5c50ccf9d780b56bb1",
+  "log_path": "D:\\pdfcompare\\.tmp\\vdp-output-benchmark-2026-10-01\\100\\worker.log",
+  "limitations": [
+    "One run per record count; no baseline comparison or p95.",
+    "Sum of working sets includes shared pages; private bytes reported separately.",
+    "Peak sampled at ~50ms; short transients may be missed.",
+    "Direct engine in dev Python, not packaged Tauri or UI flow.",
+    "Other user/app processes remained active; no exclusive-machine guarantee.",
+    "Samples verify exact Unicode text and QR dark pixels, not QR decode or Illustrator editability.",
+    "No variable images, CJK/emoji/RTL, embedded-font subset collisions, weak-hardware profile, or cancellation tested."
+  ]
+}

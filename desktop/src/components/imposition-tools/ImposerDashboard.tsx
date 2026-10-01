@@ -1768,7 +1768,9 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                 pageSheetMode,
                 shapeType: dieGeometryMode ? detectedShapeType : 'RECTANGLE',
                 shapeParams: dieGeometryMode ? detectedShapeParams : null,
-                targetQuantity: s.targetQuantity, targetQuantitiesByPage: s.targetQuantitiesByPage,
+                targetQuantity: s.targetQuantity,
+                autoFill: s.autoFill,
+                targetQuantitiesByPage: s.targetQuantitiesByPage,
                 // UI hiển thị ?? true khi chưa tick; PHẢI dùng cùng fallback lúc chạy
                 // (trước đây !!undefined = false → checkbox tick nhưng vẫn đè tab hiện tại).
                 // INKING (audit 2026-08-12 §INK-DIE-06): working PDF đi theo thứ
@@ -2232,6 +2234,7 @@ export default function ImposerDashboard({ tabId, isActive, onStartBooklet, onSt
                                 splitGap={splitGap}
                                 gapX={s.gapX} gapY={s.gapY}
                                 groupingStrategy={effectiveGroupingStrategy}
+                                autoFill={s.autoFill}
                                 clusterCombineMode={s.clusterCombineMode}
                                 clusterNesting={s.clusterNesting}
                                 clusterCutCmyk={s.clusterCutCmyk}

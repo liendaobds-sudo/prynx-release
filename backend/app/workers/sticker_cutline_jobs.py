@@ -155,6 +155,11 @@ def _builder_options(options: dict) -> dict:
     whole_page = values.pop("classic_whole_page")
     force_contour = values.pop("classic_force_contour")
     if whole_page:
+        for key in ("thrucut_enabled", "thrucut_shape", "thrucut_margin_mm",
+                    "thrucut_margin_top_mm", "thrucut_margin_bottom_mm",
+                    "thrucut_margin_left_mm", "thrucut_margin_right_mm",
+                    "thrucut_radius_mm"):
+            values.pop(key, None)
         values["classic_force_contour"] = force_contour
     return values
 

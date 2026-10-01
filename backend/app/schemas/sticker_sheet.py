@@ -23,6 +23,7 @@ StickerCutMode = Literal["original", "alpha", "bleed", "none"]
 StickerCornerStyle = Literal["preserve", "round", "miter"]
 StickerBleedColorType = Literal["auto", "image", "trajectory", "inpaint", "solid"]
 StickerShapeMode = Literal["contour", "auto_safe"]
+StickerThruCutShape = Literal["rounded_rect", "ellipse", "contour_offset"]
 CmykChannel = Annotated[float, Field(ge=0.0, le=100.0)]
 
 
@@ -95,6 +96,8 @@ class StickerSourceDetectRequest(BaseModel):
     # giữ mask nền phẳng đã đủ tin cậy, không chạy bước nâng hình học AI tùy chọn.
     preview_only: bool = False
     force: bool = False
+    # Đồng bộ tùy chọn khử bóng ngay từ lượt nhận diện đầu tiên.
+    shadow_cleanup: StickerShadowCleanup = "auto"
 
 
 class StickerSourceRefineRequest(BaseModel):
@@ -254,6 +257,16 @@ class StickerCutlinePreviewRequest(BaseModel):
     # định (hành vi Lô J); 0 = tắt hẳn; > 0 = mức người dùng chọn.
     cutline_denoise: float | None = Field(default=None, ge=0.0, le=100.0)
     cutline_simplify_mm: float = Field(default=0.0, ge=0.0, le=0.1, allow_inf_nan=False)
+    # [CUTLINE FIX 2026-10-01] Tùy chọn yêu cầu backend trả luôn quỹ đạo
+    # ThruCut canonical; route/worker cũ bỏ qua các trường này nên vẫn tương thích.
+    thrucut_enabled: bool = False
+    thrucut_shape: StickerThruCutShape = "rounded_rect"
+    thrucut_margin_mm: float = Field(default=3.0, ge=0.5, le=30.0)
+    thrucut_margin_top_mm: float | None = Field(default=None, ge=0.0, le=50.0)
+    thrucut_margin_bottom_mm: float | None = Field(default=None, ge=0.0, le=50.0)
+    thrucut_margin_left_mm: float | None = Field(default=None, ge=0.0, le=50.0)
+    thrucut_margin_right_mm: float | None = Field(default=None, ge=0.0, le=50.0)
+    thrucut_radius_mm: float = Field(default=3.0, ge=0.0, le=20.0)
 
 
 class StickerCutlineSimplificationResponse(BaseModel):
@@ -298,6 +311,10 @@ class StickerCutlinePreviewPathResponse(BaseModel):
     d: str
     segment_count: int = Field(ge=0)
     quality: StickerCutlineQualityResponse | None = None
+    # Quỹ đạo ThruCut do backend dựng từ cùng hình học canonical với export.
+    # None giữ tương thích với snapshot/API cũ; frontend sẽ dùng fallback hình học.
+    thrucut_d: str | None = None
+    thrucut_segment_count: int | None = Field(default=None, ge=0)
 
 
 class StickerCutlinePreviewResponse(BaseModel):
@@ -367,6 +384,18 @@ class StickerSheetExportRequest(BaseModel):
     ] = (0.0, 0.0, 0.0, 0.0)
     shape_mode: StickerShapeMode = "contour"
     draw_cut_contour: bool = True
+    # [CUTLINE FIX 2026-10-01] Sticker Sheet dùng chung hợp đồng Bế 2 dao
+    # (Demi trong + Đứt ngoài) với Classic StickerTool.
+    thrucut_enabled: bool = False
+    thrucut_shape: StickerThruCutShape = "rounded_rect"
+    thrucut_margin_mm: float = Field(default=3.0, ge=0.5, le=30.0)
+    thrucut_margin_top_mm: float | None = Field(default=None, ge=0.0, le=50.0)
+    thrucut_margin_bottom_mm: float | None = Field(default=None, ge=0.0, le=50.0)
+    thrucut_margin_left_mm: float | None = Field(default=None, ge=0.0, le=50.0)
+    thrucut_margin_right_mm: float | None = Field(default=None, ge=0.0, le=50.0)
+    thrucut_radius_mm: float = Field(default=3.0, ge=0.0, le=20.0)
+    thrucut_spot_name: str = Field(default="ThruCut", min_length=1, max_length=64)
+    thrucut_color_hex: str = Field(default="#00FFFF", min_length=4, max_length=32)
     # QUALITY (audit 2026-08-08 §UNIFIED.7): nhánh này chỉ được dùng khi mọi
     # thiết lập hình học còn nguyên và mask chưa bị sửa; worker kiểm tra lại.
     preserve_existing_cut: bool = True

@@ -210,6 +210,27 @@ describe('useClassicCutlinePreview — realtime nhẹ', () => {
 
     afterEach(() => {
         vi.useRealTimers();
+        vi.unstubAllGlobals();
+    });
+
+    it('Alpha vẫn dùng preview canonical của server, không giải mã bitmap cục bộ', async () => {
+        const imageFile = new File(['png'], 'tem.png', { type: 'image/png' });
+        resolveSourceFile.mockResolvedValue(imageFile);
+        apiMocks.inspectStickerSourceManifest.mockResolvedValue(alphaInspection);
+        apiMocks.detectStickerSourceManifest.mockResolvedValue({ ...detection, boundary_source: 'alpha' });
+        apiMocks.previewStickerCutline.mockResolvedValue(preview('a'.repeat(64)));
+        const createImageBitmapMock = vi.fn();
+        vi.stubGlobal('createImageBitmap', createImageBitmapMock);
+
+        const hook = renderHook(() => useClassicCutlinePreview({
+            ...options(50), cutMode: 'alpha', autoSimplify: false,
+        }), { wrapper: WorkspaceWrapper });
+        await startFirstPreview();
+
+        expect(createImageBitmapMock).not.toHaveBeenCalled();
+        expect(apiMocks.previewStickerCutline).toHaveBeenCalledTimes(1);
+        expect(hook.result.current.canonicalReference).not.toBeNull();
+        hook.unmount();
     });
 
     it.each(['alpha', 'simple-bg', 'ai'])(

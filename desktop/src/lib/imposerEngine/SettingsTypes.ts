@@ -144,6 +144,7 @@ export interface DieCutSettings extends BaseSettings {
     detectedShapeParamsByPage?: Record<number, Record<string, unknown>>;
     
     targetQuantity?: number;
+    autoFill?: boolean;
     targetQuantitiesByPage?: Record<number, number>;
     groupingStrategy?: 'free_gang' | 'maximize_area' | 'strict_ratio' | 'cluster_tile' | 'none';
     

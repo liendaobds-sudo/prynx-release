@@ -20,6 +20,7 @@ import '../../styles/dieline-tool.css';
 import { useTranslation } from 'react-i18next';
 import { tv } from '../../i18n';
 import { usePrintDialog } from '../shared/usePrintDialog';
+import OpenDielineInDesignButton from './OpenDielineInDesignButton';
 import { toast } from 'sonner';
 import { useFeatureActionGuard } from '../../hooks/useToolActivationGuard';
 
@@ -219,7 +220,9 @@ export default function DielineTool({ tabId, isActive }: { tabId?: string; isAct
             let numPages = 1;
             let blob: Blob | null;
             if (activeTab === 'nesting' && nestingResult) {
-                if ((dieline.params.boxType === 'tray' || dieline.params.boxType === 'double_tray') && sleeveNestingResult) {
+                // [RIGID-MAGNETIC 2026-10-01 §RMB.1] Hộp cứng có hai mảnh
+                // giống tray: PDF phải dùng kết quả xếp riêng khay và áo bồi.
+                if ((dieline.params.boxType === 'tray' || dieline.params.boxType === 'double_tray' || dieline.params.boxType === 'rigid_magnetic') && sleeveNestingResult) {
                     blob = await buildTrayNestingPdfBlob(dieline, nestingResult, sleeveNestingResult, nestingConfig);
                     numPages = nestingConfig.trayNestingMode === 'split' ? 2 : 1;
                 } else {
@@ -510,6 +513,7 @@ export default function DielineTool({ tabId, isActive }: { tabId?: string; isAct
                                 title={tv('PDF sạch với màu spot và overprint, không có kích thước/chú thích')}>
                                 PDF sản xuất
                             </button>
+                            <OpenDielineInDesignButton model={dieline} disabled={!canExport} />
                         </>
                     )}
                     {activeTab === 'nesting' && dieline && nestingResult && (
@@ -517,7 +521,9 @@ export default function DielineTool({ tabId, isActive }: { tabId?: string; isAct
                             <button className="dt-export-tab" disabled={!canExport}
                                 onClick={() => {
                                     runGuardedExport(() => {
-                                        if ((dieline.params.boxType === 'tray' || dieline.params.boxType === 'double_tray') && sleeveNestingResult)
+                                        // [RIGID-MAGNETIC 2026-10-01 §RMB.1] Giữ đúng nhánh
+                                        // xuất hai mảnh cho khay nam châm.
+                                        if ((dieline.params.boxType === 'tray' || dieline.params.boxType === 'double_tray' || dieline.params.boxType === 'rigid_magnetic') && sleeveNestingResult)
                                             downloadTrayNestingPDF(dieline, nestingResult, sleeveNestingResult, nestingConfig);
                                         else downloadNestingPDF(dieline, nestingResult, nestingConfig);
                                     });
@@ -528,7 +534,9 @@ export default function DielineTool({ tabId, isActive }: { tabId?: string; isAct
                             <button className="dt-export-tab" disabled={!canExport}
                                 onClick={() => {
                                     runGuardedExport(() => {
-                                        if ((dieline.params.boxType === 'tray' || dieline.params.boxType === 'double_tray') && sleeveNestingResult)
+                                        // [RIGID-MAGNETIC 2026-10-01 §RMB.1] PDF sản xuất
+                                        // cũng phải nhận đủ khay + áo bồi.
+                                        if ((dieline.params.boxType === 'tray' || dieline.params.boxType === 'double_tray' || dieline.params.boxType === 'rigid_magnetic') && sleeveNestingResult)
                                             downloadProductionTrayNestingPDF(dieline, nestingResult, sleeveNestingResult, nestingConfig);
                                         else downloadProductionNestingPDF(dieline, nestingResult);
                                     });

@@ -1,4 +1,5 @@
 import { appVisibilityGate, type AppVisibilityGate } from '../../lib/appVisibility';
+import { viewerTraceEnabled, viewerTraceLog } from '../../lib/previewPerfLog';
 
 export class SupersededTileRenderError extends Error {
     constructor() {
@@ -53,6 +54,7 @@ export interface TileRenderTask<T> {
     requestKey: string;
     groupKey: string;
     ownerId: string;
+    requestId?: string;
     priority: number;
     run: () => Promise<T>;
 }
@@ -64,6 +66,28 @@ interface ScheduledTask<T> extends TileRenderTask<T> {
     reject: (reason: unknown) => void;
     state: 'queued' | 'running';
     lane: 'interactive' | 'background' | null;
+    enqueuedAt: number;
+    startedAt: number | null;
+}
+
+type SchedulerReporter = (event: string, payload: Record<string, unknown>) => void;
+
+function schedulerNow(): number {
+    return typeof performance !== 'undefined' ? performance.now() : Date.now();
+}
+
+function defaultSchedulerReporter(event: string, payload: Record<string, unknown>): void {
+    // PERF (audit 2026-10-01 §QUEUE.01): trace là công cụ chẩn đoán, không được chen
+    // microtask/IPC vào mỗi tile khi PRYNX_PERF đang tắt. Probe đầu phiên có thể bỏ qua
+    // vài sự kiện đầu; sau khi cờ đã bật, toàn bộ queue lifecycle vẫn được ghi.
+    if (!viewerTraceEnabled()) return;
+    // PERF (audit 2026-10-01 §QUEUE.01): nối độ sâu queue với request_id của coordinator;
+    // lỗi ghi trace tuyệt đối không được làm hỏng đường dựng hình.
+    try {
+        void viewerTraceLog(`tile-scheduler-${event}`, payload);
+    } catch {
+        // Trace chẩn đoán không được chặn scheduler.
+    }
 }
 
 /**
@@ -88,6 +112,10 @@ export class TileRenderScheduler<T> {
         private readonly maxConcurrent = 1,
         private readonly visibility: AppVisibilityGate = appVisibilityGate,
         private readonly maxBackgroundConcurrent = maxConcurrent === 1 ? 1 : maxConcurrent - 1,
+        private readonly report: SchedulerReporter = defaultSchedulerReporter,
+        // PERF (audit 2026-10-01 §QUEUE.02): request của trang đang xem không được
+        // đứng im chỉ vì WebView2 báo occluded/mất focus tạm thời. Lane nền vẫn dừng.
+        private readonly allowInteractiveWhenBackgrounded = false,
     ) {
         if (!Number.isInteger(maxConcurrent) || maxConcurrent < 1) {
             throw new Error('maxConcurrent phải là số nguyên dương');
@@ -134,9 +162,12 @@ export class TileRenderScheduler<T> {
             reject,
             state: 'queued',
             lane: null,
+            enqueuedAt: schedulerNow(),
+            startedAt: null,
         };
         this.queued.push(task);
         this.byRequestKey.set(task.requestKey, task);
+        this.reportTrace('enqueue', task);
         this.schedulePump();
         return promise;
     }
@@ -200,6 +231,7 @@ export class TileRenderScheduler<T> {
             if (task.ownerId !== ownerId || task.groupKey !== groupKey) continue;
             this.queued.splice(index, 1);
             this.byRequestKey.delete(task.requestKey);
+            this.reportTrace('cancel-queued', task, { reason: reason.name });
             task.reject(reason);
         }
     }
@@ -210,6 +242,7 @@ export class TileRenderScheduler<T> {
             if (task.ownerId !== ownerId) continue;
             this.queued.splice(index, 1);
             this.byRequestKey.delete(task.requestKey);
+            this.reportTrace('cancel-queued', task, { reason: reason.name });
             task.reject(reason);
         }
     }
@@ -222,6 +255,7 @@ export class TileRenderScheduler<T> {
         for (const task of this.byRequestKey.values()) {
             if (task.state !== 'running' || task.ownerId !== ownerId || task.groupKey !== groupKey) continue;
             this.byRequestKey.delete(task.requestKey);
+            this.reportTrace('cancel-running', task, { reason: reason.name, physical: true });
             task.reject(reason);
         }
     }
@@ -230,6 +264,7 @@ export class TileRenderScheduler<T> {
         for (const task of this.byRequestKey.values()) {
             if (task.state !== 'running' || task.ownerId !== ownerId) continue;
             this.byRequestKey.delete(task.requestKey);
+            this.reportTrace('cancel-running', task, { reason: reason.name, physical: true });
             task.reject(reason);
         }
     }
@@ -259,7 +294,8 @@ export class TileRenderScheduler<T> {
     }
 
     private pump(): void {
-        if (this.visibility.isBackgrounded()) {
+        const backgrounded = this.visibility.isBackgrounded();
+        if (backgrounded && !this.allowInteractiveWhenBackgrounded) {
             this.pauseUntilForeground();
             return;
         }
@@ -267,23 +303,39 @@ export class TileRenderScheduler<T> {
             this.queued.sort((left, right) =>
                 left.priority - right.priority || left.sequence - right.sequence
             );
-            const runnableIndex = this.queued.findIndex(task =>
-                task.priority < 100 || this.activeBackgroundCount < this.maxBackgroundConcurrent
-            );
-            if (runnableIndex < 0) return;
+            const runnableIndex = this.queued.findIndex(task => {
+                // Khi nền, chỉ lane tương tác được đi qua; prefetch không được đánh thức
+                // theo sau request active và không chiếm CPU/RAM lúc cửa sổ bị che.
+                if (backgrounded && task.priority >= 100) return false;
+                return task.priority < 100 || this.activeBackgroundCount < this.maxBackgroundConcurrent;
+            });
+            if (runnableIndex < 0) {
+                if (backgrounded) this.pauseUntilForeground();
+                return;
+            }
             const [task] = this.queued.splice(runnableIndex, 1);
             if (!task) return;
 
             task.state = 'running';
             task.lane = task.priority < 100 ? 'interactive' : 'background';
+            task.startedAt = schedulerNow();
             this.activeCount += 1;
             if (task.lane === 'background') this.activeBackgroundCount += 1;
+            this.reportTrace('start', task, {
+                queue_wait_ms: Math.max(0, task.startedAt - task.enqueuedAt),
+            });
             Promise.resolve()
                 .then(task.run)
                 .then(task.resolve, task.reject)
                 .finally(() => {
+                    const finishedAt = schedulerNow();
                     this.activeCount -= 1;
                     if (task.lane === 'background') this.activeBackgroundCount -= 1;
+                    this.reportTrace('finish', task, {
+                        run_ms: task.startedAt === null ? null : Math.max(0, finishedAt - task.startedAt),
+                        active_count: this.activeCount,
+                        active_background_count: this.activeBackgroundCount,
+                    });
                     if (this.activeCount === 0) this.quarantined = false;
                     if (this.byRequestKey.get(task.requestKey) === task) {
                         this.byRequestKey.delete(task.requestKey);
@@ -294,6 +346,27 @@ export class TileRenderScheduler<T> {
                         this.schedulePump();
                     }
                 });
+        }
+        if (backgrounded && this.queued.length > 0) this.pauseUntilForeground();
+    }
+
+    private reportTrace(event: string, task: ScheduledTask<T>, extra: Record<string, unknown> = {}): void {
+        try {
+            this.report(event, {
+                request_id: task.requestId,
+                owner_id: task.ownerId,
+                group_key: task.groupKey,
+                priority: task.priority,
+                lane: task.lane ?? (task.priority < 100 ? 'interactive' : 'background'),
+                queue_depth: this.queued.length,
+                active_count: this.activeCount,
+                active_background_count: this.activeBackgroundCount,
+                max_concurrent: this.maxConcurrent,
+                max_background_concurrent: this.maxBackgroundConcurrent,
+                ...extra,
+            });
+        } catch {
+            // Reporter test/runtime lỗi không được làm rơi promise render.
         }
     }
 
@@ -321,7 +394,9 @@ interface TileSchedulerHotData {
 
 const schedulerHotData = import.meta.hot?.data as TileSchedulerHotData | undefined;
 export const nativeTileRenderScheduler = schedulerHotData?.nativeTileRenderScheduler
-    ?? new TileRenderScheduler<ArrayBuffer>(2);
+    // PERF (audit 2026-10-01 §QUEUE.02): bỏ chặn focus/occlusion cho lane active;
+    // prefetch vẫn chờ foreground và không tăng số slot vật lý.
+    ?? new TileRenderScheduler<ArrayBuffer>(2, appVisibilityGate, undefined, undefined, true);
 
 if (schedulerHotData) schedulerHotData.nativeTileRenderScheduler = nativeTileRenderScheduler;
 

@@ -134,6 +134,33 @@ describe('VdpRecordNavigatorBar', () => {
         expect(nextState.recordIndex).toBe(3);
     });
 
+    it('phát event đổi record kèm tabId để tab nền không nhận nhầm', () => {
+        const eventSpy = vi.fn();
+        window.addEventListener('vdp-preview-index-change', eventSpy);
+        render(
+            <VdpRecordNavigatorBar
+                tabId="tab-a"
+                vdpLivePreview={mockPreviewState}
+                setVdpLivePreview={vi.fn()}
+            />
+        );
+
+        fireEvent.click(screen.getByTestId('vdp-next-record-btn'));
+        expect(eventSpy).toHaveBeenCalledTimes(1);
+        expect((eventSpy.mock.calls[0][0] as CustomEvent).detail).toEqual({ index: 3, tabId: 'tab-a' });
+        window.removeEventListener('vdp-preview-index-change', eventSpy);
+    });
+
+    it('hiện trạng thái rõ ràng khi record chưa có trong mẫu preview', () => {
+        render(
+            <VdpRecordNavigatorBar
+                vdpLivePreview={{ ...mockPreviewState, recordIndex: 21, totalRecords: 25, currentRecord: null }}
+                setVdpLivePreview={vi.fn()}
+            />
+        );
+        expect(screen.getByTestId('vdp-record-preview-unavailable')).toBeTruthy();
+    });
+
     it('nhập số vào ô record tự động clamp trong khoảng [1, totalRecords]', () => {
         const setVdp = vi.fn();
         render(

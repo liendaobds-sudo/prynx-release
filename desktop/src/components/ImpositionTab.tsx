@@ -232,15 +232,21 @@ function asRecipeParams(value: object): Record<string, unknown> {
 function ClassicCutlinePageOverlay({
     preview,
     isUpdating,
+    cornerStyle,
     thrucut,
     showDimensions,
 }: {
     preview: StickerCutlinePreview;
     isUpdating: boolean;
+    cornerStyle?: ClassicCutlineViewerPreview['cornerStyle'];
     thrucut?: ClassicCutlineViewerPreview['thrucut'];
     showDimensions?: boolean;
 }) {
     const displayZoom = useWorkspaceStore(state => state.viewerZoom);
+    const viewerActivePagePhysical = useWorkspaceStore(state => state.viewerActivePagePhysical);
+    const pageWidthMm = viewerActivePagePhysical
+        ? viewerActivePagePhysical.widthPt * (25.4 / 72)
+        : undefined;
     return (
         <div
             data-testid="classic-cutline-page-overlay"
@@ -251,7 +257,9 @@ function ClassicCutlinePageOverlay({
                 preview={preview}
                 selectedInstanceId={null}
                 displayZoom={displayZoom}
+                cornerStyle={cornerStyle}
                 thrucut={thrucut}
+                pageWidthMm={pageWidthMm}
                 showDimensions={showDimensions}
             />
         </div>
@@ -2114,21 +2122,44 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
         tabId,
     ]);
 
+    // [VDP COMMIT FIX 2026-10-01]: hook trả object mới mỗi lần render, nhưng
+    // pushSnapshot là callback ổn định. Phụ thuộc cả editHistory sẽ cleanup/hủy
+    // commit đang chờ I/O ngay khi picker thêm field vào store.
+    const pushVdpTemplateSnapshot = editHistory.pushSnapshot;
     // Auto-update workspace template whenever a VDP text object is picked/cleaned
     useEffect(() => {
+        let disposed = false;
+        let requestRevision = 0;
         const handleTemplateCleaned = async (event: Event) => {
             const detail = (event as CustomEvent)?.detail;
             if (!detail?.workingPdfUrl) return;
 
+            const notifyCommitResult = (success: boolean, error?: string) => {
+                if (!detail.pickId) return;
+                window.dispatchEvent(new CustomEvent('vdp-template-commit-result', {
+                    detail: {
+                        tabId,
+                        pickId: detail.pickId,
+                        sourceFid: detail.sourceFid,
+                        workingFid: detail.workingFid,
+                        workingPdfPath: detail.workingPdfPath,
+                        success,
+                        ...(error ? { error } : {}),
+                    },
+                }));
+            };
+
             // [VDP ISOLATION]: Bỏ qua sự kiện nếu không khớp với tab hiện tại hoặc file hiện tại
-            if (detail.tabId && tabId && detail.tabId !== tabId) return;
-            if (detail.sourceFid && selectionFileId && detail.sourceFid !== selectionFileId) return;
+            if (detail.tabId !== tabId) return;
+            if (detail.sourceFid && selectionFileId && detail.sourceFid !== selectionFileId) {
+                notifyCommitResult(false, 'Template VDP đã thay đổi trước khi commit.');
+                return;
+            }
+            const revision = ++requestRevision;
 
             try {
                 const isTauri = Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
                 const originalName = file?.name || 'template.pdf';
-                const currentVdp = store.getState().vdpFields;
-                const currentSelected = store.getState().selectedVdpFieldIds;
                 const prevPdfUrl = pdfUrl;
 
                 let newFile: File;
@@ -2150,20 +2181,36 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                         ? detail.workingPdfUrl
                         : `${apiBase}${detail.workingPdfUrl.startsWith('/') ? '' : '/'}${detail.workingPdfUrl}`;
                     const res = await authenticatedFetch(url);
-                    if (!res.ok) return;
+                    if (!res.ok) throw new Error(`Không tải được template VDP sạch (HTTP ${res.status})`);
                     const blob = await res.blob();
                     newFile = new File([blob], originalName, { type: 'application/pdf' });
                     newPdfUrl = URL.createObjectURL(blob);
                     sizeStr = (blob.size / (1024 * 1024)).toFixed(2) + ' MB';
                 }
 
+                // VDP (audit 2026-10-01 §VDP.S07): fetch/stat cũ không được
+                // ghi đè file hoặc chỉnh sửa mới trong lúc đang chờ response.
+                const current = store.getState();
+                if (disposed || revision !== requestRevision
+                    || current.file !== file || current.editGeneration !== editGeneration) {
+                    if (newPdfUrl.startsWith('blob:')) URL.revokeObjectURL(newPdfUrl);
+                    notifyCommitResult(false, 'Commit template VDP đã bị thay thế bởi thay đổi mới hơn.');
+                    return;
+                }
+                const currentVdp = current.vdpFields;
+                const currentSelected = current.selectedVdpFieldIds;
+
                 // [VDP EDIT-COMMIT] Đánh dấu __editCommit: true để AcrobatViewer & usePdfLoader
                 // coi đây là commit nội dung (cấu trúc trang không đổi) -> BỎ QUA reset scroll/zoom/view,
                 // giữ nguyên hoàn toàn vị trí xem của người dùng mà không bị nhảy về góc trên trái (0, 0).
                 try { Object.defineProperty(newFile, '__editCommit', { value: true, configurable: true }); } catch { /* noop */ }
+                // [VDP LEASE FIX 2026-10-01]: giữ vé artifact của template đã làm
+                // sạch trên File mới; effect ArtifactLeaseOwner sẽ claim/renew nó
+                // cùng current + history và release đúng khi tab đóng hoặc đổi file.
+                tagArtifactLeaseToken(newFile, detail.artifact_lease);
                 markGeneratedWorkspaceFile(newFile);
 
-                editHistory.pushSnapshot({ file, pdfUrl: prevPdfUrl, fid: selectionFileId });
+                pushVdpTemplateSnapshot({ file, pdfUrl: prevPdfUrl, fid: selectionFileId });
                 setFile(newFile);
                 setOriginalFileName(originalName);
                 setPdfUrl(newPdfUrl);
@@ -2183,15 +2230,18 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                 if (prevPdfUrl && prevPdfUrl.startsWith('blob:') && prevPdfUrl !== newPdfUrl) {
                     URL.revokeObjectURL(prevPdfUrl);
                 }
+                notifyCommitResult(true);
             } catch (err) {
                 console.warn('Failed to commit cleaned VDP template:', err);
+                notifyCommitResult(false, err instanceof Error ? err.message : String(err));
             }
         };
         window.addEventListener('vdp-template-cleaned', handleTemplateCleaned);
         return () => {
+            disposed = true;
             window.removeEventListener('vdp-template-cleaned', handleTemplateCleaned);
         };
-    }, [file, pdfUrl, setFile, setPdfUrl, setOriginalFileName, setFileSizeStr, setIsSaved, setSelectionFileId, selectionFileId, editHistory, tabId, store]);
+    }, [file, pdfUrl, editGeneration, setFile, setPdfUrl, setOriginalFileName, setFileSizeStr, setIsSaved, setSelectionFileId, selectionFileId, pushVdpTemplateSnapshot, tabId, store]);
 
     // Khi tab bị inactive (chuyển sang tab khác), tự động tắt chế độ chọn trường VDP
     // để tránh click nhầm hoặc rò rỉ trạng thái picking giữa các tab
@@ -3599,6 +3649,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
             detectedShapesByPage: config.detectedShapesByPage,
             detectedShapeParamsByPage: config.detectedShapeParamsByPage,
             targetQuantity: config.targetQuantity,
+            autoFill: config.autoFill,
             targetQuantitiesByPage: config.targetQuantitiesByPage,
             groupingStrategy: config.groupingStrategy,
             clusterCombineMode: config.clusterCombineMode,
@@ -4624,6 +4675,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                             preview={classicCutlineOverlay.preview}
                                             isUpdating={classicCutlineOverlay.isUpdating}
                                             thrucut={classicCutlineOverlay.thrucut}
+                                            cornerStyle={classicCutlineOverlay.cornerStyle}
                                             showDimensions={classicCutlineOverlay.showDimensions}
                                         />
                                     ) : undefined}
@@ -4877,6 +4929,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                         />
                                                     ) : rightPanelKind === 'numbering' ? (
                                                         <NumberingTool
+                                                            tabId={tabId}
                                                             pdfFile={file}
                                                             getWorkingFile={getWorkingFile}
                                                             vdpFields={vdpFields}
@@ -4922,6 +4975,7 @@ function ImpositionTabInner({ tabId, isActive, onDirtyChange, onTitleChange, onS
                                                         />
                                                     ) : rightPanelKind === 'cover_numbering' ? (
                                                         <CoverNumberingTool
+                                                            tabId={tabId}
                                                             pdfFile={file}
                                                             getWorkingFile={getWorkingFile}
                                                             workingPageCount={viewerPageOrder?.length ?? viewerNumPages}

@@ -22,6 +22,7 @@ import {
 // phân loại hình), không còn theo option thủ công gridStrategy==='true_shape_nesting'.
 import {
   TRUE_SHAPE_NESTING_ENABLED,
+  resolveGridStrategy,
   shouldUseTrueShapeNesting,
   trueShapeJobMembershipKey,
 } from "../trueShapeNestingRollout";
@@ -110,6 +111,7 @@ export interface GridPreviewProps {
   bleed?: number; // in mm
   cutBorder?: CutBorderConfig;
   groupingStrategy?: string;
+  autoFill?: boolean;
   clusterCombineMode?: string;
   clusterNesting?: boolean;
   clusterCutCmyk?: [number, number, number, number];
@@ -1455,6 +1457,7 @@ export default function GridPreview(props: GridPreviewProps) {
     bleed = 0,
     cutBorder,
     groupingStrategy,
+    autoFill = false,
     clusterCombineMode,
     clusterNesting,
     clusterCutCmyk,
@@ -1549,6 +1552,7 @@ export default function GridPreview(props: GridPreviewProps) {
         marginBottom,
         usableW,
         usableH,
+        autoFill: Boolean(autoFill),
       }),
     [
       imposerMode,
@@ -1584,6 +1588,7 @@ export default function GridPreview(props: GridPreviewProps) {
       marginBottom,
       usableW,
       usableH,
+      autoFill,
     ],
   );
 
@@ -1981,6 +1986,7 @@ export default function GridPreview(props: GridPreviewProps) {
       fp: filePath || "",
       bl: bleed,
       grp: groupingStrategy,
+      af: autoFill,
       ccm: clusterCombineMode,
       cn: clusterNesting !== false,
       ccmyk: clusterCutCmyk,
@@ -2057,6 +2063,7 @@ export default function GridPreview(props: GridPreviewProps) {
     filePath,
     bleed,
     groupingStrategy,
+    autoFill,
     clusterCombineMode,
     clusterNesting,
     clusterCutCmyk,
@@ -2496,7 +2503,19 @@ export default function GridPreview(props: GridPreviewProps) {
           // không phải "Cách xếp" người dùng. usesTrueShape đã định tuyến (bản sao route_true_shape),
           // nên gửi token true_shape_nesting để /preview-layout/jobs nhận đúng nhánh nesting; còn
           // gridStrategy thật (optimal_auto) vẫn giữ nguyên cho export dùng route_true_shape.
-          strategy: requestUsesTrueShape ? "true_shape_nesting" : (gridStrategy || "optimal_auto"),
+          strategy: requestUsesTrueShape
+            ? "true_shape_nesting"
+            : resolveGridStrategy({
+              enabled: TRUE_SHAPE_NESTING_ENABLED,
+              activeTool: activeTool === "cnc_imposer"
+                ? "cnc_imposer"
+                : isDieCut
+                  ? "sticker_imposer"
+                  : "guillotine_imposer",
+              taskMode,
+              gridStrategy: gridStrategy || "optimal_auto",
+              autoFill: Boolean(autoFill),
+            }),
           // PARITY (audit 2026-08-31 §NEST-PREVIEW-INTENT): token engine giống nhau,
           // nhưng chỉ auto-route optimal_auto được quyền nhường layout lưới.
           allow_legacy_fallback: requestUsesTrueShape,
@@ -2543,6 +2562,7 @@ export default function GridPreview(props: GridPreviewProps) {
           report_lamination_sides: reportLaminationSides,
           report_order_code: reportOrderCode,
           grouping_strategy: groupingStrategy,
+          auto_fill: Boolean(autoFill),
           cluster_combine_mode: clusterCombineMode,
           cluster_nesting: clusterNesting !== false,
           cluster_cut_cmyk: clusterCutCmyk,
@@ -2574,7 +2594,9 @@ export default function GridPreview(props: GridPreviewProps) {
           // BẮT BUỘC: số trang viewer sau xóa thumbnail (vd 4) — không tin doc.page_count.
           total_pages: viewerPageCount > 0 ? viewerPageCount : 0,
           split_gap: splitGap * MM_TO_PT,
-          target_quantity: Number(targetQuantity) || 0,
+          target_quantity: (autoFill && Number(targetQuantity) <= 1 && !Object.values(targetQuantitiesByPage || {}).some((v) => Number(v) > 1))
+            ? 0
+            : (Number(targetQuantity) || 0),
           // Chỉ gửi SL cho các trang còn lại (0..viewerPageCount-1), bỏ key trang đã xóa.
           target_quantities_by_page: Object.fromEntries(
             Object.entries(targetQuantitiesByPage || {})

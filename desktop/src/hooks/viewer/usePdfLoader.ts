@@ -934,24 +934,14 @@ export function usePdfLoader({
                         };
                     };
 
-                    if (doc.numPages > 100) {
-                        // UIUX (audit 2026-08-22 §UX.VIEW.09): không nhân bản khổ trang 1
-                        // cho tài liệu dài. Chỉ đọc trang 1 để mở Viewer ngay; phần còn lại
-                        // hydrate tuần tự ở nền, publish theo cụm để mixed-size vẫn đúng mà
-                        // không tạo hàng chục nghìn Promise cùng lúc.
-                        try {
-                            dims[1] = await readPageDim(1);
-                        } catch (e) {
-                            console.error('Không đọc được kích thước trang 1:', e);
-                        }
-                    } else {
-                        const promises = [];
-                        for (let i = 1; i <= doc.numPages; i++) {
-                            promises.push(readPageDim(i).then(dim => {
-                                dims[i] = dim;
-                            }).catch(() => { }));
-                        }
-                        await Promise.all(promises);
+                    // PERF (audit 2026-10-01 §OPEN.03): page 1 là hợp đồng first-pixel;
+                    // không chờ parse kích thước toàn bộ PDF.js trước khi mount Viewer.
+                    // Các trang còn lại hydrate tuần tự sau frame đầu, tránh burst Promise
+                    // trên PDF nhiều ảnh/vector mà vẫn giữ đúng khổ mixed-size.
+                    try {
+                        dims[1] = await readPageDim(1);
+                    } catch (e) {
+                        console.error('Không đọc được kích thước trang 1:', e);
                     }
                     
                     if (cancelled) return;
@@ -976,8 +966,8 @@ export function usePdfLoader({
                     }
                     markReady();
 
-                    if (doc.numPages > 100) {
-                        const hydrateLongDocument = async () => {
+                    if (doc.numPages > 1) {
+                        const hydrateRemainingDocument = async () => {
                             const pending: Record<number, { w: number; h: number; widthPt: number }> = {};
                             for (let i = 2; i <= doc.numPages; i += 1) {
                                 if (cancelled || generation !== loadGenerationRef.current) return;
@@ -1000,13 +990,13 @@ export function usePdfLoader({
                         // PERF (audit 2026-08-22 §UX.TH.05): chỉ hydrate sau first
                         // frame của tab đang xem; tab nền giữ metadata trang 1 và
                         // sẽ tự khởi động khi user chuyển sang.
-                        const startLongMetadataHydration = () => {
-                            if (metadataHydrationStartRef.current !== startLongMetadataHydration) return;
+                        const startRemainingMetadataHydration = () => {
+                            if (metadataHydrationStartRef.current !== startRemainingMetadataHydration) return;
                             metadataHydrationStartRef.current = null;
-                            void hydrateLongDocument();
+                            void hydrateRemainingDocument();
                         };
-                        startHydrationForGeneration = startLongMetadataHydration;
-                        metadataHydrationStartRef.current = startLongMetadataHydration;
+                        startHydrationForGeneration = startRemainingMetadataHydration;
+                        metadataHydrationStartRef.current = startRemainingMetadataHydration;
                     }
                 } catch (e) {
                     markError(e, 'pdfjs_error');

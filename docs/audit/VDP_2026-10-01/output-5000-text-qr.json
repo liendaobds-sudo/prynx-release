@@ -1,0 +1,407 @@
+{
+  "date_utc": "2026-10-01T05:35:12.484715+00:00",
+  "exit_code": 0,
+  "workload": {
+    "kind": "A6 text + unique QR per record",
+    "template_pages": 1,
+    "fields": 2,
+    "font": "Arial TTF Type0",
+    "text": "unique VDP-00000 + 4 Vietnamese variants",
+    "qr": "unique URL, errorCorrection=M",
+    "images": 0
+  },
+  "controller_wall_seconds": 47.59382079999705,
+  "memory_sample_interval_seconds": 0.05,
+  "memory_sample_count": 532,
+  "memory_peaks": {
+    "all": {
+      "rss_mib": 13372.5546875,
+      "private_mib": 13240.72265625,
+      "process_count": 22,
+      "rss_peak_processes": [
+        {
+          "pid": 2320,
+          "rss_mib": 889.32421875,
+          "private_mib": 881.28125
+        },
+        {
+          "pid": 4884,
+          "rss_mib": 889.375,
+          "private_mib": 881.5859375
+        },
+        {
+          "pid": 8292,
+          "rss_mib": 889.26953125,
+          "private_mib": 881.67578125
+        },
+        {
+          "pid": 9624,
+          "rss_mib": 890.28515625,
+          "private_mib": 882.47265625
+        },
+        {
+          "pid": 9988,
+          "rss_mib": 889.1328125,
+          "private_mib": 881.2421875
+        },
+        {
+          "pid": 10220,
+          "rss_mib": 888.54296875,
+          "private_mib": 880.6171875
+        },
+        {
+          "pid": 13868,
+          "rss_mib": 54.0078125,
+          "private_mib": 41.12890625
+        },
+        {
+          "pid": 13928,
+          "rss_mib": 888.6953125,
+          "private_mib": 880.80859375
+        },
+        {
+          "pid": 14756,
+          "rss_mib": 890.3125,
+          "private_mib": 882.3671875
+        },
+        {
+          "pid": 17628,
+          "rss_mib": 888.1328125,
+          "private_mib": 880.84765625
+        },
+        {
+          "pid": 21312,
+          "rss_mib": 889.76171875,
+          "private_mib": 882.171875
+        },
+        {
+          "pid": 21536,
+          "rss_mib": 888.08984375,
+          "private_mib": 880.265625
+        },
+        {
+          "pid": 22208,
+          "rss_mib": 890.05859375,
+          "private_mib": 882.78125
+        },
+        {
+          "pid": 22996,
+          "rss_mib": 864.2265625,
+          "private_mib": 856.34765625
+        },
+        {
+          "pid": 23288,
+          "rss_mib": 890.7890625,
+          "private_mib": 883.54296875
+        },
+        {
+          "pid": 24384,
+          "rss_mib": 4.04296875,
+          "private_mib": 0.7421875
+        },
+        {
+          "pid": 25528,
+          "rss_mib": 888.5078125,
+          "private_mib": 880.84375
+        }
+      ],
+      "rss_peak_elapsed_seconds": 37.11879509999926
+    },
+    "engine": {
+      "rss_mib": 13372.5546875,
+      "private_mib": 13240.72265625,
+      "process_count": 22,
+      "rss_peak_processes": [
+        {
+          "pid": 2320,
+          "rss_mib": 889.32421875,
+          "private_mib": 881.28125
+        },
+        {
+          "pid": 4884,
+          "rss_mib": 889.375,
+          "private_mib": 881.5859375
+        },
+        {
+          "pid": 8292,
+          "rss_mib": 889.26953125,
+          "private_mib": 881.67578125
+        },
+        {
+          "pid": 9624,
+          "rss_mib": 890.28515625,
+          "private_mib": 882.47265625
+        },
+        {
+          "pid": 9988,
+          "rss_mib": 889.1328125,
+          "private_mib": 881.2421875
+        },
+        {
+          "pid": 10220,
+          "rss_mib": 888.54296875,
+          "private_mib": 880.6171875
+        },
+        {
+          "pid": 13868,
+          "rss_mib": 54.0078125,
+          "private_mib": 41.12890625
+        },
+        {
+          "pid": 13928,
+          "rss_mib": 888.6953125,
+          "private_mib": 880.80859375
+        },
+        {
+          "pid": 14756,
+          "rss_mib": 890.3125,
+          "private_mib": 882.3671875
+        },
+        {
+          "pid": 17628,
+          "rss_mib": 888.1328125,
+          "private_mib": 880.84765625
+        },
+        {
+          "pid": 21312,
+          "rss_mib": 889.76171875,
+          "private_mib": 882.171875
+        },
+        {
+          "pid": 21536,
+          "rss_mib": 888.08984375,
+          "private_mib": 880.265625
+        },
+        {
+          "pid": 22208,
+          "rss_mib": 890.05859375,
+          "private_mib": 882.78125
+        },
+        {
+          "pid": 22996,
+          "rss_mib": 864.2265625,
+          "private_mib": 856.34765625
+        },
+        {
+          "pid": 23288,
+          "rss_mib": 890.7890625,
+          "private_mib": 883.54296875
+        },
+        {
+          "pid": 24384,
+          "rss_mib": 4.04296875,
+          "private_mib": 0.7421875
+        },
+        {
+          "pid": 25528,
+          "rss_mib": 888.5078125,
+          "private_mib": 880.84375
+        }
+      ],
+      "rss_peak_elapsed_seconds": 37.1188046999996
+    },
+    "setup": {
+      "rss_mib": 53.83984375,
+      "private_mib": 38.73046875,
+      "process_count": 2,
+      "rss_peak_processes": [
+        {
+          "pid": 13868,
+          "rss_mib": 49.76953125,
+          "private_mib": 37.93359375
+        },
+        {
+          "pid": 24384,
+          "rss_mib": 4.0703125,
+          "private_mib": 0.796875
+        }
+      ],
+      "rss_peak_elapsed_seconds": 0.40587939999750233
+    },
+    "save": {
+      "rss_mib": 120.62109375,
+      "private_mib": 105.58984375,
+      "process_count": 2,
+      "rss_peak_processes": [
+        {
+          "pid": 13868,
+          "rss_mib": 116.578125,
+          "private_mib": 104.84765625
+        },
+        {
+          "pid": 24384,
+          "rss_mib": 4.04296875,
+          "private_mib": 0.7421875
+        }
+      ],
+      "rss_peak_elapsed_seconds": 45.63747449999937
+    },
+    "verify": {
+      "rss_mib": 83.515625,
+      "private_mib": 66.94140625,
+      "process_count": 4,
+      "rss_peak_processes": [
+        {
+          "pid": 13868,
+          "rss_mib": 79.47265625,
+          "private_mib": 66.19921875
+        },
+        {
+          "pid": 24384,
+          "rss_mib": 4.04296875,
+          "private_mib": 0.7421875
+        }
+      ],
+      "rss_peak_elapsed_seconds": 46.913801499998954
+    },
+    "done": {
+      "rss_mib": 24.80859375,
+      "private_mib": 6.15234375,
+      "process_count": 2,
+      "rss_peak_processes": [
+        {
+          "pid": 13868,
+          "rss_mib": 20.765625,
+          "private_mib": 5.41015625
+        },
+        {
+          "pid": 24384,
+          "rss_mib": 4.04296875,
+          "private_mib": 0.7421875
+        }
+      ],
+      "rss_peak_elapsed_seconds": 47.543199599997024
+    }
+  },
+  "worker": {
+    "machine": {
+      "platform": "Windows-10-10.0.26200-SP0",
+      "python": "3.11.9",
+      "cpu_name": "13th Gen Intel(R) Core(TM) i5-13400",
+      "logical_cpus": 16,
+      "installed_ram_mib": 32768.0,
+      "usable_ram_mib": 32527.9140625,
+      "available_ram_mib": 15969.65625,
+      "env": {
+        "PRYNX_VDP_WORKERS": null,
+        "PRYNX_MAX_VDP_JOBS": null,
+        "PRYNX_MAX_HEAVY_JOBS": null,
+        "PRYNX_MIN_FREE_DISK_MB": null
+      }
+    },
+    "records": 5000,
+    "planner": {
+      "workers": 15,
+      "chunk_size": 334,
+      "chunks": 15,
+      "reason": "vdp: workers=15 (cpu=16, base=15, ram_installed_mb=32768, ram_usable_mb=32528, ram_tier_mb=32768->cap15)"
+    },
+    "source_start": {
+      "head": "a6163b38da74381b10f15ca26763ba44a7170dc8",
+      "files": {
+        "backend/app/workers/vdp_engine.py": "08e3e4f21ac9edd20e3f67da63bd1a908a16f33122a1f654a0d65807fca65021",
+        "backend/app/schemas/vdp.py": "f54f65b7e7f8174067e7abcb5fbf9116929a57e9954ee7dd2a33cea25d7f8127",
+        "backend/app/core/heavy_job_scheduler.py": "8b3a1313cb1ee5138114563b535c091521627bea5c93c1e9e8e75ecbd7109289",
+        "backend/app/core/system_memory.py": "c3452d87c7c4475ae9e4339602a92ef542b5477a1d58b9bb4d9ba25f1e52bbcd"
+      }
+    },
+    "font_sha256": "b3658eadae55e682b5f69eb64c439c1ecc8f196c0bb8d4756d145d13bc86476a",
+    "template_bytes": 1480,
+    "engine_wall_seconds": 45.48873339999773,
+    "save_wall_seconds": 2.4762980999985302,
+    "render_chunks_wall_seconds": 43.0124352999992,
+    "records_per_second": 109.91732735298032,
+    "output_bytes": 14065614,
+    "output_sha256": "383dc397df62d4e27da715110179bd56be618b065546ba68cc902c21ca4965d5",
+    "output_path": "D:\\pdfcompare\\.tmp\\vdp-output-benchmark-2026-10-01\\5000\\vdp-5000.pdf",
+    "page_count": 5000,
+    "sample_checks": [
+      {
+        "index_zero_based": 0,
+        "expected": "VDP-00000 Tiếng Việt",
+        "text_found": true,
+        "qr_has_dark_pixels": true,
+        "extracted_text": "PrynX synthetic VDP 2026-10-01\r\nVDP-00000 Tiếng Việt"
+      },
+      {
+        "index_zero_based": 1,
+        "expected": "VDP-00001 Đặng Hồng",
+        "text_found": true,
+        "qr_has_dark_pixels": true,
+        "extracted_text": "PrynX synthetic VDP 2026-10-01\r\nVDP-00001 Đặng Hồng"
+      },
+      {
+        "index_zero_based": 2,
+        "expected": "VDP-00002 Cộng hòa",
+        "text_found": true,
+        "qr_has_dark_pixels": true,
+        "extracted_text": "PrynX synthetic VDP 2026-10-01\r\nVDP-00002 Cộng hòa"
+      },
+      {
+        "index_zero_based": 3,
+        "expected": "VDP-00003 In dữ liệu",
+        "text_found": true,
+        "qr_has_dark_pixels": true,
+        "extracted_text": "PrynX synthetic VDP 2026-10-01\r\nVDP-00003 In dữ liệu"
+      },
+      {
+        "index_zero_based": 333,
+        "expected": "VDP-00333 Đặng Hồng",
+        "text_found": true,
+        "qr_has_dark_pixels": true,
+        "extracted_text": "PrynX synthetic VDP 2026-10-01\r\nVDP-00333 Đặng Hồng"
+      },
+      {
+        "index_zero_based": 334,
+        "expected": "VDP-00334 Cộng hòa",
+        "text_found": true,
+        "qr_has_dark_pixels": true,
+        "extracted_text": "PrynX synthetic VDP 2026-10-01\r\nVDP-00334 Cộng hòa"
+      },
+      {
+        "index_zero_based": 2500,
+        "expected": "VDP-02500 Tiếng Việt",
+        "text_found": true,
+        "qr_has_dark_pixels": true,
+        "extracted_text": "PrynX synthetic VDP 2026-10-01\r\nVDP-02500 Tiếng Việt"
+      },
+      {
+        "index_zero_based": 4998,
+        "expected": "VDP-04998 Cộng hòa",
+        "text_found": true,
+        "qr_has_dark_pixels": true,
+        "extracted_text": "PrynX synthetic VDP 2026-10-01\r\nVDP-04998 Cộng hòa"
+      },
+      {
+        "index_zero_based": 4999,
+        "expected": "VDP-04999 In dữ liệu",
+        "text_found": true,
+        "qr_has_dark_pixels": true,
+        "extracted_text": "PrynX synthetic VDP 2026-10-01\r\nVDP-04999 In dữ liệu"
+      }
+    ],
+    "artifact_pass": true,
+    "source_finish": {
+      "head": "a6163b38da74381b10f15ca26763ba44a7170dc8",
+      "files": {
+        "backend/app/workers/vdp_engine.py": "08e3e4f21ac9edd20e3f67da63bd1a908a16f33122a1f654a0d65807fca65021",
+        "backend/app/schemas/vdp.py": "f54f65b7e7f8174067e7abcb5fbf9116929a57e9954ee7dd2a33cea25d7f8127",
+        "backend/app/core/heavy_job_scheduler.py": "8b3a1313cb1ee5138114563b535c091521627bea5c93c1e9e8e75ecbd7109289",
+        "backend/app/core/system_memory.py": "c3452d87c7c4475ae9e4339602a92ef542b5477a1d58b9bb4d9ba25f1e52bbcd"
+      }
+    },
+    "source_unchanged": true
+  },
+  "harness_path": "D:\\pdfcompare\\.tmp\\vdp_output_benchmark.py",
+  "harness_sha256": "9bc004f83ea382d6629226b8fc131f4b15d4c63862c36d5c50ccf9d780b56bb1",
+  "log_path": "D:\\pdfcompare\\.tmp\\vdp-output-benchmark-2026-10-01\\5000\\worker.log",
+  "limitations": [
+    "One run per record count; no baseline comparison or p95.",
+    "Sum of working sets includes shared pages; private bytes reported separately.",
+    "Peak sampled at ~50ms; short transients may be missed.",
+    "Direct engine in dev Python, not packaged Tauri or UI flow.",
+    "Other user/app processes remained active; no exclusive-machine guarantee.",
+    "Samples verify exact Unicode text and QR dark pixels, not QR decode or Illustrator editability.",
+    "No variable images, CJK/emoji/RTL, embedded-font subset collisions, weak-hardware profile, or cancellation tested."
+  ]
+}

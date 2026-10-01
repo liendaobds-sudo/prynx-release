@@ -54,9 +54,23 @@ from app.workers.sticker_bleed_masks import (
     _edge_color_adaptive_max_mm,
     _sampled_bleed_overlap_px,
 )
+from app.workers.sticker_alpha_cleanup import cleaned_alpha_page_bytes
 import json
 
 logger = logging.getLogger(__name__)
+
+
+def _pdf_cut_stroke_ops(corner_style: str | None) -> tuple[str, str]:
+    """Truyền kiểu góc CutContour xuống PDF content stream.
+
+    SVG preview dùng ``stroke-linejoin``/``stroke-linecap`` còn PDF mặc định
+    là miter/butt. Nếu không ghi rõ hai toán tử này, preview bo tròn sẽ lệch
+    khỏi bản xuất ở các góc nhọn và khi phóng lớn.
+    """
+    style = str(corner_style or "preserve").strip().lower()
+    if style in {"round", "alpha_smooth"}:
+        return "1 j", "1 J"  # round join + round cap
+    return "0 j", "0 J"  # miter join + butt cap
 
 
 class UnsafeCutlineGeometryError(RuntimeError):
@@ -233,6 +247,12 @@ def _near_white_background_candidate_rgb(
     if img is None or img.ndim != 3 or img.shape[2] < 3:
         return np.zeros(img.shape[:2], dtype=bool) if img is not None else np.zeros((0, 0), dtype=bool)
     rgb = img[:, :, :3]
+    # PERF (audit 2026-10-01 §CUTLINE.PREVIEW.SPEED): Nếu 255 - min_channel <= max_chroma
+    # (mặc định 255 - 248 = 7 <= 18), mọi pixel thoả mn >= min_channel đều chắc chắn
+    # có max <= 255 -> chroma = max - mn <= 7 <= max_chroma.
+    # Dùng cv2.inRange tăng tốc từ 266ms xuống 13ms (20x) mà bảo toàn 100% bit kết quả.
+    if 255 - min_channel <= max_chroma:
+        return cv2.inRange(rgb, (min_channel, min_channel, min_channel), (255, 255, 255)) > 0
     mx = rgb.max(axis=2)
     mn = rgb.min(axis=2)
     chroma = mx.astype(np.int16) - mn.astype(np.int16)
@@ -926,10 +946,11 @@ def _lam_mem_dai_bien(
                     int(value) for value in np.unique(labels[mask == 0])
                     if int(value) != 0
                 )
-                connected_background = np.isin(
-                    labels,
-                    list(selected_background_labels),
-                )
+                # PERF (audit 2026-10-01 §CUTLINE.PREVIEW.SPEED): Dùng mảng tra cứu boolean
+                # thay vì np.isin, tăng tốc 5x trên ma trận 8.8M pixel.
+                lookup_bg = np.zeros(label_count + 1, dtype=bool)
+                lookup_bg[list(selected_background_labels)] = True
+                connected_background = lookup_bg[labels]
                 rebuilt = (~connected_background).astype(np.uint8) * 255
                 # `fill_holes=false` đã tạo các vùng 0 kín trong mask đầu vào;
                 # tuyệt đối không để phép nối nền phía trên lấp chúng trở lại.
@@ -4391,6 +4412,70 @@ def _fit_alpha_bezier_paths(
         # API cũ, còn fitter tự dùng tay nắm C2/G1 đã qua bộ xếp hạng chuyển động.
         curve_tension=_CUTLINE_TUNING_DEFAULT,
     )
+
+
+def _fit_alpha_cubic_fallback_paths(
+    alpha_geometry,
+    ideal_cut_geometry,
+    *,
+    total_offset_pts: float,
+    mm_to_pts: float,
+    source_pixel_mm: float | None,
+):
+    """Cứu biên Alpha trơn bằng spline trước khi phải giữ polyline.
+
+    [CUTLINE FIX 2026-10-01 §ALPHA.DELTA-01] Chỉ thử khi biên gốc không có
+    góc thật. Sai số phải đo từ đường lý tưởng đầy đủ, không từ anchor đã
+    simplify, để các bước làm mượt không cộng dồn ngân sách 0,08 mm.
+    """
+    corner_reference = ideal_cut_geometry.simplify(
+        max(_CUTLINE_TRUE_CORNER_BASE_WINDOW_MM, _ALPHA_SAFE_SIMPLIFY_MM)
+        * mm_to_pts,
+        preserve_topology=True,
+    )
+    corner_points, _radius = _alpha_reference_corner_points(
+        corner_reference, mm_to_pts=mm_to_pts, source_pixel_mm=source_pixel_mm,
+    )
+    if corner_points:
+        return None
+    fitted = _fit_round_contour_paths(ideal_cut_geometry, mm_to_pts=mm_to_pts)
+    if fitted is None:
+        return None
+    candidate_geometry, candidate_paths, _tolerance_mm = fitted
+    deviation_pts = _budgeted_hausdorff_distance(
+        ideal_cut_geometry,
+        candidate_geometry,
+        _ROUND_PATH_MAX_HAUSDORFF_MM * mm_to_pts,
+    )
+    if not _alpha_smoothing_candidate_is_safe(
+        alpha_geometry,
+        ideal_cut_geometry,
+        candidate_geometry,
+        total_offset_pts=total_offset_pts,
+        mm_to_pts=mm_to_pts,
+        max_deviation_mm=_ROUND_PATH_MAX_HAUSDORFF_MM,
+        measured_deviation_pts=deviation_pts,
+    ):
+        return None
+    quality = _alpha_final_cutline_quality(
+        candidate_paths,
+        reference_geometry=ideal_cut_geometry,
+        fitted_geometry=candidate_geometry,
+        alpha_geometry=alpha_geometry,
+        total_offset_pts=total_offset_pts,
+        mm_to_pts=mm_to_pts,
+        source_pixel_mm=source_pixel_mm,
+        fit_mode="alpha-spline-fallback",
+    )
+    deviation_mm = quality.get("effective_deviation_mm")
+    if (
+        not quality["machine_safe"]
+        or _cutline_hook_is_severe(quality)
+        or not isinstance(deviation_mm, (int, float))
+        or deviation_mm > _ROUND_PATH_MAX_HAUSDORFF_MM
+    ):
+        return None
+    return fitted
 
 
 def _linear_bezier_ring(coords):
@@ -8435,6 +8520,64 @@ def _rgb_to_pure_cmyk_fallback(rgb: np.ndarray) -> np.ndarray:
     return np.dstack([c, m, y, k])
 
 
+def _heal_cmyk_edge_snap(cmyk_arr: np.ndarray, rgb_fallback: np.ndarray | None) -> np.ndarray:
+    """Khử sai lệch subpixel snap mép canvas của PPE rasterizer.
+
+    QUALITY (audit 2026-10-01 §BLEED.PPE-TOP-SNAP):
+    Khi kích thước trang hoặc toạ độ trang PDF lẻ subpixel ở DPI chỉ định (ví dụ 81 pt * 300 / 72 = 337.5 px),
+    PPE device matrix snap canvas khiến hàng mép trên (Row 0) hoặc các mép ngoài cùng bị anti-alias
+    với nền giấy trắng, làm sụt giảm tổng lượng mực (ví dụ K=255 bị giảm còn 127 hoặc 191).
+    Khi thuật toán bù xén (bleed) kéo màu từ mép này ra ngoài, toàn bộ dải bù xén mép đó
+    sẽ bị sai màu (thành vệt xám).
+    Đối chiếu với rgb_fallback (PDFium RGB render chuẩn, không bị lỗi snap):
+    Nếu tại một pixel mép, màu RGB mép đồng nhất với pixel lân cận liền kề (sai lệch <= 4 mỗi kênh),
+    nhưng trong CMYK pixel mép lại bị sụt giảm tổng mực so với pixel liền kề,
+    phục hồi pixel mép bằng giá trị CMYK chuẩn của pixel liền kề.
+    """
+    if rgb_fallback is None or cmyk_arr.shape[0] < 3 or cmyk_arr.shape[1] < 3:
+        return cmyk_arr
+
+    cmyk_arr = cmyk_arr.copy()
+
+    # 1. Mép trên: row 0 vs row 1
+    rgb_diff_top = np.max(np.abs(rgb_fallback[0, :, :3].astype(np.int16) - rgb_fallback[1, :, :3].astype(np.int16)), axis=-1)
+    same_color_top = rgb_diff_top <= 4
+    sum_top_0 = np.sum(cmyk_arr[0].astype(np.int32), axis=-1)
+    sum_top_1 = np.sum(cmyk_arr[1].astype(np.int32), axis=-1)
+    diluted_top = same_color_top & (sum_top_1 > 0) & (sum_top_0 < sum_top_1)
+    if np.any(diluted_top):
+        cmyk_arr[0, diluted_top] = cmyk_arr[1, diluted_top]
+
+    # 2. Mép dưới: row -1 vs row -2
+    rgb_diff_bot = np.max(np.abs(rgb_fallback[-1, :, :3].astype(np.int16) - rgb_fallback[-2, :, :3].astype(np.int16)), axis=-1)
+    same_color_bot = rgb_diff_bot <= 4
+    sum_bot_last = np.sum(cmyk_arr[-1].astype(np.int32), axis=-1)
+    sum_bot_prev = np.sum(cmyk_arr[-2].astype(np.int32), axis=-1)
+    diluted_bot = same_color_bot & (sum_bot_prev > 0) & (sum_bot_last < sum_bot_prev)
+    if np.any(diluted_bot):
+        cmyk_arr[-1, diluted_bot] = cmyk_arr[-2, diluted_bot]
+
+    # 3. Mép trái: col 0 vs col 1
+    rgb_diff_left = np.max(np.abs(rgb_fallback[:, 0, :3].astype(np.int16) - rgb_fallback[:, 1, :3].astype(np.int16)), axis=-1)
+    same_color_left = rgb_diff_left <= 4
+    sum_left_0 = np.sum(cmyk_arr[:, 0].astype(np.int32), axis=-1)
+    sum_left_1 = np.sum(cmyk_arr[:, 1].astype(np.int32), axis=-1)
+    diluted_left = same_color_left & (sum_left_1 > 0) & (sum_left_0 < sum_left_1)
+    if np.any(diluted_left):
+        cmyk_arr[diluted_left, 0] = cmyk_arr[diluted_left, 1]
+
+    # 4. Mép phải: col -1 vs col -2
+    rgb_diff_right = np.max(np.abs(rgb_fallback[:, -1, :3].astype(np.int16) - rgb_fallback[:, -2, :3].astype(np.int16)), axis=-1)
+    same_color_right = rgb_diff_right <= 4
+    sum_right_last = np.sum(cmyk_arr[:, -1].astype(np.int32), axis=-1)
+    sum_right_prev = np.sum(cmyk_arr[:, -2].astype(np.int32), axis=-1)
+    diluted_right = same_color_right & (sum_right_prev > 0) & (sum_right_last < sum_right_prev)
+    if np.any(diluted_right):
+        cmyk_arr[diluted_right, -1] = cmyk_arr[diluted_right, -2]
+
+    return cmyk_arr
+
+
 def _render_cmyk_page(
     input_path: str,
     page_idx: int,
@@ -8473,7 +8616,9 @@ def _render_cmyk_page(
                         (target_w, target_h),
                         interpolation=cv2.INTER_NEAREST,
                     )
-                return cmyk_arr
+                else:
+                    cmyk_arr = cmyk_arr.copy()
+                return _heal_cmyk_edge_snap(cmyk_arr, rgb_fallback)
     except Exception as exc:
         logger.debug("[STICKER] PPE export_cmyk không khả dụng cho trang %d: %s", page_idx + 1, exc)
 
@@ -8508,7 +8653,9 @@ def _render_cmyk_page(
                         (target_w, target_h),
                         interpolation=cv2.INTER_NEAREST,
                     )
-                return cmyk_arr
+                else:
+                    cmyk_arr = cmyk_arr.copy()
+                return _heal_cmyk_edge_snap(cmyk_arr, rgb_fallback)
     except Exception as exc:
         logger.debug("[STICKER] PPE separations fallback không khả dụng cho trang %d: %s", page_idx + 1, exc)
 
@@ -9093,6 +9240,12 @@ def _process_sticker_chunk(args: dict):
             thrucut_enabled=args.get("thrucut_enabled", False),
             thrucut_shape=args.get("thrucut_shape", "rounded_rect"),
             thrucut_margin_mm=args.get("thrucut_margin_mm", 3.0),
+            # [CUTLINE FIX 2026-10-01] Fan-out phải giữ đúng bốn biên dao
+            # ThruCut; nếu bỏ qua, worker tự rơi về margin đều.
+            thrucut_margin_top_mm=args.get("thrucut_margin_top_mm"),
+            thrucut_margin_bottom_mm=args.get("thrucut_margin_bottom_mm"),
+            thrucut_margin_left_mm=args.get("thrucut_margin_left_mm"),
+            thrucut_margin_right_mm=args.get("thrucut_margin_right_mm"),
             thrucut_radius_mm=args.get("thrucut_radius_mm", 3.0),
             thrucut_spot_name=args.get("thrucut_spot_name", "ThruCut"),
             thrucut_color=args.get("thrucut_color", (1.0, 0.0, 0.0, 0.0)),
@@ -9343,6 +9496,8 @@ class StickerEngine:
         page_in = None
         doc_in_pike = None
         doc_out = None
+        cleaned_page_pdfium = None
+        cleaned_page_pike = None
         canonical_input_path = None
         canonical_input_is_temp = False
         _process_start_time = time.perf_counter()
@@ -9549,6 +9704,19 @@ class StickerEngine:
                     min_detail_area_mm2=min_detail_area_mm2,
                     alpha_path_overrides=alpha_path_overrides,
                     approved_contour_overrides=approved_contour_overrides,
+                    # [CUTLINE FIX 2026-10-01] Giữ nguyên hợp đồng hai dao khi
+                    # fan-out; thiếu các tham số này khiến worker rơi về mặc định.
+                    thrucut_enabled=thrucut_enabled,
+                    thrucut_shape=thrucut_shape,
+                    thrucut_margin_mm=thrucut_margin_mm,
+                    thrucut_margin_top_mm=thrucut_margin_top_mm,
+                    thrucut_margin_bottom_mm=thrucut_margin_bottom_mm,
+                    thrucut_margin_left_mm=thrucut_margin_left_mm,
+                    thrucut_margin_right_mm=thrucut_margin_right_mm,
+                    thrucut_radius_mm=thrucut_radius_mm,
+                    thrucut_spot_name=thrucut_spot_name,
+                    thrucut_color=thrucut_color,
+                    thrucut_color_hex=thrucut_color_hex,
                 )
                 if isinstance(parallel_meta, dict):
                     parallel_meta["color_provenance"] = dict(source_color_provenance)
@@ -9596,6 +9764,8 @@ class StickerEngine:
             thrucut_margin_left_pts = thrucut_margin_left_mm * mm_to_pts if thrucut_enabled else 0.0
             thrucut_margin_right_pts = thrucut_margin_right_mm * mm_to_pts if thrucut_enabled else 0.0
             max_thrucut_margin_pts = max(thrucut_margin_top_pts, thrucut_margin_bottom_pts, thrucut_margin_left_pts, thrucut_margin_right_pts) if thrucut_enabled else 0.0
+            if thrucut_enabled and thrucut_shape == "contour_offset":
+                max_thrucut_margin_pts = thrucut_margin_pts
             thrucut_radius_pts = thrucut_radius_mm * mm_to_pts if thrucut_enabled else 0.0
             # Lùi 0,15 mm để dao nằm trong vùng mực chắc chắn ở mép Alpha bán trong suốt.
             effective_offset_mm = offset_mm - (ALPHA_CONTOUR_INSET_MM if alpha_contour_mode else 0.0)
@@ -9639,6 +9809,18 @@ class StickerEngine:
             _page_list = list(_page_subset) if _page_subset is not None else list(range(_n_pages))
 
             for page_idx in _page_list:
+                # Bản trang Alpha đã làm sạch chỉ sống trong một lượt; không
+                # giữ bitmap/tài liệu native của các trang trước trong RAM.
+                if cleaned_page_pdfium is not None:
+                    with pdfium_guard():
+                        if page_in is not None:
+                            page_in.close()
+                            page_in = None
+                        cleaned_page_pdfium.close()
+                    cleaned_page_pdfium = None
+                if cleaned_page_pike is not None:
+                    cleaned_page_pike.close()
+                    cleaned_page_pike = None
                 page_started = time.perf_counter()
                 t_open_pdfium = 0.0
                 t_open_pike = 0.0
@@ -9680,6 +9862,7 @@ class StickerEngine:
                 approved_edge_background_tolerance = 0
                 alpha_edge_background_rgb = None
                 alpha_edge_background_tolerance = 0
+                raster_alpha_boundary = False
                 _cut_page_ok = (not cut_first_page_only) or (page_idx == 0)
                 _recorded_base_dieline_entry = None
 
@@ -9771,6 +9954,32 @@ class StickerEngine:
                     })
                     continue
 
+                # QUALITY (feedback 2026-10-01 §PNG.ALPHA-EDGE): tạo dao theo
+                # Alpha phải bỏ pixel mờ ngay trong ảnh, kể cả bleed_mm=0.
+                # Render và Form xuất đọc cùng bản trang; không chỉ đổi mask
+                # của đường dao rồi vô tình copy lại SMask bẩn của file gốc.
+                alpha_cleanup_requested = alpha_contour_mode or bool(alpha_source_mode) or (
+                    isinstance(approved_payload, dict)
+                    and approved_payload.get("boundary_source") == "alpha"
+                )
+                if alpha_cleanup_requested and not selection_page_mode and not (
+                    _cutline_only and _can_fast_path_cached
+                ):
+                    clean_bytes, removed_alpha_pixels = cleaned_alpha_page_bytes(page_in_pike)
+                    if clean_bytes is not None:
+                        cleaned_page_pike = pikepdf.Pdf.open(io.BytesIO(clean_bytes))
+                        page_in_pike = cleaned_page_pike.pages[0]
+                        if not _can_fast_path_cached:
+                            with pdfium_guard():
+                                if page_in is not None:
+                                    page_in.close()
+                                    page_in = None
+                                cleaned_page_pdfium = pdfium.PdfDocument(clean_bytes)
+                                page_in = cleaned_page_pdfium[0]
+                        logger.info("[STICKER-ALPHA] trang %d: làm sạch biên PNG (xóa %d pixel Alpha)",
+                                    page_idx + 1, removed_alpha_pixels)
+                    del clean_bytes
+
                 if _can_fast_path_cached:
                     _t0_fast = time.perf_counter()
                     cached_entry = _cached_page_dielines[page_idx]
@@ -9783,6 +9992,19 @@ class StickerEngine:
                     alpha_source_contour = cached_entry.get("alpha_source_contour", False)
                     alpha_source_pixel_mm = cached_entry.get("alpha_source_pixel_mm")
                     alpha_fallback_used = cached_entry.get("alpha_fallback_used", False)
+                    raster_alpha_boundary = bool(
+                        not alpha_source_contour
+                        and _page_has_smask_image(page_in_pike)
+                        and source_pixel_mm_page is not None
+                        and not selection_page_mode
+                        and not rectangle_mode
+                        and cut_mode in {"original", "bleed"}
+                        and shape_mode in {"auto_safe", "contour"}
+                        and not page_in_pike.get("/Annots")
+                        and not _page_defines_cut_contour(page_in_pike)
+                    )
+                    if raster_alpha_boundary and alpha_source_pixel_mm is None:
+                        alpha_source_pixel_mm = source_pixel_mm_page
 
                     crop_x0 = float(page_in_pike.cropbox[0])
                     crop_y0 = float(page_in_pike.cropbox[1])
@@ -9813,7 +10035,11 @@ class StickerEngine:
                     new_height = page_in_height + exp_bottom + exp_top
                     page_out = doc_out.add_blank_page(page_size=(new_width, new_height))
 
-                    if (alpha_source_contour or approved_contour_page) and preserve_contour:
+                    if (
+                        alpha_source_contour
+                        or raster_alpha_boundary
+                        or approved_contour_page
+                    ) and preserve_contour:
                         join_style = 1
                     elif recon_meta.get("reconstructed") and recon_meta.get("kind") in ("circle", "ellipse", "rounded_rect"):
                         join_style = 1
@@ -9907,16 +10133,26 @@ class StickerEngine:
                         dieline_poly = cut_poly
                     elif not _cut_page_ok:
                         cut_poly = dieline_poly
-                    elif (alpha_source_contour or approved_contour_page) and preserve_contour:
+                    elif (
+                        alpha_source_contour
+                        or raster_alpha_boundary
+                        or approved_contour_page
+                    ) and preserve_contour:
                         fitted_alpha = _fit_alpha_bezier_paths(
                             base_dieline,
                             dieline_poly,
                             total_offset_pts=total_offset,
                             mm_to_pts=mm_to_pts,
-                            corner_policy=alpha_corner_policy,
+                            corner_policy=(
+                                "adaptive"
+                                if raster_alpha_boundary
+                                and alpha_corner_policy == "legacy"
+                                else alpha_corner_policy
+                            ),
                             source_pixel_mm=alpha_source_pixel_mm,
                             allow_high_resolution_fairing=(
-                                bool(alpha_source_mode) and not alpha_contour_mode
+                                (bool(alpha_source_mode) or raster_alpha_boundary)
+                                and not alpha_contour_mode
                             ),
                             cutline_smoothness=cutline_smoothness,
                             cutline_fidelity=cutline_fidelity,
@@ -9942,6 +10178,24 @@ class StickerEngine:
                             if alpha_bezier_tension is not None:
                                 cut_draw_style = "alpha_smooth"
                                 cut_draw_tension = alpha_bezier_tension
+                            else:
+                                # [CUTLINE FIX 2026-10-01] Fitter Alpha có thể
+                                # bị guard loại hết ứng viên ở contour ít node.
+                                # Thử spline của biên trơn đã qua cùng guard
+                                # trước khi chấp nhận fallback m/l/h.
+                                cubic_fallback = _fit_alpha_cubic_fallback_paths(
+                                    base_dieline,
+                                    dieline_poly,
+                                    total_offset_pts=total_offset,
+                                    mm_to_pts=mm_to_pts,
+                                    source_pixel_mm=alpha_source_pixel_mm,
+                                )
+                                if cubic_fallback is not None:
+                                    (
+                                        cut_poly,
+                                        cut_fitted_paths,
+                                        _fit_tolerance_mm,
+                                    ) = cubic_fallback
                     elif direct_analytic_fillet is not None:
                         (
                             cut_poly,
@@ -10006,6 +10260,7 @@ class StickerEngine:
                         and cut_mode in {"original", "bleed"}
                         and not approved_contour_page
                         and not alpha_source_contour
+                        and not raster_alpha_boundary
                         and not rectangle_mode
                         and not selection_page_mode
                         and source_pixel_mm_page is not None
@@ -10098,6 +10353,8 @@ class StickerEngine:
                         page_content_stream.append("/CutContour CS")
                         page_content_stream.append("1.0 SCN")
                         page_content_stream.append("1.0 w")
+                        _cut_join, _cut_cap = _pdf_cut_stroke_ops(cut_draw_style)
+                        page_content_stream.extend([_cut_join, _cut_cap])
 
                         if polyline_reduction is not None:
                             for path in polyline_reduction.paths:
@@ -10168,6 +10425,7 @@ class StickerEngine:
                                 page_content_stream.append(f"/{thru_spot_name_clean} CS")
                                 page_content_stream.append("1.0 SCN")
                                 page_content_stream.append("1.0 w")
+                                page_content_stream.extend(["1 j", "1 J"])
                                 page_content_stream.extend(thru_stream)
                                 page_content_stream.append("S")
                                 page_content_stream.append("Q")
@@ -10259,19 +10517,22 @@ class StickerEngine:
                     )
                 except Exception:
                     source_pixel_mm_page = None
+                page_has_smask = _page_has_smask_image(page_in_pike)
                 if (
                     approved_payload is None
                     and alpha_path_payload is None
                     and not rectangle_mode
                     and not selection_page_mode
-                    and remove_white_bg
+                    and (remove_white_bg or page_has_smask)
                     and not alpha_source_contour
                     and cut_mode in {"original", "bleed"}
                     and shape_mode in {"auto_safe", "contour"}
                 ):
-                    # QUALITY (audit 2026-09-09 §BINDER2.2–3): trang Alpha
-                    # đủ điều kiện dùng chính ROI/fitter classic, dù không phải
-                    # trang Viewer đang xem. Không thay snapshot đã duyệt.
+                    # [CUTLINE FIX 2026-10-01 §ALPHA.DELTA-01] PDF PNG có SMask
+                    # là nguồn Alpha thật ngay cả khi người dùng chọn "Theo hình
+                    # gốc". Dùng cùng ROI/fitter canonical để không bỏ qua Alpha
+                    # rồi xuất preserve polyline; helper tự loại vector/mixed/
+                    # nhiều vùng và trả None nếu không đủ bằng chứng.
                     from app.workers.sticker_source_pipeline import (
                         build_classic_alpha_page_contour,
                     )
@@ -10411,6 +10672,20 @@ class StickerEngine:
                             and img[:, :, 3].max() > 10
                         )
                 raster_seconds = time.perf_counter() - raster_started
+                raster_alpha_boundary = bool(
+                    not alpha_source_contour
+                    and page_has_smask
+                    and has_alpha
+                    and source_pixel_mm_page is not None
+                    and not selection_page_mode
+                    and not rectangle_mode
+                    and cut_mode in {"original", "bleed"}
+                    and shape_mode in {"auto_safe", "contour"}
+                    and not page_in_pike.get("/Annots")
+                    and not _page_defines_cut_contour(page_in_pike)
+                )
+                if raster_alpha_boundary and alpha_source_pixel_mm is None:
+                    alpha_source_pixel_mm = source_pixel_mm_page
                 if approved_payload is not None:
                     approved = _approved_contour_override(
                         approved_payload,
@@ -10495,7 +10770,11 @@ class StickerEngine:
                                 border_labels = set(labels[0, :]) | set(labels[-1, :]) | set(labels[:, 0]) | set(labels[:, -1])
                                 border_labels.discard(0)
                                 if border_labels:
-                                    bg_white = np.isin(labels, list(border_labels)).astype(np.uint8) * 255
+                                    # PERF (audit 2026-10-01 §CUTLINE.PREVIEW.SPEED): Dùng mảng tra cứu uint8
+                                    # thay vì np.isin, tăng tốc 5x trên ma trận 8.8M pixel.
+                                    lookup = np.zeros(num_lbl + 1, dtype=np.uint8)
+                                    lookup[list(border_labels)] = 255
+                                    bg_white = lookup[labels]
                                 else:
                                     bg_white = np.zeros_like(white_mask)
                             else:
@@ -10568,7 +10847,11 @@ class StickerEngine:
                             base_mask = np.ones(img.shape[:2], dtype=np.uint8) * 255
                             page_box_mask_built = True
 
-                    if alpha_source_contour or approved_contour_page:
+                    if (
+                        alpha_source_contour
+                        or raster_alpha_boundary
+                        or approved_contour_page
+                    ):
                         # ALPHA (audit 2026-08-01 §A.3): lấy biên tại khoảng 25% độ đục.
                         # Ngưỡng >10 trước đây tính cả halo gần trong suốt, làm mất
                         # phần lớn khoảng lùi 0,15 mm so với mép nhìn thấy.
@@ -10625,7 +10908,9 @@ class StickerEngine:
                             source_pixel_mm_page,
                         )
                     elif (
-                        alpha_source_contour or approved_contour_page
+                        alpha_source_contour
+                        or raster_alpha_boundary
+                        or approved_contour_page
                     ) and source_pixel_mm_page is not None:
                         # QUALITY (audit 2026-08-08 §AI-MOTION.4): PDF trung gian
                         # của Ảnh AI có thể chứa ảnh 72 DPI nhưng được raster lại ở
@@ -10831,6 +11116,7 @@ class StickerEngine:
                         "alpha_source_contour": alpha_source_contour,
                         "alpha_source_pixel_mm": alpha_source_pixel_mm,
                         "alpha_fallback_used": alpha_fallback_used,
+                        "raster_alpha_boundary": raster_alpha_boundary,
                     }
                     if self.debug:
                         logger.debug(
@@ -10854,7 +11140,11 @@ class StickerEngine:
                     total_offset, bleed_outer_offset = compute_cut_bleed_offsets(
                         cut_mode, bleed_pts, offset_pts
                     )
-                    if (alpha_source_contour or approved_contour_page) and preserve_contour:
+                    if (
+                        alpha_source_contour
+                        or raster_alpha_boundary
+                        or approved_contour_page
+                    ) and preserve_contour:
                         join_style = 1
                     elif recon_meta.get("reconstructed") and recon_meta.get("kind") in ("circle", "ellipse", "rounded_rect"):
                         join_style = 1
@@ -11109,6 +11399,7 @@ class StickerEngine:
                             "alpha_source_contour": alpha_source_contour,
                             "alpha_source_pixel_mm": alpha_source_pixel_mm,
                             "alpha_fallback_used": alpha_fallback_used,
+                            "raster_alpha_boundary": raster_alpha_boundary,
                         }
                         _t0_fit = time.perf_counter()
 
@@ -11118,7 +11409,9 @@ class StickerEngine:
                         )
 
                         if (
-                            alpha_source_contour or approved_contour_page
+                            alpha_source_contour
+                            or raster_alpha_boundary
+                            or approved_contour_page
                         ) and preserve_contour:
                             # ALPHA (audit 2026-08-01 §A.2): buffer tròn giữ phép lùi
                             # đều quanh biên raster, không tạo mũi nhọn tại bậc pixel.
@@ -11244,7 +11537,9 @@ class StickerEngine:
                             # tiết kiệm 1.5–6s mỗi trang.
                             cut_poly = dieline_poly
                         elif (
-                            alpha_source_contour or approved_contour_page
+                            alpha_source_contour
+                            or raster_alpha_boundary
+                            or approved_contour_page
                         ) and preserve_contour:
                             # QUALITY (audit 2026-08-04 §ALPHA.1–2): ưu tiên fit
                             # nhiều điểm raster thành ít cubic. Candidate không qua
@@ -11254,10 +11549,15 @@ class StickerEngine:
                                 dieline_poly,
                                 total_offset_pts=total_offset,
                                 mm_to_pts=mm_to_pts,
-                                corner_policy=alpha_corner_policy,
+                                corner_policy=(
+                                    "adaptive"
+                                    if raster_alpha_boundary
+                                    and alpha_corner_policy == "legacy"
+                                    else alpha_corner_policy
+                                ),
                                 source_pixel_mm=alpha_source_pixel_mm,
                                 allow_high_resolution_fairing=(
-                                    bool(alpha_source_mode)
+                                    (bool(alpha_source_mode) or raster_alpha_boundary)
                                     and not alpha_contour_mode
                                 ),
                                 cutline_smoothness=cutline_smoothness,
@@ -11284,6 +11584,24 @@ class StickerEngine:
                                 if alpha_bezier_tension is not None:
                                     cut_draw_style = "alpha_smooth"
                                     cut_draw_tension = alpha_bezier_tension
+                                else:
+                                    # [CUTLINE FIX 2026-10-01] Fitter Alpha có thể
+                                    # bị guard loại hết ứng viên ở contour ít node.
+                                    # Thử spline của biên trơn đã qua cùng guard
+                                    # trước khi chấp nhận fallback m/l/h.
+                                    cubic_fallback = _fit_alpha_cubic_fallback_paths(
+                                        base_dieline,
+                                        dieline_poly,
+                                        total_offset_pts=total_offset,
+                                        mm_to_pts=mm_to_pts,
+                                        source_pixel_mm=alpha_source_pixel_mm,
+                                    )
+                                    if cubic_fallback is not None:
+                                        (
+                                            cut_poly,
+                                            cut_fitted_paths,
+                                            _fit_tolerance_mm,
+                                        ) = cubic_fallback
                         elif direct_analytic_fillet is not None:
                             # QUALITY (feedback 2026-08-19 §CUTROUND.5): luồng
                             # PDF thường phải dùng cùng fillet G1 như workspace AI;
@@ -12582,6 +12900,8 @@ class StickerEngine:
                     cut_ops.append("/CutContour CS")
                     cut_ops.append("1.0 SCN")
                     cut_ops.append("1.0 w")
+                    _cut_join, _cut_cap = _pdf_cut_stroke_ops(cut_draw_style)
+                    cut_ops.extend([_cut_join, _cut_cap])
 
                     # Lưu danh sách lệnh vẽ từng tem riêng lẻ để phục vụ split_or_normalize_sticker_tight_crop
                     individual_cut_ops_by_geom = []
@@ -12599,6 +12919,50 @@ class StickerEngine:
                         g for g in raw_geoms
                         if g.geom_type == 'Polygon' and not g.is_empty
                     ]
+
+                    def _individual_thru_ops(poly):
+                        """Dựng phần ThruCut riêng cho một tem khi tách trang."""
+                        if not thrucut_enabled or poly is None or poly.is_empty:
+                            return []
+                        thru_parts = []
+                        if thrucut_shape == "contour_offset":
+                            buffered = poly.buffer(thrucut_margin_pts)
+                            buffered_geoms = list(buffered.geoms) if hasattr(buffered, 'geoms') else [buffered]
+                            for buffered_poly in buffered_geoms:
+                                if buffered_poly.geom_type != 'Polygon' or buffered_poly.is_empty:
+                                    continue
+                                coords = list(buffered_poly.exterior.coords)
+                                if coords:
+                                    thru_parts.extend(build_contour_path_stream(coords, page_in_height, "preserve"))
+                                for interior in buffered_poly.interiors:
+                                    coords = list(interior.coords)
+                                    if coords:
+                                        thru_parts.extend(build_contour_path_stream(coords, page_in_height, "preserve"))
+                        if not thru_parts:
+                            thru_parts, _bounds = build_thrucut_path_stream(
+                                poly.bounds,
+                                shape=thrucut_shape,
+                                margin_pts=thrucut_margin_pts,
+                                radius_pts=thrucut_radius_pts,
+                                page_height=page_in_height,
+                                margin_top_pts=thrucut_margin_top_pts,
+                                margin_bottom_pts=thrucut_margin_bottom_pts,
+                                margin_left_pts=thrucut_margin_left_pts,
+                                margin_right_pts=thrucut_margin_right_pts,
+                            )
+                        if not thru_parts:
+                            return []
+                        return [
+                            "q",
+                            f"/{thru_spot_name_clean} CS",
+                            "1.0 SCN",
+                            "1.0 w",
+                            "1 j",
+                            "1 J",
+                            *thru_parts,
+                            "S",
+                            "Q",
+                        ]
 
                     if polyline_reduction is not None:
                         total_expected_rings = sum(1 + len(p.interiors) for p in geoms)
@@ -12620,7 +12984,10 @@ class StickerEngine:
                                     "/CutContour CS",
                                     "1.0 SCN",
                                     "1.0 w",
-                                ] + single_p_ops + ["Q"]
+                                    *_pdf_cut_stroke_ops(cut_draw_style),
+                                ] + single_p_ops
+                                single_isolated.extend(_individual_thru_ops(p))
+                                single_isolated.append("Q")
                                 individual_cut_ops_by_geom.append("\n".join(single_isolated))
                         else:
                             for path in polyline_reduction.paths:
@@ -12651,7 +13018,10 @@ class StickerEngine:
                                     "/CutContour CS",
                                     "1.0 SCN",
                                     "1.0 w",
-                                ] + single_p_ops + ["Q"]
+                                    *_pdf_cut_stroke_ops(cut_draw_style),
+                                ] + single_p_ops
+                                single_isolated.extend(_individual_thru_ops(p))
+                                single_isolated.append("Q")
                                 individual_cut_ops_by_geom.append("\n".join(single_isolated))
                         else:
                             for segments in cut_fitted_paths:
@@ -12696,7 +13066,10 @@ class StickerEngine:
                                 "/CutContour CS",
                                 "1.0 SCN",
                                 "1.0 w",
-                            ] + single_p_ops + ["Q"]
+                                *_pdf_cut_stroke_ops(cut_draw_style),
+                            ] + single_p_ops
+                            single_isolated.extend(_individual_thru_ops(p))
+                            single_isolated.append("Q")
                             individual_cut_ops_by_geom.append("\n".join(single_isolated))
 
                     cut_ops.append("Q")
@@ -12739,6 +13112,7 @@ class StickerEngine:
                             cut_ops.append(f"/{thru_spot_name_clean} CS")
                             cut_ops.append("1.0 SCN")
                             cut_ops.append("1.0 w")
+                            cut_ops.extend(["1 j", "1 J"])
                             cut_ops.extend(thru_stream)
                             cut_ops.append("S")
                             cut_ops.append("Q")
@@ -12923,6 +13297,18 @@ class StickerEngine:
                         c_y0 = max(0.0, t_y0 - b_b - crop_guard)
                         c_x1 = min(new_width, t_x1 + b_r + crop_guard)
                         c_y1 = min(new_height, t_y1 + b_t + crop_guard)
+                        # CUTLINE (audit 2026-10-01): Trang tem phải chứa đủ dao Đứt;
+                        # trim_box vẫn bám dao Demi để không đổi kích thước thành phẩm.
+                        if thrucut_enabled:
+                            contour_margin = thrucut_shape == "contour_offset"
+                            thru_left = thrucut_margin_pts if contour_margin else thrucut_margin_left_pts
+                            thru_bottom = thrucut_margin_pts if contour_margin else thrucut_margin_bottom_pts
+                            thru_right = thrucut_margin_pts if contour_margin else thrucut_margin_right_pts
+                            thru_top = thrucut_margin_pts if contour_margin else thrucut_margin_top_pts
+                            c_x0 = max(0.0, min(c_x0, t_x0 - thru_left - crop_guard))
+                            c_y0 = max(0.0, min(c_y0, t_y0 - thru_bottom - crop_guard))
+                            c_x1 = min(new_width, max(c_x1, t_x1 + thru_right + crop_guard))
+                            c_y1 = min(new_height, max(c_y1, t_y1 + thru_top + crop_guard))
                         box_data = {
                             "crop_box": [round(c_x0, 4), round(c_y0, 4), round(c_x1, 4), round(c_y1, 4)],
                             "trim_box": [round(t_x0, 4), round(t_y0, 4), round(t_x1, 4), round(t_y1, 4)],
@@ -12956,6 +13342,7 @@ class StickerEngine:
                                         )
                                     )
                             single_p_ops.append("S")
+                            single_thru_ops = _individual_thru_ops(p)
                             _cut_ox = crop_x0 if selection_page_mode else exp_left
                             _cut_oy = crop_y0 if selection_page_mode else exp_bottom
                             box_data["cut_stream"] = "\n".join([
@@ -12964,7 +13351,8 @@ class StickerEngine:
                                 "/CutContour CS",
                                 "1.0 SCN",
                                 "1.0 w",
-                            ] + single_p_ops + ["Q"])
+                                *_pdf_cut_stroke_ops(cut_draw_style),
+                            ] + single_p_ops + single_thru_ops + ["Q"])
                         sticker_boxes.append(box_data)
                         dbg_log("STICKER_BOX", f"Tem {idx + 1}/{len(all_trims)} (trang {page_idx + 1})", trim_w_mm=(t_x1 - t_x0) * 25.4 / 72.0, trim_h_mm=(t_y1 - t_y0) * 25.4 / 72.0, crop_w_mm=(c_x1 - c_x0) * 25.4 / 72.0, crop_h_mm=(c_y1 - c_y0) * 25.4 / 72.0)
                     
@@ -12985,7 +13373,11 @@ class StickerEngine:
                         "contour_source": (
                             approved_contour_source
                             if approved_contour_page
-                            else ("alpha" if alpha_source_contour else "auto")
+                            else (
+                                "alpha"
+                                if (alpha_source_contour or raster_alpha_boundary)
+                                else "auto"
+                            )
                         ),
                         "alpha_fallback": bool(alpha_fallback_used),
                         "width_mm": round(width_mm, 2),
@@ -13090,7 +13482,11 @@ class StickerEngine:
                     (
                         approved_contour_source
                         if approved_contour_page
-                        else ("alpha" if alpha_source_contour else "auto")
+                        else (
+                            "alpha"
+                            if (alpha_source_contour or raster_alpha_boundary)
+                            else "auto"
+                        )
                     ),
                     int(img.shape[1]),
                     int(img.shape[0]),
@@ -13261,6 +13657,14 @@ class StickerEngine:
                 try:
                     with pdfium_guard():
                         page_in.close()
+                except Exception: pass
+            if cleaned_page_pdfium is not None:
+                try:
+                    with pdfium_guard():
+                        cleaned_page_pdfium.close()
+                except Exception: pass
+            if cleaned_page_pike is not None:
+                try: cleaned_page_pike.close()
                 except Exception: pass
             if doc_in_pdfium:
                 try:
@@ -13518,6 +13922,12 @@ class StickerEngine:
                 "thrucut_enabled": kw.get("thrucut_enabled", False),
                 "thrucut_shape": kw.get("thrucut_shape", "rounded_rect"),
                 "thrucut_margin_mm": kw.get("thrucut_margin_mm", 3.0),
+                # [CUTLINE FIX 2026-10-01] Truyền nguyên per-side contract qua
+                # ProcessPool để Preview/Export không đổi hình theo số trang.
+                "thrucut_margin_top_mm": kw.get("thrucut_margin_top_mm"),
+                "thrucut_margin_bottom_mm": kw.get("thrucut_margin_bottom_mm"),
+                "thrucut_margin_left_mm": kw.get("thrucut_margin_left_mm"),
+                "thrucut_margin_right_mm": kw.get("thrucut_margin_right_mm"),
                 "thrucut_radius_mm": kw.get("thrucut_radius_mm", 3.0),
                 "thrucut_spot_name": kw.get("thrucut_spot_name", "ThruCut"),
                 "thrucut_color": kw.get("thrucut_color", (1.0, 0.0, 0.0, 0.0)),

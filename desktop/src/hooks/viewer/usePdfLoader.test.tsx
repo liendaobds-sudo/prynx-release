@@ -577,6 +577,41 @@ describe('usePdfLoader — trạng thái tải PDF trong bộ nhớ', () => {
         expect(pdfMocks.getDocument).toHaveBeenCalledTimes(1);
     });
 
+    it('mở page 1 trước rồi hydrate khổ các trang PDF.js còn lại', async () => {
+        let resolvePage2!: (value: { getViewport: () => { width: number; height: number } }) => void;
+        const page2 = new Promise<{ getViewport: () => { width: number; height: number } }>(resolve => {
+            resolvePage2 = resolve;
+        });
+        const doc = {
+            numPages: 2,
+            getPage: vi.fn((pageNum: number) => pageNum === 1
+                ? Promise.resolve({ getViewport: () => ({ width: 595, height: 842 }) })
+                : page2),
+        };
+        pdfMocks.getDocument.mockReturnValue({ promise: Promise.resolve(doc), destroy: vi.fn() });
+        const props = makeProps(
+            new File(['mixed'], 'mixed-size.pdf', { type: 'application/pdf' }),
+            'blob:mixed-size',
+        );
+
+        const { result } = renderHook(() => usePdfLoader(props));
+        await waitFor(() => expect(result.current.loadStatus).toBe('ready'));
+        expect(result.current.allPageDims[1]).toEqual({
+            w: 595 * (96 / 72),
+            h: 842 * (96 / 72),
+            widthPt: 595,
+        });
+        expect(result.current.allPageDims[2]).toBeUndefined();
+
+        act(() => result.current.notifyFirstPageRenderReady());
+        resolvePage2({ getViewport: () => ({ width: 1200, height: 600 }) });
+        await waitFor(() => expect(result.current.allPageDims[2]).toEqual({
+            w: 1200 * (96 / 72),
+            h: 600 * (96 / 72),
+            widthPt: 1200,
+        }));
+    });
+
     it('hydrate đúng khổ từng trang PDF.js dài thay vì nhân bản khổ trang 1', async () => {
         pdfMocks.getDocument.mockReturnValue({
             promise: Promise.resolve(makePdfDoc(101, pageNum => pageNum === 101

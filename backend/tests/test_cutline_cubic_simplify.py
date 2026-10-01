@@ -125,6 +125,50 @@ def test_preferred_conservative_noop_still_tries_fair_and_local_success(monkeypa
     assert result is reduced and stats["changed"]
 
 
+def test_preview_fast_prioritizes_global_refit(monkeypatch):
+    import app.workers.cutline_cubic_simplify as module
+
+    source = [{"exterior": _circle()}]
+    calls = []
+
+    def traced(groups, *, global_refit=True, fair_refit=False, **options):
+        calls.append((global_refit, fair_refit, options.get("fair_max_irls_rounds")))
+        changed = global_refit and not fair_refit
+        stats = {"before_segments": 4, "after_segments": 3 if changed else 4,
+                 "maximum_error_bound_mm": .04 if changed else 0.0,
+                 "changed": changed}
+        return (source, stats)
+
+    monkeypatch.setattr(module, "_simplify_cubic_path_groups_impl", traced)
+    _result, stats = module.simplify_cubic_path_groups(
+        source, tolerance_mm=.05, preview_fast=True,
+    )
+    assert stats["changed"]
+    assert calls == [(True, False, None)]
+
+
+def test_preview_fast_falls_back_to_fair_if_global_unchanged(monkeypatch):
+    import app.workers.cutline_cubic_simplify as module
+
+    source = [{"exterior": _circle()}]
+    calls = []
+
+    def traced(groups, *, global_refit=True, fair_refit=False, **options):
+        calls.append((global_refit, fair_refit, options.get("fair_max_irls_rounds")))
+        changed = fair_refit
+        stats = {"before_segments": 4, "after_segments": 3 if changed else 4,
+                 "maximum_error_bound_mm": .04 if changed else 0.0,
+                 "changed": changed}
+        return (source, stats)
+
+    monkeypatch.setattr(module, "_simplify_cubic_path_groups_impl", traced)
+    _result, stats = module.simplify_cubic_path_groups(
+        source, tolerance_mm=.05, preview_fast=True,
+    )
+    assert stats["changed"]
+    assert calls == [(True, False, None), (True, True, 3)]
+
+
 def test_preview_fast_uses_fair_first_for_high_tolerance(monkeypatch):
     import app.workers.cutline_cubic_simplify as module
 

@@ -1,0 +1,123 @@
+{
+  "date_utc": "2026-10-01T05:34:09.003083+00:00",
+  "exit_code": 1,
+  "workload": {
+    "kind": "A6 text + unique QR per record",
+    "template_pages": 1,
+    "fields": 2,
+    "font": "Arial TTF Type0",
+    "text": "unique VDP-00000 + 4 Vietnamese variants",
+    "qr": "unique URL, errorCorrection=M",
+    "images": 0
+  },
+  "controller_wall_seconds": 0.6333880999991379,
+  "memory_sample_interval_seconds": 0.05,
+  "memory_sample_count": 11,
+  "memory_peaks": {
+    "all": {
+      "rss_mib": 65.4765625,
+      "private_mib": 41.7109375,
+      "process_count": 4,
+      "rss_peak_processes": [
+        {
+          "pid": 2200,
+          "rss_mib": 4.09765625,
+          "private_mib": 0.82421875
+        },
+        {
+          "pid": 3980,
+          "rss_mib": 49.8984375,
+          "private_mib": 38.0
+        },
+        {
+          "pid": 10652,
+          "rss_mib": 5.10546875,
+          "private_mib": 1.31640625
+        },
+        {
+          "pid": 24840,
+          "rss_mib": 6.375,
+          "private_mib": 1.5703125
+        }
+      ],
+      "rss_peak_elapsed_seconds": 0.4679324999997334
+    },
+    "startup": {
+      "rss_mib": 50.9375,
+      "private_mib": 36.30859375,
+      "process_count": 2,
+      "rss_peak_processes": [
+        {
+          "pid": 2200,
+          "rss_mib": 4.09765625,
+          "private_mib": 0.82421875
+        },
+        {
+          "pid": 3980,
+          "rss_mib": 46.83984375,
+          "private_mib": 35.484375
+        }
+      ],
+      "rss_peak_elapsed_seconds": 0.4112846999996691
+    },
+    "setup": {
+      "rss_mib": 65.4765625,
+      "private_mib": 41.7109375,
+      "process_count": 4,
+      "rss_peak_processes": [
+        {
+          "pid": 2200,
+          "rss_mib": 4.09765625,
+          "private_mib": 0.82421875
+        },
+        {
+          "pid": 3980,
+          "rss_mib": 49.8984375,
+          "private_mib": 38.0
+        },
+        {
+          "pid": 10652,
+          "rss_mib": 5.10546875,
+          "private_mib": 1.31640625
+        },
+        {
+          "pid": 24840,
+          "rss_mib": 6.375,
+          "private_mib": 1.5703125
+        }
+      ],
+      "rss_peak_elapsed_seconds": 0.4679391999998188
+    },
+    "engine": {
+      "rss_mib": 57.44140625,
+      "private_mib": 41.51953125,
+      "process_count": 2,
+      "rss_peak_processes": [
+        {
+          "pid": 2200,
+          "rss_mib": 4.09765625,
+          "private_mib": 0.82421875
+        },
+        {
+          "pid": 3980,
+          "rss_mib": 53.34375,
+          "private_mib": 40.6953125
+        }
+      ],
+      "rss_peak_elapsed_seconds": 0.5827614000008907
+    }
+  },
+  "worker": {},
+  "harness_path": "D:\\pdfcompare\\.tmp\\vdp_output_benchmark.py",
+  "harness_sha256": "9bc004f83ea382d6629226b8fc131f4b15d4c63862c36d5c50ccf9d780b56bb1",
+  "log_path": "D:\\pdfcompare\\.tmp\\vdp-output-benchmark-2026-10-01\\5000\\worker.log",
+  "limitations": [
+    "One run per record count; no baseline comparison or p95.",
+    "Sum of working sets includes shared pages; private bytes reported separately.",
+    "Peak sampled at ~50ms; short transients may be missed.",
+    "Direct engine in dev Python, not packaged Tauri or UI flow.",
+    "Other user/app processes remained active; no exclusive-machine guarantee.",
+    "Samples verify exact Unicode text and QR dark pixels, not QR decode or Illustrator editability.",
+    "No variable images, CJK/emoji/RTL, embedded-font subset collisions, weak-hardware profile, or cancellation tested."
+  ]
+}

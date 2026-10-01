@@ -67,6 +67,23 @@ def cleanup_resume_grace_seconds(elapsed_since_cleanup: float) -> int:
         return CLEANUP_RESUME_GRACE_SECONDS
     return 0
 
+
+def _purge_vdp_jobs_idle() -> None:
+    """Dọn job VDP hết TTL trong vòng cleanup chung của sidecar.
+
+    Import lazy để ``cleanup`` không tạo vòng phụ thuộc khi route VDP khởi động;
+    lỗi một feature không được làm chết toàn bộ vòng dọn file nền.
+    """
+    try:
+        from app.api.routes.vdp import _purge_old_jobs
+    except Exception as error:
+        logger.debug("Không nạp được bộ dọn job VDP: %s", error)
+        return
+    try:
+        _purge_old_jobs()
+    except Exception:
+        logger.exception("Dọn job VDP trong cleanup loop thất bại")
+
 # PERF (audit 2026-08-05 §PERF.7): high-watermark chỉ xét artifact có vòng đời
 # rõ ràng. N-Up/VDP đã tự công bố TTL 1 giờ; dùng 2 giờ làm biên chống race.
 # Input rơi lại sau crash giữ 12 giờ, cùng ngưỡng dài hơn job tối đa của OS temp.
@@ -283,6 +300,8 @@ async def cleanup_expired_files_loop():
             await asyncio.to_thread(cleanup_expired)
             # 2. Filesystem-level cleanup (catches orphan files from ALL routes)
             await asyncio.to_thread(cleanup_orphan_files)
+            # 3. In-memory VDP jobs không có DB record nên phải sweep riêng.
+            await asyncio.to_thread(_purge_vdp_jobs_idle)
             last_cleanup_wall = time.time()
         except asyncio.CancelledError:
             logger.info("Cleanup task cancelled.")

@@ -76,6 +76,18 @@ function ptsClose(a: Pt, b: Pt, tol = 0.5): boolean {
     return Math.abs(a.x - b.x) < tol && Math.abs(a.y - b.y) < tol;
 }
 
+/** Khóa hình học ổn định khi model đi qua JSON (không còn cùng object reference). */
+function structuralPathKey(path: PathSegment): string {
+    const pointKey = (point: Pt) => `${point.x}:${point.y}`;
+    const points = path.points.map(pointKey).join(';');
+    const controls = path.controlPoints?.map(pointKey).join(';') ?? '';
+    return `${path.tag}|${path.type}|${points}|${controls}`;
+}
+
+function isSleevePartName(name: string): boolean {
+    return name.startsWith('sleeve_') || name.startsWith('lid_') || name.startsWith('cover_');
+}
+
 function segToSvg(seg: PathSegment, isFirst: boolean): string {
     if (seg.type === 'bezier' && seg.controlPoints) {
         const [p0, cp1, cp2, p3] = seg.controlPoints;
@@ -264,7 +276,7 @@ export default function NestingCanvas({ isActive = true }: {
         // UIUX (audit 2026-08-23 §DIELINE.LINT.03): split render hai tờ cạnh
         // nhau, nên fit phải đo toàn bộ cụm; đo riêng tờ khay làm tờ vỏ tràn khỏi view.
         const splitSheet = (
-            (params.boxType === 'tray' || params.boxType === 'double_tray')
+            (params.boxType === 'tray' || params.boxType === 'double_tray' || params.boxType === 'rigid_magnetic')
             && nestingConfig.trayNestingMode === 'split'
         ) ? sleeveNestingResult?.actualSheet : undefined;
         const contentWidth = splitSheet
@@ -437,8 +449,9 @@ export default function NestingCanvas({ isActive = true }: {
     // ── Split mode helpers: filter paths/panels by part ──
     // [DOUBLE-TRAY 2026-07-26] Khe "sleeve" của hộp 2 mảnh: vỏ hộp diêm
     // (sleeve_*) hoặc nắp hộp âm dương (lid_*) — khớp splitTwoPieceDieline.
-    const isTwoPiece = params.boxType === 'tray' || params.boxType === 'double_tray';
-    const isSleevePartName = (name: string) => name.startsWith('sleeve_') || name.startsWith('lid_');
+    // [RIGID-MAGNETIC 2026-10-01 §RMB.1] Hộp cứng có khay + cover_
+    // và phải dùng cùng renderer hai mảnh với tray/double-tray.
+    const isTwoPiece = params.boxType === 'tray' || params.boxType === 'double_tray' || params.boxType === 'rigid_magnetic';
     const isSplit = isTwoPiece && nestingConfig.trayNestingMode === 'split';
 
     // Build part-specific fill paths and bboxes
@@ -450,24 +463,39 @@ export default function NestingCanvas({ isActive = true }: {
         () => dieline ? dieline.panels.filter(p => isSleevePartName(p.name)) : [],
         [dieline],
     );
-    const trayPaths = useMemo(
-        () => dieline ? dieline.allPaths.filter((_, i) => {
-            // Find which panel owns this path
-            for (const p of (dieline?.panels ?? [])) {
-                if (p.paths.includes(dieline!.allPaths[i]) && isSleevePartName(p.name)) return false;
+    // Path trong panel và allPaths có thể là hai object khác nhau sau JSON parse.
+    // Phân loại theo khóa hình học để cover_ không bị rơi khỏi bản vẽ tách mảnh.
+    const sleevePathKeys = useMemo(() => {
+        const keys = new Set<string>();
+        for (const panel of dieline?.panels ?? []) {
+            if (isSleevePartName(panel.name)) {
+                for (const path of panel.paths) keys.add(structuralPathKey(path));
             }
-            return true;
-        }) : [],
-        [dieline],
+        }
+        return keys;
+    }, [dieline]);
+    const trayPathKeys = useMemo(() => {
+        const keys = new Set<string>();
+        for (const panel of dieline?.panels ?? []) {
+            if (!isSleevePartName(panel.name)) {
+                for (const path of panel.paths) keys.add(structuralPathKey(path));
+            }
+        }
+        return keys;
+    }, [dieline]);
+    const isSleevePath = useCallback((path: PathSegment) => {
+        const key = structuralPathKey(path);
+        if (sleevePathKeys.has(key)) return true;
+        // BLEED của rigid magnetic là áo bồi (wrap), không thuộc panel nào.
+        return params.boxType === 'rigid_magnetic' && path.tag === 'BLEED' && !trayPathKeys.has(key);
+    }, [params.boxType, sleevePathKeys, trayPathKeys]);
+    const trayPaths = useMemo(
+        () => dieline ? dieline.allPaths.filter(path => !isSleevePath(path)) : [],
+        [dieline, isSleevePath],
     );
     const sleevePaths = useMemo(
-        () => dieline ? dieline.allPaths.filter((_, i) => {
-            for (const p of (dieline?.panels ?? [])) {
-                if (p.paths.includes(dieline!.allPaths[i]) && isSleevePartName(p.name)) return true;
-            }
-            return false;
-        }) : [],
-        [dieline],
+        () => dieline ? dieline.allPaths.filter(isSleevePath) : [],
+        [dieline, isSleevePath],
     );
 
     const trayFillD = useMemo(
@@ -480,7 +508,7 @@ export default function NestingCanvas({ isActive = true }: {
     );
 
     // Compute part bboxes
-    const partBBox = (panels: Panel[]) => {
+    const partBBox = (panels: Panel[], extraPaths: PathSegment[] = []) => {
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
         for (const panel of panels) {
             for (const seg of panel.paths) {
@@ -491,12 +519,20 @@ export default function NestingCanvas({ isActive = true }: {
                 }
             }
         }
+        // Include unowned structural paths such as rigid magnetic wrap BLEED.
+        for (const seg of extraPaths) {
+            const pts = seg.type === 'bezier' && seg.controlPoints ? seg.controlPoints : seg.points;
+            for (const p of pts) {
+                if (p.x < minX) minX = p.x; if (p.y < minY) minY = p.y;
+                if (p.x > maxX) maxX = p.x; if (p.y > maxY) maxY = p.y;
+            }
+        }
         if (minX === Infinity) return null;
         return { minX, minY, maxX, maxY, width: maxX - minX, height: maxY - minY };
     };
 
-    const trayBB = useMemo(() => partBBox(trayPanels), [trayPanels]);
-    const sleeveBB = useMemo(() => partBBox(sleevePanels), [sleevePanels]);
+    const trayBB = useMemo(() => partBBox(trayPanels, trayPaths), [trayPanels, trayPaths]);
+    const sleeveBB = useMemo(() => partBBox(sleevePanels, sleevePaths), [sleevePanels, sleevePaths]);
 
     if (!dieline || !nestingResult) {
         return <div className="dt-canvas-2d-empty">{t('dieline.nestingCanvas:nhap_thong_so_de_xem_xep_khuon')}</div>;

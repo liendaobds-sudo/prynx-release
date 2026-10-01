@@ -332,6 +332,7 @@ async def detect_sticker_source_endpoint(
             alpha_threshold=request.alpha_threshold,
             page_number=request.page_number,
             preview_only=request.preview_only,
+            shadow_cleanup=request.shadow_cleanup,
         )
 
 
@@ -482,6 +483,16 @@ async def preview_sticker_cutline_endpoint(
             from app.workers.sticker_classic_page_preview import build_classic_page_preview
             preview_builder = build_classic_page_preview
             classic_options["classic_force_contour"] = request.classic_force_contour
+        thrucut_options = {} if request.classic_whole_page else {
+            "thrucut_enabled": request.thrucut_enabled,
+            "thrucut_shape": request.thrucut_shape,
+            "thrucut_margin_mm": request.thrucut_margin_mm,
+            "thrucut_margin_top_mm": request.thrucut_margin_top_mm,
+            "thrucut_margin_bottom_mm": request.thrucut_margin_bottom_mm,
+            "thrucut_margin_left_mm": request.thrucut_margin_left_mm,
+            "thrucut_margin_right_mm": request.thrucut_margin_right_mm,
+            "thrucut_radius_mm": request.thrucut_radius_mm,
+        }
         from app.workers.cutline_preview_cancel import (
             PreviewCancellation,
             cancellation_scope,
@@ -510,6 +521,7 @@ async def preview_sticker_cutline_endpoint(
                     min_detail_area_mm2=request.min_detail_area_mm2,
                     cutline_denoise=request.cutline_denoise,
                     cutline_simplify_mm=request.cutline_simplify_mm,
+                    **thrucut_options,
                     **classic_options,
                 )
 
@@ -852,6 +864,18 @@ async def export_sticker_sheet_endpoint(
             "solid_bleed_cmyk": request.solid_bleed_cmyk,
             "shape_mode": request.shape_mode,
             "draw_cut_contour": request.draw_cut_contour,
+            # [CUTLINE FIX 2026-10-01] Chuyển nguyên hợp đồng Bế 2 dao xuống
+            # worker; thiếu bất kỳ field nào sẽ làm engine rơi về mặc định một dao.
+            "thrucut_enabled": request.thrucut_enabled,
+            "thrucut_shape": request.thrucut_shape,
+            "thrucut_margin_mm": request.thrucut_margin_mm,
+            "thrucut_margin_top_mm": request.thrucut_margin_top_mm,
+            "thrucut_margin_bottom_mm": request.thrucut_margin_bottom_mm,
+            "thrucut_margin_left_mm": request.thrucut_margin_left_mm,
+            "thrucut_margin_right_mm": request.thrucut_margin_right_mm,
+            "thrucut_radius_mm": request.thrucut_radius_mm,
+            "thrucut_spot_name": request.thrucut_spot_name,
+            "thrucut_color_hex": request.thrucut_color_hex,
             "preserve_existing_cut": request.preserve_existing_cut,
             "output_format": request.output_format,
             "cutline_smoothness": request.cutline_smoothness,

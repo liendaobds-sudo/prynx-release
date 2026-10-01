@@ -1,0 +1,868 @@
+{
+  "params": {
+    "L": 220,
+    "W": 160,
+    "D": 60,
+    "T": 2,
+    "C": 0.5,
+    "G": 15,
+    "TH": 15,
+    "glueSide": "left",
+    "boxType": "rigid_magnetic",
+    "panelOrder": "WLWL",
+    "HH": 0,
+    "HW": 0,
+    "HHL": 0,
+    "handleShape": "oval",
+    "handleY": "bottom",
+    "HFH": 0,
+    "SLW": 3,
+    "SLH": 85,
+    "TRW": 0,
+    "SLP": 0,
+    "gableStyle": "pitched",
+    "LTW": 15,
+    "LTH": 20,
+    "lockTab": true,
+    "DFH": 0,
+    "ABD": 0,
+    "BF": 0,
+    "HR": 0,
+    "HM": 0,
+    "HS": 0,
+    "handleHoles": true,
+    "cupD1": 70,
+    "cupD2": 80,
+    "cupH": 90,
+    "cupCoverage": 100,
+    "cupHeightType": "slant",
+    "cupFlapPosition": "right",
+    "envW": 220,
+    "envH": 110,
+    "envFH": 0,
+    "envSF": 0,
+    "envFlapShape": "pointed",
+    "envStyle": "wallet",
+    "envWindow": false,
+    "envWindowW": 90,
+    "envWindowH": 45,
+    "envWindowX": 15,
+    "envWindowY": 15,
+    "trayTongueW": 15,
+    "sleeveGlue": 15,
+    "lidD": 0,
+    "lidGap": 1,
+    "hgbWindow": true,
+    "WNW": 0,
+    "WNH": 0,
+    "HTH": 0,
+    "pizzaVent": true,
+    "pizzaVentD": 0,
+    "pizzaFrontLock": true,
+    "pizzaCornerLock": true,
+    "rigidLip": 2,
+    "rigidFlapH": 35,
+    "rigidTurnIn": 15,
+    "rigidMagnetD": 10,
+    "rigidMagnetOffset": 12,
+    "rigidMagnetCount": 2
+  },
+  "original": {
+    "paths": 53,
+    "curves": 16,
+    "bleed": 8,
+    "bbox": {
+      "minX": 0,
+      "minY": -96.5,
+      "maxX": 604,
+      "maxY": 376.5,
+      "width": 604,
+      "height": 473
+    }
+  },
+  "tray": {
+    "paths": 20,
+    "curves": 0,
+    "bleed": 0,
+    "bbox": {
+      "minX": 0,
+      "minY": 0,
+      "maxX": 340,
+      "maxY": 280,
+      "width": 340,
+      "height": 280
+    }
+  },
+  "cover": {
+    "paths": 16,
+    "curves": 0,
+    "bleed": 0,
+    "bbox": {
+      "minX": 365,
+      "minY": -81.5,
+      "maxX": 589,
+      "maxY": 361.5,
+      "width": 224,
+      "height": 443
+    }
+  },
+  "contours": {
+    "allClosed": true,
+    "openContours": []
+  },
+  "poses": [
+    {
+      "name": "tray_bottom",
+      "verts": [
+        [
+          60,
+          60,
+          0
+        ],
+        [
+          280,
+          60,
+          0
+        ],
+        [
+          280,
+          220,
+          0
+        ],
+        [
+          60,
+          220,
+          0
+        ]
+      ]
+    },
+    {
+      "name": "tray_front",
+      "verts": [
+        [
+          60,
+          60,
+          0.1
+        ],
+        [
+          280,
+          60,
+          0.1
+        ],
+        [
+          280,
+          60,
+          -59.9
+        ],
+        [
+          60,
+          60,
+          -59.9
+        ]
+      ],
+      "holes": [
+        [
+          115,
+          60,
+          -11.9
+        ],
+        [
+          225,
+          60,
+          -11.9
+        ]
+      ],
+      "pivotDistance": [
+        0,
+        0
+      ]
+    },
+    {
+      "name": "tray_right",
+      "verts": [
+        [
+          280,
+          60,
+          0.1
+        ],
+        [
+          280,
+          60,
+          -59.9
+        ],
+        [
+          280,
+          220,
+          -59.9
+        ],
+        [
+          280,
+          220,
+          0.1
+        ]
+      ],
+      "pivotDistance": [
+        0,
+        0
+      ]
+    },
+    {
+      "name": "tray_back",
+      "verts": [
+        [
+          280,
+          220,
+          0.1
+        ],
+        [
+          280,
+          220,
+          -59.9
+        ],
+        [
+          60,
+          220,
+          -59.9
+        ],
+        [
+          60,
+          220,
+          0.1
+        ]
+      ],
+      "pivotDistance": [
+        0,
+        0
+      ]
+    },
+    {
+      "name": "tray_left",
+      "verts": [
+        [
+          60,
+          220,
+          0.1
+        ],
+        [
+          60,
+          220,
+          -59.9
+        ],
+        [
+          60,
+          60,
+          -59.9
+        ],
+        [
+          60,
+          60,
+          0.1
+        ]
+      ],
+      "pivotDistance": [
+        0,
+        0
+      ]
+    },
+    {
+      "name": "cover_flap",
+      "verts": [
+        [
+          58,
+          226.9,
+          -32
+        ],
+        [
+          282,
+          226.9,
+          -32
+        ],
+        [
+          282,
+          226.9,
+          -67
+        ],
+        [
+          58,
+          226.9,
+          -67
+        ]
+      ],
+      "holes": [
+        [
+          114,
+          226.9,
+          -44
+        ],
+        [
+          226,
+          226.9,
+          -44
+        ]
+      ],
+      "pivotDistance": [
+        5,
+        5
+      ]
+    },
+    {
+      "name": "cover_top",
+      "verts": [
+        [
+          58,
+          226.9,
+          -71.9
+        ],
+        [
+          282,
+          226.9,
+          -71.9
+        ],
+        [
+          282,
+          62.9,
+          -71.9
+        ],
+        [
+          58,
+          62.9,
+          -71.9
+        ]
+      ],
+      "pivotDistance": [
+        5,
+        5
+      ]
+    },
+    {
+      "name": "cover_spine",
+      "verts": [
+        [
+          58,
+          58,
+          -71.9
+        ],
+        [
+          282,
+          58,
+          -71.9
+        ],
+        [
+          282,
+          58,
+          -6.9
+        ],
+        [
+          58,
+          58,
+          -6.9
+        ]
+      ],
+      "pivotDistance": [
+        5,
+        5
+      ]
+    },
+    {
+      "name": "cover_bottom",
+      "verts": [
+        [
+          58,
+          58,
+          -2
+        ],
+        [
+          282,
+          58,
+          -2
+        ],
+        [
+          282,
+          222,
+          -2
+        ],
+        [
+          58,
+          222,
+          -2
+        ]
+      ]
+    }
+  ],
+  "originalBleed": {
+    "minX": 350,
+    "maxX": 604,
+    "minY": -96.5,
+    "maxY": 376.5
+  },
+  "exportBleed": {
+    "minX": -3,
+    "maxX": 592,
+    "minY": -84.5,
+    "maxY": 364.5
+  },
+  "edge": {
+    "params": {
+      "L": 220,
+      "W": 160,
+      "D": 10,
+      "T": 2,
+      "C": 0.5,
+      "G": 15,
+      "TH": 15,
+      "glueSide": "left",
+      "boxType": "rigid_magnetic",
+      "panelOrder": "WLWL",
+      "HH": 0,
+      "HW": 0,
+      "HHL": 0,
+      "handleShape": "oval",
+      "handleY": "bottom",
+      "HFH": 0,
+      "SLW": 3,
+      "SLH": 85,
+      "TRW": 0,
+      "SLP": 0,
+      "gableStyle": "pitched",
+      "LTW": 15,
+      "LTH": 20,
+      "lockTab": true,
+      "DFH": 0,
+      "ABD": 0,
+      "BF": 0,
+      "HR": 0,
+      "HM": 0,
+      "HS": 0,
+      "handleHoles": true,
+      "cupD1": 70,
+      "cupD2": 80,
+      "cupH": 90,
+      "cupCoverage": 100,
+      "cupHeightType": "slant",
+      "cupFlapPosition": "right",
+      "envW": 220,
+      "envH": 110,
+      "envFH": 0,
+      "envSF": 0,
+      "envFlapShape": "pointed",
+      "envStyle": "wallet",
+      "envWindow": false,
+      "envWindowW": 90,
+      "envWindowH": 45,
+      "envWindowX": 15,
+      "envWindowY": 15,
+      "trayTongueW": 15,
+      "sleeveGlue": 15,
+      "lidD": 0,
+      "lidGap": 1,
+      "hgbWindow": true,
+      "WNW": 0,
+      "WNH": 0,
+      "HTH": 0,
+      "pizzaVent": true,
+      "pizzaVentD": 0,
+      "pizzaFrontLock": true,
+      "pizzaCornerLock": true,
+      "rigidLip": 2,
+      "rigidFlapH": 20,
+      "rigidTurnIn": 15,
+      "rigidMagnetD": 25,
+      "rigidMagnetOffset": 50,
+      "rigidMagnetCount": 2
+    },
+    "warnings": [],
+    "holes": [
+      {
+        "name": "tray_front",
+        "outline": [
+          {
+            "x": 10,
+            "y": 10
+          },
+          {
+            "x": 230,
+            "y": 10
+          },
+          {
+            "x": 230,
+            "y": 0
+          },
+          {
+            "x": 10,
+            "y": 0
+          }
+        ],
+        "holes": [
+          [
+            {
+              "x": 77.5,
+              "y": -40
+            },
+            {
+              "x": 76.548,
+              "y": -35.216
+            },
+            {
+              "x": 73.839,
+              "y": -31.161
+            },
+            {
+              "x": 69.784,
+              "y": -28.452
+            },
+            {
+              "x": 65,
+              "y": -27.5
+            },
+            {
+              "x": 60.216,
+              "y": -28.452
+            },
+            {
+              "x": 56.161,
+              "y": -31.161
+            },
+            {
+              "x": 53.452,
+              "y": -35.216
+            },
+            {
+              "x": 52.5,
+              "y": -40
+            },
+            {
+              "x": 53.452,
+              "y": -44.784
+            },
+            {
+              "x": 56.161,
+              "y": -48.839
+            },
+            {
+              "x": 60.216,
+              "y": -51.548
+            },
+            {
+              "x": 65,
+              "y": -52.5
+            },
+            {
+              "x": 69.784,
+              "y": -51.548
+            },
+            {
+              "x": 73.839,
+              "y": -48.839
+            },
+            {
+              "x": 76.548,
+              "y": -44.784
+            }
+          ],
+          [
+            {
+              "x": 187.5,
+              "y": -40
+            },
+            {
+              "x": 186.548,
+              "y": -35.216
+            },
+            {
+              "x": 183.839,
+              "y": -31.161
+            },
+            {
+              "x": 179.784,
+              "y": -28.452
+            },
+            {
+              "x": 175,
+              "y": -27.5
+            },
+            {
+              "x": 170.216,
+              "y": -28.452
+            },
+            {
+              "x": 166.161,
+              "y": -31.161
+            },
+            {
+              "x": 163.452,
+              "y": -35.216
+            },
+            {
+              "x": 162.5,
+              "y": -40
+            },
+            {
+              "x": 163.452,
+              "y": -44.784
+            },
+            {
+              "x": 166.161,
+              "y": -48.839
+            },
+            {
+              "x": 170.216,
+              "y": -51.548
+            },
+            {
+              "x": 175,
+              "y": -52.5
+            },
+            {
+              "x": 179.784,
+              "y": -51.548
+            },
+            {
+              "x": 183.839,
+              "y": -48.839
+            },
+            {
+              "x": 186.548,
+              "y": -44.784
+            }
+          ]
+        ]
+      },
+      {
+        "name": "cover_flap",
+        "outline": [
+          {
+            "x": 265,
+            "y": -99
+          },
+          {
+            "x": 489,
+            "y": -99
+          },
+          {
+            "x": 489,
+            "y": -79
+          },
+          {
+            "x": 265,
+            "y": -79
+          }
+        ],
+        "holes": [
+          [
+            {
+              "x": 333.5,
+              "y": -49
+            },
+            {
+              "x": 332.548,
+              "y": -44.216
+            },
+            {
+              "x": 329.839,
+              "y": -40.161
+            },
+            {
+              "x": 325.784,
+              "y": -37.452
+            },
+            {
+              "x": 321,
+              "y": -36.5
+            },
+            {
+              "x": 316.216,
+              "y": -37.452
+            },
+            {
+              "x": 312.161,
+              "y": -40.161
+            },
+            {
+              "x": 309.452,
+              "y": -44.216
+            },
+            {
+              "x": 308.5,
+              "y": -49
+            },
+            {
+              "x": 309.452,
+              "y": -53.784
+            },
+            {
+              "x": 312.161,
+              "y": -57.839
+            },
+            {
+              "x": 316.216,
+              "y": -60.548
+            },
+            {
+              "x": 321,
+              "y": -61.5
+            },
+            {
+              "x": 325.784,
+              "y": -60.548
+            },
+            {
+              "x": 329.839,
+              "y": -57.839
+            },
+            {
+              "x": 332.548,
+              "y": -53.784
+            }
+          ],
+          [
+            {
+              "x": 445.5,
+              "y": -49
+            },
+            {
+              "x": 444.548,
+              "y": -44.216
+            },
+            {
+              "x": 441.839,
+              "y": -40.161
+            },
+            {
+              "x": 437.784,
+              "y": -37.452
+            },
+            {
+              "x": 433,
+              "y": -36.5
+            },
+            {
+              "x": 428.216,
+              "y": -37.452
+            },
+            {
+              "x": 424.161,
+              "y": -40.161
+            },
+            {
+              "x": 421.452,
+              "y": -44.216
+            },
+            {
+              "x": 420.5,
+              "y": -49
+            },
+            {
+              "x": 421.452,
+              "y": -53.784
+            },
+            {
+              "x": 424.161,
+              "y": -57.839
+            },
+            {
+              "x": 428.216,
+              "y": -60.548
+            },
+            {
+              "x": 433,
+              "y": -61.5
+            },
+            {
+              "x": 437.784,
+              "y": -60.548
+            },
+            {
+              "x": 441.839,
+              "y": -57.839
+            },
+            {
+              "x": 444.548,
+              "y": -53.784
+            }
+          ]
+        ]
+      }
+    ]
+  },
+  "nesting": {
+    "tray": {
+      "positions": [
+        {
+          "x": 32,
+          "y": 31,
+          "rotation": 0
+        },
+        {
+          "x": 375,
+          "y": 31,
+          "rotation": 0
+        },
+        {
+          "x": 718,
+          "y": 31,
+          "rotation": 0
+        }
+      ],
+      "countPerSheet": 3,
+      "rows": 1,
+      "cols": 3,
+      "utilization": 33,
+      "usableArea": {
+        "width": 1070,
+        "height": 768
+      },
+      "actualSheet": {
+        "width": 1090,
+        "height": 790
+      },
+      "cellSize": {
+        "width": 343,
+        "height": 283
+      },
+      "label": "Khay 0° 3×1",
+      "superTile": null
+    },
+    "cover": {
+      "positions": [
+        {
+          "x": 32,
+          "y": 314,
+          "rotation": 0
+        },
+        {
+          "x": 259,
+          "y": 314,
+          "rotation": 0
+        },
+        {
+          "x": 486,
+          "y": 314,
+          "rotation": 0
+        },
+        {
+          "x": 713,
+          "y": 314,
+          "rotation": 0
+        }
+      ],
+      "countPerSheet": 4,
+      "rows": 1,
+      "cols": 4,
+      "utilization": 46,
+      "usableArea": {
+        "width": 1070,
+        "height": 768
+      },
+      "actualSheet": {
+        "width": 1090,
+        "height": 790
+      },
+      "cellSize": {
+        "width": 227,
+        "height": 446
+      },
+      "label": "Vỏ 0° 4×1",
+      "superTile": null
+    }
+  }
+}

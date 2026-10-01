@@ -20,10 +20,13 @@ Tham chiếu: design.md mục "Preview_Service"; Requirements 4.1, 4.2, 4.4, 4.5
 from __future__ import annotations
 
 import io
+import glob
+import math
 import os
 import logging
 import tempfile
 import uuid
+import pikepdf
 from dataclasses import dataclass, field as dc_field
 from typing import Any, List, Mapping, Optional, Sequence, Tuple, Union
 
@@ -40,6 +43,8 @@ from app.workers.vdp_engine import (
     run_vdp_engine,
 )
 from app.schemas.vdp import VdpField
+from app.core.pdfium_lock import pdfium_guard
+from app.core.system_memory import read_memory_status_mb
 
 
 @dataclass
@@ -185,6 +190,8 @@ def render_record_preview(
 
     doc_template = pdf_lib.open(template_path)
     tmp_path = None
+    selected_template = None
+    preview_job_id = f"preview_{uuid.uuid4().hex}"
     try:
         template_page_count = len(doc_template)
         if template_page_count == 0:
@@ -203,6 +210,34 @@ def render_record_preview(
         mb = doc_template._pdf.pages[t_idx].mediabox
         pw = float(mb[2] - mb[0])
         ph = float(mb[3] - mb[1])
+        if not math.isfinite(scale) or scale <= 0:
+            raise ValueError("scale preview phải là số hữu hạn lớn hơn 0.")
+        scaled_width, scaled_height = pw * scale, ph * scale
+        # PDFium nhận kích thước bitmap qua signed int32. Chặn overflow trước
+        # khi cấp phát, độc lập với hạng RAM và không giảm chất lượng preview.
+        if any(not math.isfinite(size) or size <= 0 or size > 2**31 - 1
+               for size in (scaled_width, scaled_height)):
+            raise ValueError("Kích thước preview nằm ngoài phạm vi bitmap PDFium.")
+        _, available_mb = read_memory_status_mb()
+        if available_mb is not None:
+            estimated_bytes = math.ceil(scaled_width) * math.ceil(scaled_height) * 12.0
+            # Chỉ từ chối khi request vượt ngân sách động theo RAM khả dụng;
+            # máy mạnh không bị hard-cap số DPI cố định.
+            budget_bytes = max(64.0 * 1024 * 1024, available_mb * 1024 * 1024 * 0.25)
+            if estimated_bytes > budget_bytes:
+                raise ValueError("Kích thước preview vượt ngân sách bộ nhớ khả dụng.")
+
+        # VDP (audit 2026-10-01 §VDP.01–02): chỉ sinh trang đang xem,
+        # giữ scope trang gốc rồi ánh xạ sang trang duy nhất của template tạm.
+        fields_dict = [
+            {**field, "pageNum": 1}
+            for field in fields_dict
+            if field.get("pageNum") in (None, t_idx + 1)
+        ]
+        selected_template = os.path.join(tempfile.gettempdir(), f"vdp_preview_tpl_{uuid.uuid4().hex}.pdf")
+        with pikepdf.Pdf.new() as selected_pdf:
+            selected_pdf.pages.append(doc_template._pdf.pages[t_idx])
+            selected_pdf.save(selected_template)
 
         field_rects = _compute_field_rects(fields_dict)
         field_font_variants = _register_preview_fonts(fields_dict)
@@ -230,27 +265,34 @@ def render_record_preview(
         # VDP23.01 (audit 2026-09-23): chạy đúng writer production cho một record;
         # không dựng một PDF preview khác bằng ReportLab rồi gọi đó là parity.
         run_vdp_engine(
-            template_path,
+            selected_template,
             preview_fields,
             [row],
             tmp_path,
-            job_id=f"preview_{uuid.uuid4().hex}",
+            job_id=preview_job_id,
         )
 
         # Rasterize trang ghép → PNG bằng pypdfium2 (scale = pixel/point).
         import pypdfium2 as pdfium
 
-        pdf = pdfium.PdfDocument(tmp_path)
-        try:
-            page_r = pdf[t_idx]
-            bitmap = page_r.render(scale=scale)
-            pil_img = bitmap.to_pil()
-            img_w, img_h = pil_img.size
-            png_buf = io.BytesIO()
-            pil_img.save(png_buf, format="PNG")
-            image_png = png_buf.getvalue()
-        finally:
-            pdf.close()
+        with pdfium_guard("vdp-preview-raster"):
+            pdf = pdfium.PdfDocument(tmp_path)
+            try:
+                page_r = pdf[0]
+                try:
+                    bitmap = page_r.render(scale=scale)
+                    try:
+                        pil_img = bitmap.to_pil().copy()
+                    finally:
+                        bitmap.close()
+                finally:
+                    page_r.close()
+            finally:
+                pdf.close()
+        img_w, img_h = pil_img.size
+        png_buf = io.BytesIO()
+        pil_img.save(png_buf, format="PNG")
+        image_png = png_buf.getvalue()
 
         # Quy đổi rect lỗi: point (gốc trên-trái) → pixel ảnh (cùng gốc trên-trái).
         field_errors: List[FieldErrorMark] = []
@@ -284,6 +326,14 @@ def render_record_preview(
         )
     finally:
         doc_template.close()
+        # Preview không có entry vdp_jobs để route dọn progress/chunk thay nó.
+        for leftover in glob.glob(os.path.join(tempfile.gettempdir(), f"vdp_prog_{preview_job_id}_*.txt")) + glob.glob(os.path.join(tempfile.gettempdir(), f"vdp_chunk_{preview_job_id}_*.pdf")):
+            try:
+                os.remove(leftover)
+            except OSError:
+                pass
+        if selected_template and os.path.exists(selected_template):
+            os.remove(selected_template)
         if tmp_path and os.path.exists(tmp_path):
             try:
                 os.remove(tmp_path)

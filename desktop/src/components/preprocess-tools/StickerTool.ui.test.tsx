@@ -1101,7 +1101,7 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
             })));
     });
 
-    it('hiển thị kết quả thành công và vẫn giữ nguyên các thẻ thiết lập trực tiếp', async () => {
+    it('hiển thị kết quả thành công và ẩn form thiết lập, hiện lại khi bấm quay lại chỉnh sửa', async () => {
         vi.mocked(uploadPDF).mockResolvedValue({ id: 'source-id' });
         vi.mocked(authenticatedFetch).mockResolvedValue({
             ok: true,
@@ -1127,7 +1127,7 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
             />,
         );
 
-        // Các thẻ accordion hiển thị trực tiếp mà không cần card bao chung
+        // Ban đầu: Các thẻ accordion hiển thị trực tiếp
         expect(screen.getByRole('button', { name: /Bế tem nhãn/ })).toBeTruthy();
         expect(screen.getByText('1. Đường cắt (Dieline)')).toBeTruthy();
         expect(screen.getByText(/2\. Tràn lề/i)).toBeTruthy();
@@ -1136,17 +1136,21 @@ describe('StickerTool — giao diện Bế tem nhãn trước hợp nhất', () 
         fireEvent.click(screen.getByRole('button', { name: 'Thực thi' }));
 
         await waitFor(() => expect(onFileFixed).toHaveBeenCalledTimes(1));
-        expect(screen.getByRole('button', { name: /Bế tem nhãn/ })).toBeTruthy();
-        expect(screen.getByText('1. Đường cắt (Dieline)')).toBeTruthy();
-        expect(screen.getByRole('button', { name: 'Thực thi' })).toBeTruthy();
+        // UIUX (audit 2026-10-01 §STICKER.POST-EXEC): Sau khi thành công, form thiết lập bị ẩn đi
+        expect(screen.queryByRole('button', { name: /Bế tem nhãn/ })).toBeNull();
+        expect(screen.queryByText('1. Đường cắt (Dieline)')).toBeNull();
+        expect(screen.queryByRole('button', { name: 'Thực thi' })).toBeNull();
 
         const resultCard = screen.getByRole('status');
         expect(resultCard.textContent).toContain('Đã tạo bù xén thành công!');
 
-        // Nút quay lại chỉnh sửa bù xén cho phép đóng thẻ kết quả
+        // Nút quay lại chỉnh sửa bù xén cho phép đóng thẻ kết quả và mở lại form thiết lập
         const backBtn = screen.getByRole('button', { name: /Quay lại chỉnh sửa bù xén/i });
         fireEvent.click(backBtn);
         expect(screen.queryByText('Đã tạo bù xén thành công!')).toBeNull();
+        expect(screen.getByRole('button', { name: /Bế tem nhãn/ })).toBeTruthy();
+        expect(screen.getByText('1. Đường cắt (Dieline)')).toBeTruthy();
+        expect(screen.getByRole('button', { name: 'Thực thi' })).toBeTruthy();
     });
 
     it('giữ đúng ticket của tab cho tới callback commit', async () => {

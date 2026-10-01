@@ -240,3 +240,108 @@ def recover_soft_shadow_alpha(
         fringe = (components[roi] == 0) & (soft > 0)
         target[fringe] = np.maximum(target[fringe], soft[fringe])
     return output
+
+
+# QUALITY (audit 2026-10-01 §PNG.SHADOW-CLEAN): chỉ xóa bóng bán trong suốt
+# ngoài thân tem. Pixel đặc, màu viền và Alpha bên trong luôn được giữ lại.
+_PNG_SHADOW_MAX_FRINGE_PX = 8
+_PNG_SHADOW_DARK_LUMA_MAX = 110
+_PNG_SHADOW_DARK_CHROMA_MAX = 35
+_PNG_SHADOW_MIN_BOUNDARY_DARK_RATIO = 0.03
+_PNG_SHADOW_MIN_RETAINED_RATIO = 0.70
+_PNG_SHADOW_LUMA_GAIN_MIN = 15.0
+_PNG_SHADOW_KERNEL_3 = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+
+
+def _border_connected_mask(mask: np.ndarray) -> np.ndarray:
+    """Lấy vùng thông với nền ngoài, giữ nguyên các khoảng Alpha kín trong tem."""
+    # Đệm nền nối mọi đoạn ở biên thành một vùng: chỉ cần một lần floodFill,
+    # kể cả khi thân tem chạm cạnh ảnh và chia nền thành nhiều phần.
+    work = np.pad(mask.astype(np.uint8), 1, constant_values=1)
+    cv2.floodFill(work, None, (0, 0), 2, flags=4)
+    return work[1:-1, 1:-1] == 2
+
+
+def clean_alpha_dark_shadow_fringe(
+    source_rgb: np.ndarray,
+    raw_alpha: np.ndarray,
+    *,
+    max_fringe_px: int = _PNG_SHADOW_MAX_FRINGE_PX,
+    dark_luma_max: int = _PNG_SHADOW_DARK_LUMA_MAX,
+    dark_chroma_max: int = _PNG_SHADOW_DARK_CHROMA_MAX,
+    min_boundary_dark_ratio: float = _PNG_SHADOW_MIN_BOUNDARY_DARK_RATIO,
+    min_retained_ratio: float = _PNG_SHADOW_MIN_RETAINED_RATIO,
+) -> tuple[np.ndarray, int]:
+    """Xóa dải bóng tối bán trong suốt ngoài mép sáng/màu của thân tem.
+
+    Không sửa RGB đầu vào hay xóa khử răng cưa trắng/màu. Màu RGB dưới Alpha=0
+    phải được xử lý bởi bước đệm màu khi xuất; hàm phân tích Alpha không đổi
+    artwork âm thầm. Nét đen đặc và Alpha kín bên trong được giữ nguyên.
+    Bóng mờ và nét vẽ tối ngoài mép có thể giống nhau; chế độ off vẫn cần thiết
+    khi tác giả chủ đích giữ dải tối bán trong suốt đó.
+    """
+    rgb = np.asarray(source_rgb, dtype=np.uint8)
+    alpha = np.asarray(raw_alpha, dtype=np.uint8)
+    if (
+        alpha.ndim != 2 or rgb.ndim != 3 or rgb.shape[2] < 3
+        or rgb.shape[:2] != alpha.shape or max_fringe_px < 1
+    ):
+        return alpha, 0
+    alpha_pos = alpha > 0
+    total_area = int(np.count_nonzero(alpha_pos))
+    if total_area < 50:
+        return alpha, 0
+
+    # PERF (audit 2026-10-01 §PNG.SHADOW-CLEAN): lấy bbox bằng tổng theo hàng/cột,
+    # không tạo hai mảng tọa độ cho hàng triệu pixel đặc. RGB chỉ đọc ở ứng viên.
+    rows = np.flatnonzero(np.any(alpha_pos, axis=1))
+    cols = np.flatnonzero(np.any(alpha_pos, axis=0))
+    crop = np.s_[max(0, rows[0] - 1):min(alpha.shape[0], rows[-1] + 2),
+                 max(0, cols[0] - 1):min(alpha.shape[1], cols[-1] + 2)]
+    local_alpha = alpha[crop]
+    local_rgb = rgb[crop]
+    solid = local_alpha >= 248
+    if np.count_nonzero(solid) < 50:
+        return alpha, 0
+    semi = (local_alpha > 0) & ~solid
+    if not np.any(semi):
+        return alpha, 0
+
+    exterior = _border_connected_mask(~solid)
+    candidate = semi & exterior
+    candidate_y, candidate_x = np.nonzero(candidate)
+    if candidate_y.size == 0:
+        return alpha, 0
+    candidate_rgb = local_rgb[candidate_y, candidate_x, :3]
+    candidate_max = candidate_rgb.max(axis=1)
+    candidate_min = candidate_rgb.min(axis=1)
+    dark = (candidate_max <= dark_luma_max) & (candidate_max - candidate_min <= dark_chroma_max)
+    candidate_y, candidate_x = candidate_y[dark], candidate_x[dark]
+    if candidate_y.size == 0:
+        return alpha, 0
+
+    # Chỉ mép đặc nhìn ra nền ngoài mới được làm mốc. Trắng nằm sau viền đen
+    # không phải mốc để xóa viền đen thật ở ngoài nó.
+    rim = solid & (cv2.dilate(exterior.astype(np.uint8), _PNG_SHADOW_KERNEL_3) > 0)
+    rim_y, rim_x = np.nonzero(rim)
+    if rim_y.size == 0 or candidate_y.size < rim_y.size * min_boundary_dark_ratio:
+        return alpha, 0
+    rim_rgb = local_rgb[rim_y, rim_x, :3]
+    rim_mean = rim_rgb.mean(axis=1)
+    rim_chroma = rim_rgb.max(axis=1) - rim_rgb.min(axis=1)
+    support = (rim_mean >= dark_luma_max + _PNG_SHADOW_LUMA_GAIN_MIN) | (rim_chroma > dark_chroma_max)
+    if not np.any(support):
+        return alpha, 0
+    bright_rim = np.zeros(solid.shape, dtype=np.uint8)
+    bright_rim[rim_y[support], rim_x[support]] = 1
+    radius = int(max_fringe_px)
+    nearby = cv2.dilate(bright_rim, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1,) * 2))
+    supported = nearby[candidate_y, candidate_x] > 0
+    candidate_y, candidate_x = candidate_y[supported], candidate_x[supported]
+    removed_count = int(candidate_y.size)
+    if removed_count == 0 or total_area - removed_count < total_area * min_retained_ratio:
+        return alpha, 0
+    cleaned_alpha = alpha.copy()
+    cleaned_alpha[crop][candidate_y, candidate_x] = 0
+    return cleaned_alpha, removed_count
+

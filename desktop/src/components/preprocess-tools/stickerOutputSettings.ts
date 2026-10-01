@@ -4,6 +4,7 @@ export type StickerCutMode = 'original' | 'alpha' | 'bleed' | 'none';
 export type StickerCornerStyle = 'preserve' | 'round' | 'miter';
 export type StickerBleedColorType = 'image' | 'trajectory' | 'inpaint' | 'solid';
 export type StickerSolidBleedCmyk = readonly [number, number, number, number];
+export type StickerThruCutShape = 'rounded_rect' | 'ellipse' | 'contour_offset';
 
 export interface StickerOutputSettings {
     cutMode: StickerCutMode;
@@ -14,6 +15,19 @@ export interface StickerOutputSettings {
     bleedColorType: StickerBleedColorType;
     solidBleedCmyk: StickerSolidBleedCmyk;
     cropToSticker: boolean;
+    /** Dao đứt ngoài; mặc định tắt để giữ nguyên hành vi cũ. */
+    thrucutEnabled: boolean;
+    thrucutShape: StickerThruCutShape;
+    thrucutMarginMm: number;
+    thrucutMarginLinked: boolean;
+    thrucutMarginTopMm: number;
+    thrucutMarginBottomMm: number;
+    thrucutMarginLeftMm: number;
+    thrucutMarginRightMm: number;
+    thrucutRadiusMm: number;
+    thrucutSpotName: string;
+    thrucutColorHex: string;
+    thrucutColorCmyk: StickerSolidBleedCmyk;
 }
 
 export interface StickerOutputStorage {
@@ -25,6 +39,7 @@ const STORAGE_PREFIX = 'ps_sticker_';
 const CUT_MODES: readonly StickerCutMode[] = ['original', 'alpha', 'bleed', 'none'];
 const CORNER_STYLES: readonly StickerCornerStyle[] = ['preserve', 'round', 'miter'];
 const BLEED_COLOR_TYPES: readonly StickerBleedColorType[] = ['image', 'trajectory', 'inpaint', 'solid'];
+const THRUCUT_SHAPES: readonly StickerThruCutShape[] = ['rounded_rect', 'ellipse', 'contour_offset'];
 
 export const DEFAULT_STICKER_OUTPUT_SETTINGS: Readonly<StickerOutputSettings> = Object.freeze({
     cutMode: 'original',
@@ -35,6 +50,18 @@ export const DEFAULT_STICKER_OUTPUT_SETTINGS: Readonly<StickerOutputSettings> = 
     bleedColorType: 'image',
     solidBleedCmyk: Object.freeze([0, 0, 0, 0]) as StickerSolidBleedCmyk,
     cropToSticker: DEFAULT_CROP_TO_STICKER,
+    thrucutEnabled: false,
+    thrucutShape: 'rounded_rect',
+    thrucutMarginMm: 3,
+    thrucutMarginLinked: true,
+    thrucutMarginTopMm: 3,
+    thrucutMarginBottomMm: 3,
+    thrucutMarginLeftMm: 3,
+    thrucutMarginRightMm: 3,
+    thrucutRadiusMm: 3,
+    thrucutSpotName: 'ThruCut',
+    thrucutColorHex: '#00FFFF',
+    thrucutColorCmyk: Object.freeze([100, 0, 0, 0]) as StickerSolidBleedCmyk,
 });
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -109,6 +136,18 @@ function sanitizeSolidBleedCmyk(value: unknown): StickerSolidBleedCmyk {
     return [...DEFAULT_STICKER_OUTPUT_SETTINGS.solidBleedCmyk] as StickerSolidBleedCmyk;
 }
 
+function sanitizeHex(value: unknown, fallback: string): string {
+    return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value.trim())
+        ? value.trim().toUpperCase()
+        : fallback;
+}
+
+function sanitizeSpotName(value: unknown): string {
+    if (typeof value !== 'string') return DEFAULT_STICKER_OUTPUT_SETTINGS.thrucutSpotName;
+    const trimmed = value.trim().slice(0, 64);
+    return trimmed || DEFAULT_STICKER_OUTPUT_SETTINGS.thrucutSpotName;
+}
+
 /** Chuẩn hóa mọi đầu vào trước khi gửi thiết lập xuống luồng tạo đường bế. */
 export function sanitizeStickerOutputSettings(value: unknown): StickerOutputSettings {
     const source = isRecord(value) ? value : {};
@@ -132,6 +171,44 @@ export function sanitizeStickerOutputSettings(value: unknown): StickerOutputSett
             source.cropToSticker,
             DEFAULT_STICKER_OUTPUT_SETTINGS.cropToSticker,
         ),
+        thrucutEnabled: sanitizeBoolean(
+            source.thrucutEnabled,
+            DEFAULT_STICKER_OUTPUT_SETTINGS.thrucutEnabled,
+        ),
+        thrucutShape: sanitizeEnum(
+            source.thrucutShape,
+            THRUCUT_SHAPES,
+            DEFAULT_STICKER_OUTPUT_SETTINGS.thrucutShape,
+        ),
+        thrucutMarginMm: sanitizeNumber(
+            source.thrucutMarginMm,
+            DEFAULT_STICKER_OUTPUT_SETTINGS.thrucutMarginMm,
+            0.5,
+            30,
+        ),
+        thrucutMarginLinked: sanitizeBoolean(
+            source.thrucutMarginLinked,
+            DEFAULT_STICKER_OUTPUT_SETTINGS.thrucutMarginLinked,
+        ),
+        thrucutMarginTopMm: sanitizeNumber(source.thrucutMarginTopMm, DEFAULT_STICKER_OUTPUT_SETTINGS.thrucutMarginTopMm, 0, 50),
+        thrucutMarginBottomMm: sanitizeNumber(source.thrucutMarginBottomMm, DEFAULT_STICKER_OUTPUT_SETTINGS.thrucutMarginBottomMm, 0, 50),
+        thrucutMarginLeftMm: sanitizeNumber(source.thrucutMarginLeftMm, DEFAULT_STICKER_OUTPUT_SETTINGS.thrucutMarginLeftMm, 0, 50),
+        thrucutMarginRightMm: sanitizeNumber(source.thrucutMarginRightMm, DEFAULT_STICKER_OUTPUT_SETTINGS.thrucutMarginRightMm, 0, 50),
+        thrucutRadiusMm: sanitizeNumber(
+            source.thrucutRadiusMm,
+            DEFAULT_STICKER_OUTPUT_SETTINGS.thrucutRadiusMm,
+            0,
+            20,
+        ),
+        thrucutSpotName: sanitizeSpotName(source.thrucutSpotName),
+        thrucutColorHex: sanitizeHex(
+            source.thrucutColorHex,
+            DEFAULT_STICKER_OUTPUT_SETTINGS.thrucutColorHex,
+        ),
+        thrucutColorCmyk: source.thrucutColorCmyk === undefined
+            && source.thrucutColorHex === undefined
+            ? [...DEFAULT_STICKER_OUTPUT_SETTINGS.thrucutColorCmyk] as StickerSolidBleedCmyk
+            : sanitizeSolidBleedCmyk(source.thrucutColorCmyk ?? source.thrucutColorHex),
     };
 }
 
@@ -178,6 +255,18 @@ export function loadStickerOutputSettings(
         bleedColorType: readLegacyValue(resolvedStorage, 'bleedColorType'),
         bleedColorHex: readLegacyValue(resolvedStorage, 'bleedColorHex'),
         cropToSticker: readLegacyValue(resolvedStorage, 'cropToSticker'),
+        thrucutEnabled: readLegacyValue(resolvedStorage, 'thrucutEnabled'),
+        thrucutShape: readLegacyValue(resolvedStorage, 'thrucutShape'),
+        thrucutMarginMm: readLegacyValue(resolvedStorage, 'thrucutMarginMm'),
+        thrucutMarginLinked: readLegacyValue(resolvedStorage, 'thrucutMarginLinked'),
+        thrucutMarginTopMm: readLegacyValue(resolvedStorage, 'thrucutMarginTopMm'),
+        thrucutMarginBottomMm: readLegacyValue(resolvedStorage, 'thrucutMarginBottomMm'),
+        thrucutMarginLeftMm: readLegacyValue(resolvedStorage, 'thrucutMarginLeftMm'),
+        thrucutMarginRightMm: readLegacyValue(resolvedStorage, 'thrucutMarginRightMm'),
+        thrucutRadiusMm: readLegacyValue(resolvedStorage, 'thrucutRadiusMm'),
+        thrucutSpotName: readLegacyValue(resolvedStorage, 'thrucutSpotName'),
+        thrucutColorHex: readLegacyValue(resolvedStorage, 'thrucutColorHex'),
+        thrucutColorCmyk: readLegacyValue(resolvedStorage, 'thrucutColorCmyk'),
     });
 }
 
@@ -206,6 +295,18 @@ export function saveStickerOutputSettings(
     writeLegacyValue(resolvedStorage, 'bleedColorType', settings.bleedColorType);
     writeLegacyValue(resolvedStorage, 'bleedColorHex', settings.solidBleedCmyk.join(','));
     writeLegacyValue(resolvedStorage, 'cropToSticker', settings.cropToSticker);
+    writeLegacyValue(resolvedStorage, 'thrucutEnabled', settings.thrucutEnabled);
+    writeLegacyValue(resolvedStorage, 'thrucutShape', settings.thrucutShape);
+    writeLegacyValue(resolvedStorage, 'thrucutMarginMm', settings.thrucutMarginMm);
+    writeLegacyValue(resolvedStorage, 'thrucutMarginLinked', settings.thrucutMarginLinked);
+    writeLegacyValue(resolvedStorage, 'thrucutMarginTopMm', settings.thrucutMarginTopMm);
+    writeLegacyValue(resolvedStorage, 'thrucutMarginBottomMm', settings.thrucutMarginBottomMm);
+    writeLegacyValue(resolvedStorage, 'thrucutMarginLeftMm', settings.thrucutMarginLeftMm);
+    writeLegacyValue(resolvedStorage, 'thrucutMarginRightMm', settings.thrucutMarginRightMm);
+    writeLegacyValue(resolvedStorage, 'thrucutRadiusMm', settings.thrucutRadiusMm);
+    writeLegacyValue(resolvedStorage, 'thrucutSpotName', settings.thrucutSpotName);
+    writeLegacyValue(resolvedStorage, 'thrucutColorHex', settings.thrucutColorHex);
+    writeLegacyValue(resolvedStorage, 'thrucutColorCmyk', settings.thrucutColorCmyk);
 
     return settings;
 }

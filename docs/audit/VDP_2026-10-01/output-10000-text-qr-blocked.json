@@ -1,0 +1,11 @@
+{
+  "audit_date": "2026-10-01",
+  "records": 10000,
+  "status": "blocked",
+  "workload": "A6 text + unique QR per record; 1 template page; 15 default workers",
+  "attempt_started": "2026-10-01T05:35:24Z",
+  "controller_exit": "WinError 1455 / Windows Error 0xe0000008 while CreateToolhelp32Snapshot",
+  "worker_log": ".tmp/vdp-output-benchmark-2026-10-01/10000/worker.log",
+  "process_cleanup": "Verified no process command line contains vdp_output_benchmark after cleanup",
+  "reason": "Peak process memory grew beyond what the monitor could snapshot; benchmark harness terminated before artifact save/verify. No 10k performance claim."
+}

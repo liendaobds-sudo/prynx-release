@@ -83,7 +83,7 @@ def test_homogeneous_end_to_end_real_render(tmp_path, monkeypatch):
         "sheetWidth": 200, "sheetHeight": 200,
         "targetQuantity": 0, "targetQuantitiesByPage": {},
         "detectedShapesByPage": {"0": "RECTANGLE"},
-        "gridStrategy": "optimal_auto", "groupingStrategy": "maximize_area",
+        "gridStrategy": "optimal_auto", "groupingStrategy": "maximize_area", "autoFill": True,
         "pontType": "none", "bleed": 0,
     }
     nup_engine.run_nup_engine(src, out, settings, job_id="t-e2e")
@@ -154,6 +154,7 @@ def test_homogeneous_nup_preserves_output_intent_for_sampled_bleed(tmp_path):
         "detectedShapesByPage": {"0": "RECTANGLE"},
         "gridStrategy": "optimal_auto",
         "groupingStrategy": "maximize_area",
+        "autoFill": True,
         "pontType": "none",
         "bleed": 0,
     }, job_id="t-output-intent")
@@ -186,7 +187,7 @@ def test_homogeneous_separate_cut_single_page_at_end(tmp_path):
         "sheetWidth": 200, "sheetHeight": 200,
         "targetQuantity": 0, "targetQuantitiesByPage": {},
         "detectedShapesByPage": {"0": "RECTANGLE"},
-        "gridStrategy": "optimal_auto", "groupingStrategy": "maximize_area",
+        "gridStrategy": "optimal_auto", "groupingStrategy": "maximize_area", "autoFill": True,
         "pontType": "none", "bleed": 0,
     }
 

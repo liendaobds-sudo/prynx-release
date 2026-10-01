@@ -1264,41 +1264,54 @@ def test_convert_mixed_device_cmyk_keeps_matching_output_intent_and_numbers(tmp_
     assert b" rg" not in content
 
 
-@pytest.mark.parametrize(
-    ("source_profile", "expected_code"),
-    [
-        (None, "EXISTING_CMYK_OUTPUT_INTENT_MISSING"),
-        ("conflict", "EXISTING_CMYK_PROFILE_CONFLICT"),
-    ],
-)
-def test_convert_mixed_device_cmyk_fails_closed_before_write(
-    tmp_path,
-    source_profile,
-    expected_code,
-):
-    """Không được relabel DeviceCMYK thiếu/sai profile thành profile đích."""
+def test_convert_mixed_conflicting_device_cmyk_fails_closed_before_write(tmp_path):
+    """Profile OutputIntent xung đột với profile đích phải fail closed."""
     cmyk, srgb = _profiles()
-    profile_bytes = None
-    if source_profile == "conflict":
-        changed = bytearray(Path(cmyk).read_bytes())
-        changed[84] ^= 1
-        profile_bytes = bytes(changed)
+    changed = bytearray(Path(cmyk).read_bytes())
+    changed[84] ^= 1
+    profile_bytes = bytes(changed)
     source = _mixed_rgb_device_cmyk_page(
         tmp_path,
         output_intent=profile_bytes,
-        name=f"mixed-{source_profile or 'missing'}-cmyk.pdf",
+        name="mixed-conflict-cmyk.pdf",
     )
-    output = tmp_path / f"mixed-{source_profile or 'missing'}-output.pdf"
+    output = tmp_path / "mixed-conflict-output.pdf"
 
     result = pdf_actions_native.convert_to_cmyk(
         str(source), str(output), cmyk, srgb
     )
 
     assert not result["supported"], result
-    assert any(expected_code in blocker for blocker in result["blockers"])
+    assert any("EXISTING_CMYK_PROFILE_CONFLICT" in blocker for blocker in result["blockers"])
     assert not output.exists()
     with pikepdf.open(source) as pdf:
         assert b" rg" in bytes(pdf.pages[0].Contents.read_bytes())
+
+
+def test_convert_mixed_untagged_device_cmyk_succeeds_and_preserves_numbers(tmp_path):
+    """Untagged DeviceCMYK được giữ số mực, chuyển RGB sang CMYK và gắn profile đích."""
+    cmyk, srgb = _profiles()
+    source = _mixed_rgb_device_cmyk_page(
+        tmp_path,
+        output_intent=None,
+        name="mixed-untagged-cmyk.pdf",
+    )
+    output = tmp_path / "mixed-untagged-output.pdf"
+
+    result = pdf_actions_native.convert_to_cmyk(
+        str(source), str(output), cmyk, srgb
+    )
+
+    assert result["supported"], result
+    assert result["existing_device_cmyk"] == 1
+    assert any("DeviceCMYK" in w for w in result["warnings"])
+    assert output.exists()
+    with pikepdf.open(output) as pdf:
+        content = bytes(pdf.pages[0].Contents.read_bytes())
+        assert len(pdf.Root.OutputIntents) == 1
+        assert bytes(pdf.Root.OutputIntents[0].DestOutputProfile.read_bytes()) == Path(cmyk).read_bytes()
+    assert b"0.2 0.4 0.6 0.1 k" in content
+    assert b" rg" not in content
 
 
 def test_existing_cmyk_scan_ignores_unused_resource_and_spot_alternate(tmp_path):
@@ -1394,13 +1407,10 @@ def test_existing_cmyk_scan_detects_reachable_image(tmp_path):
         str(source), str(output), cmyk, srgb
     )
 
-    assert not result["supported"], result
+    assert result["supported"], result
     assert result["existing_device_cmyk"] == 1
-    assert any(
-        "EXISTING_CMYK_OUTPUT_INTENT_MISSING" in blocker
-        for blocker in result["blockers"]
-    )
-    assert not output.exists()
+    assert any("DeviceCMYK" in w for w in result["warnings"])
+    assert output.exists()
 
 
 

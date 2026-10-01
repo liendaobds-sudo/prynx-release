@@ -2675,7 +2675,9 @@
   },
 
   "imposition.gridPreview": {
-
+    "trang": "Trang",
+    "trang_sau": "Trang sau",
+    "trang_truoc": "Trang trước",
     "bo_cuc_va_so_lan_in": "Bố cục {{n}}/{{total}} · In {{runs}} tờ",
 
     "tong_hop_don_hang": "{{layouts}} bố cục · Đã xếp {{placed}}/{{requested}} tem",
@@ -2771,6 +2773,12 @@
   },
 
   "imposition.gridSettings": {
+
+    "tu_lap_day": "Tự lấp đầy",
+
+    "bat_tu_lap_day_tooltip": "Nhấn để tự động nhân bản lấp đầy toàn bộ tờ in.",
+
+    "tat_tu_lap_day_tooltip": "Đang tự lấp đầy tờ. Nhấn để chuyển sang in theo số lượng (Trống = 1 mẫu mỗi loại).",
 
     "nhap_sl_moi_loai": "Trống = 1 mẫu mỗi loại",
 
@@ -5567,7 +5575,7 @@
   },
 
   "misc.livePageFrame": {
-
+    "live_format_unsupported": "LIVE chưa hỗ trợ định dạng {{format}}. Hãy kiểm tra PDF xuất.",
     "anh": "ảnh",
 
     "anh_xa": "ánh xạ",
@@ -7323,7 +7331,7 @@
   },
 
   "preprocess.dataMerge": {
-
+    "khong_doc_duoc_ban_ghi_xem_truoc": "Không đọc được bản ghi xem trước.",
     "1_chon_cot": "1. Chọn cột",
 
     "1_dong_1_trang": "1 dòng → 1 trang",
@@ -13023,11 +13031,9 @@
   },
 
   "workspace.vdpRecordNavigator": {
-
+    "record_preview_unavailable": "Chưa có mẫu xem trước",
     "live_data_on": "👁️ Dữ liệu thật: BẬT",
-
     "preview_off": "👁️ Xem trước: TẮT"
-
   }
 
 }

@@ -1531,6 +1531,7 @@ class PreviewLayoutRequest(BaseModel):
     grouping_strategy: Literal[
         "free_gang", "maximize_area", "strict_ratio", "cluster_tile", "none"
     ] = "free_gang"
+    auto_fill: bool = False
     cluster_sizing_mode: str = "dims"
     cluster_combine_mode: str = "replicate_mixed"
     cluster_nesting: bool = True
@@ -1827,6 +1828,22 @@ async def create_nesting_preview_job(
         raise HTTPException(
             status_code=422,
             detail="Job preview chỉ hỗ trợ chiến lược true_shape_nesting.",
+        )
+    # [AUTO-BOTTOM FIX 2026-10-01] Async nesting không được nhận token cũ của
+    # sticker N-Up + Tự lấp đầy: lane này phải đi preview legacy để giữ parity
+    # với export. UI bình thường không gửi endpoint này cho autoFill, nhưng chặn
+    # payload stale giúp không tạo job true-shape sai contract.
+    if (
+        bool(getattr(req, "auto_fill", False))
+        and bool(req.is_die_cut)
+        and str(req.imposer_mode or "").strip().lower() != "cnc"
+        and not bool(req.page_sheet_mode)
+        and req.task_mode in ("nup", "sticker_imposer")
+        and req.layout_type != "repeat"
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="Sticker N-Up bật Tự lấp đầy phải dùng preview lưới legacy.",
         )
     page_map = req.target_quantities_by_page or {}
     if len(page_map) > MAX_PREVIEW_PAGE_MAP or any(
@@ -2246,7 +2263,21 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
     # Nhánh này cũng đóng lỗ thứ hai: `attach_preview_session_reference` (lúc launch job) chỉ
     # `peek()` kho phiên, nên trước bản vá nó LUÔN no-op vì chưa ai tạo phiên ⇒ process con
     # solve lại từ đầu. Preview tạo phiên ⇒ export nạp đúng manifest đó rồi render.
-    if str(req.strategy or "").strip() == "true_shape_nesting":
+    # [AUTO-BOTTOM FIX 2026-10-01] Payload cũ có thể còn token true-shape trong
+    # profile sau khi bật Tự lấp đầy. Sticker N-Up phải dùng cùng lane legacy với
+    # export (route_true_shape cũng chặn ca này), nếu không preview và export lệch.
+    _preview_sticker_autofill = (
+        bool(getattr(req, "auto_fill", False))
+        and bool(req.is_die_cut)
+        and str(req.imposer_mode or "").strip().lower() != "cnc"
+        and not bool(req.page_sheet_mode)
+        and req.task_mode in ("nup", "sticker_imposer")
+        and req.layout_type != "repeat"
+    )
+    if (
+        str(req.strategy or "").strip() == "true_shape_nesting"
+        and not _preview_sticker_autofill
+    ):
         import time as _t_nest_mod
         _t0_nest = _t_nest_mod.perf_counter()
         logger.info(
@@ -2481,13 +2512,20 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
             _live_preview_page_count = int(getattr(req, 'total_pages', 0) or 0)
             if _live_preview_page_count <= 0:
                 _live_preview_page_count = int(doc.page_count or 0)
-            _has_quantity_intent = (
-                (req.target_quantity is not None and req.target_quantity != "" and int(req.target_quantity or 0) > 0)
-                or bool(req.target_quantities_by_page)
+            _is_sticker_nup = (
+                req.is_die_cut and req.imposer_mode != "cnc" and not req.page_sheet_mode
+                and req.task_mode in ("nup", "sticker_imposer") and req.layout_type != "repeat"
             )
-            if (_has_quantity_intent
-                    and req.is_die_cut and req.imposer_mode != "cnc" and not req.page_sheet_mode
-                    and req.task_mode in ("nup", "sticker_imposer") and req.layout_type != "repeat"):
+            _is_explicit_autofill = (
+                bool(getattr(req, 'auto_fill', False))
+                or (
+                    not _is_sticker_nup
+                    and getattr(req, 'grouping_strategy', None) == "maximize_area"
+                    and int(req.target_quantity or 0) <= 0
+                    and not any(int(v or 0) > 0 for v in (req.target_quantities_by_page or {}).values())
+                )
+            )
+            if _is_sticker_nup and not _is_explicit_autofill:
                 from app.workers.sticker_nup_policy import sticker_order_quantities
                 effective_quantities = sticker_order_quantities(range(_live_preview_page_count), {
                     "targetQuantity": req.target_quantity,
@@ -3278,6 +3316,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                         quantities=(_content_qtys_pv
                                     if any(q > 0 for q in _content_qtys_pv) else None),
                         layout_fn=(lambda *_a, **_k: _master_layout),
+                        auto_fill=_is_explicit_autofill,
                     )
 
                     # base_poly master: ellipse chuẩn cho Tròn/Elip; còn lại None (≈ chữ nhật).
@@ -3402,7 +3441,8 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                         ),
                     }
 
-                if _total_q > 0:
+                has_multi_demand = _total_q > len(page_dims) or (not _is_explicit_autofill and _total_q > 0)
+                if has_multi_demand:
                     from app.workers.sticker_imposer_pkg.bin_packing import solve_offset_mixed
                     page_dims_qty = [(pi, tw, th, _qty_for_page(pi)) for pi, tw, th in page_dims if _qty_for_page(pi) > 0]
                     if not page_dims_qty:
@@ -3413,6 +3453,7 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                         page_dims_qty=page_dims_qty,
                         gap=max(gap_x_pt, gap_y_pt),
                         allow_rotation=True,
+                        fill_remainder=_is_explicit_autofill,
                     )
                     # BE.02: không công bố preview thiếu mẫu như một kế hoạch hợp lệ.
                     from app.workers.nup_order_safety import require_packer_coverage

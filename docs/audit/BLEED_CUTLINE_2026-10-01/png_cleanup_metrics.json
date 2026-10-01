@@ -1,0 +1,47 @@
+{
+  "white_700%": {
+    "max_composite_error": 0,
+    "alpha_changed_pixels": 64,
+    "rgb_changed_pixels": 0
+  },
+  "orange_700%": {
+    "max_composite_error": 0,
+    "alpha_changed_pixels": 64,
+    "rgb_changed_pixels": 0
+  },
+  "black_700%": {
+    "max_composite_error": 0,
+    "alpha_changed_pixels": 0,
+    "rgb_changed_pixels": 0
+  },
+  "white_1000%": {
+    "max_composite_error": 0,
+    "alpha_changed_pixels": 64,
+    "rgb_changed_pixels": 0
+  },
+  "orange_1000%": {
+    "max_composite_error": 0,
+    "alpha_changed_pixels": 64,
+    "rgb_changed_pixels": 0
+  },
+  "black_1000%": {
+    "max_composite_error": 0,
+    "alpha_changed_pixels": 0,
+    "rgb_changed_pixels": 0
+  },
+  "white_1600%": {
+    "max_composite_error": 0,
+    "alpha_changed_pixels": 64,
+    "rgb_changed_pixels": 0
+  },
+  "orange_1600%": {
+    "max_composite_error": 0,
+    "alpha_changed_pixels": 64,
+    "rgb_changed_pixels": 0
+  },
+  "black_1600%": {
+    "max_composite_error": 0,
+    "alpha_changed_pixels": 0,
+    "rgb_changed_pixels": 0
+  }
+}

@@ -132,6 +132,11 @@ describe('resolveGridStrategy — chống rò true_shape_nesting sang công cụ
     expect(resolve({ activeTool: 'cnc_imposer' })).toBe(TRUE_SHAPE_NESTING_STRATEGY);
   });
 
+  it('CA ÂM: token cũ không được lọt vào lane true-shape khi tem bế tự lấp đầy', () => {
+    expect(resolve({ autoFill: true })).toBe(DEFAULT_GRID_STRATEGY);
+    expect(resolve({ autoFill: true, activeTool: 'cnc_imposer' })).toBe(TRUE_SHAPE_NESTING_STRATEGY);
+  });
+
   it('CHUẨN HOÁ về optimal_auto khi rò sang Bình cắt xén / công cụ ngoài phạm vi', () => {
     // Đây là ca P1: giá trị persist từ tem bế rò sang guillotine → backend fail-closed.
     expect(resolve({ activeTool: 'guillotine_imposer' })).toBe(DEFAULT_GRID_STRATEGY);
@@ -290,6 +295,11 @@ describe('shouldUseTrueShapeNesting — auto-route đồng bộ backend route_tr
 
   it('CA DƯƠNG: CUSTOM + "Xếp tối ưu" trên tem bế → true', () => {
     expect(use({})).toBe(true);
+  });
+
+  it('CA ÂM: Tự lấp đầy N-Up tem bế đi lane lưới để nhân bản đầy tờ', () => {
+    expect(use({ autoFill: true, targetQuantity: 100 })).toBe(false);
+    expect(use({ autoFill: true, targetQuantity: 0 })).toBe(false);
   });
 
   it('CA DƯƠNG: CNC (imposerMode=cnc) + CUSTOM + optimal → true dù isDieCut=false', () => {

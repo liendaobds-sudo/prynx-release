@@ -14,7 +14,7 @@ import tempfile
 import threading
 import zlib
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
@@ -58,6 +58,7 @@ class _Candidate:
     proof: dict[str, Any]
     metrics: dict[str, Any]
     trusted: bool
+    warnings: list[str] = field(default_factory=list)
 
 
 def effective_preview_dpi(
@@ -502,7 +503,7 @@ async def _convert_candidate(
     vibrance_percent: int,
     include_spot: bool,
     preserve_smask: bool = False,
-) -> Path:
+) -> tuple[Path, list[str]]:
     from app.core import pdf_actions_native
 
     cancel_event = threading.Event()
@@ -555,7 +556,7 @@ async def _convert_candidate(
             raise ColorConversionPreviewError(
                 "Engine không tạo được PDF tạm để phân tích."
             )
-        return final_output
+        return final_output, list(result.get("warnings", []))
 
     return await _run_blocking(convert, cancel_event=cancel_event)
 
@@ -764,7 +765,7 @@ async def create_color_conversion_preview(
                 .replace("+", "p")
                 .replace("-", "m")
             )
-            candidate_path = await _convert_candidate(
+            candidate_path, candidate_warnings = await _convert_candidate(
                 preview_source_path,
                 temp_dir,
                 key=key,
@@ -781,7 +782,7 @@ async def create_color_conversion_preview(
                 include_spot=include_spot,
                 preserve_smask=preserve_smask,
             )
-            return await _analyze_candidate(
+            candidate = await _analyze_candidate(
                 candidate_path,
                 source_image,
                 page=candidate_page,
@@ -792,6 +793,8 @@ async def create_color_conversion_preview(
                 source_out_of_gamut_pct=source_out_of_gamut_pct,
                 adjustments=adjustments,
             )
+            candidate.warnings = candidate_warnings
+            return candidate
 
         if preview_policy == "manual":
             selected = await build(
@@ -917,5 +920,5 @@ async def create_color_conversion_preview(
             },
             "metrics": selected.metrics,
             "recommendation": recommendation,
-            "warnings": list(dict.fromkeys(warnings)),
+            "warnings": list(dict.fromkeys(warnings + getattr(selected, "warnings", []))),
         }

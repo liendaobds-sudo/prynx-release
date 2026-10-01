@@ -8,7 +8,7 @@ import {
     DEFAULT_STICKER_OUTPUT_SETTINGS,
     type StickerOutputSettings,
 } from './stickerOutputSettings';
-import StickerOutputSettingsPanel from './StickerOutputSettingsPanel';
+import StickerOutputSettingsPanel, { StickerThruCutControl } from './StickerOutputSettingsPanel';
 
 
 interface HarnessProps {
@@ -42,6 +42,36 @@ function settings(overrides: Partial<StickerOutputSettings> = {}): StickerOutput
 }
 
 describe('StickerOutputSettingsPanel', () => {
+    it('điều khiển dao đứt ngoài và giữ đủ thông số cho export PDF', () => {
+        const onChange = vi.fn();
+        function ThruHarness() {
+            const [value, setValue] = useState(settings({ thrucutEnabled: true }));
+            return (
+                <StickerThruCutControl
+                    value={value}
+                    onChange={next => {
+                        onChange(next);
+                        setValue(next);
+                    }}
+                />
+            );
+        }
+        render(
+            <ThruHarness />,
+        );
+
+        fireEvent.change(screen.getByRole('combobox', { name: 'Kiểu dao đứt' }), {
+            target: { value: 'contour_offset' },
+        });
+        fireEvent.change(screen.getByRole('spinbutton', { name: 'Khoảng cách dao đứt (mm)' }), {
+            target: { value: '4.5' },
+        });
+        const emitted = onChange.mock.lastCall?.[0] as StickerOutputSettings;
+        expect(emitted.thrucutEnabled).toBe(true);
+        expect(emitted.thrucutShape).toBe('contour_offset');
+        expect(emitted.thrucutMarginMm).toBe(4.5);
+    });
+
     it('điều khiển đủ thiết lập bế tem, chuẩn hóa giá trị và không sửa object đầu vào', () => {
         const initial = settings();
         const initialCmyk = initial.solidBleedCmyk;

@@ -151,6 +151,7 @@ def test_homogeneous_branch_routing_and_src_page_idx(monkeypatch):
             "detectedShapesByPage": {"0": "CIRCLE_ELLIPSE"},
             "gridStrategy": "optimal_auto",
             "groupingStrategy": "maximize_area",
+                "autoFill": True,
             "pontType": "none",
         }
 
@@ -461,7 +462,7 @@ def test_fallback_two_dies_uses_old_binpack(monkeypatch):
             "isDieCutMode": True, "sheetWidth": 320, "sheetHeight": 450,
             "targetQuantity": 0, "targetQuantitiesByPage": {},
             "detectedShapesByPage": {"0": "CIRCLE_ELLIPSE", "1": "CIRCLE_ELLIPSE", "2": "CIRCLE_ELLIPSE"},
-            "gridStrategy": "optimal_auto", "groupingStrategy": "maximize_area",
+                "gridStrategy": "optimal_auto", "groupingStrategy": "maximize_area", "autoFill": True,
             "pontType": "none",
         }
         with pytest.raises(_StopEngine):
@@ -507,7 +508,7 @@ def test_fallback_no_die_uses_old_binpack(monkeypatch):
             "isDieCutMode": True, "sheetWidth": 320, "sheetHeight": 450,
             "targetQuantity": 0, "targetQuantitiesByPage": {},
             "detectedShapesByPage": {}, "gridStrategy": "optimal_auto",
-            "groupingStrategy": "maximize_area", "pontType": "none",
+                "groupingStrategy": "maximize_area", "autoFill": True, "pontType": "none",
         }
         with pytest.raises(_StopEngine):
             nup_engine.run_nup_engine(src, out, settings, job_id="t-nodie")

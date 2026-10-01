@@ -114,6 +114,8 @@ export interface ClassicCutlineViewerPreview {
     /** Fence file + reorder + rotation; payload cũ không được lóe lại sau khi đổi nguồn. */
     documentIdentity: string;
     isUpdating: boolean;
+    /** Kiểu góc phải khớp với nét PDF: preserve/miter hoặc round. */
+    cornerStyle?: 'preserve' | 'round' | 'miter';
     thrucut?: ClassicCutlineThrucutPreviewConfig | null;
     showDimensions?: boolean;
 }

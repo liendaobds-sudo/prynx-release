@@ -3,6 +3,8 @@ import { generateReverseTuckEnd } from './ReverseTuckEnd';
 import { generateSnapLockBottom } from './SnapLockBottom';
 import { generateRigidMagneticBox, splitRigidMagneticDieline } from './RigidMagneticBox';
 import { DEFAULT_PARAMS, BoxParams, DielineModel } from './types';
+import { withBleedPaths } from './bleedContours';
+import { validateClosedContours } from './contourValidator';
 
 // Helper to create params with overrides
 const make = (overrides: Partial<BoxParams> = {}): BoxParams => ({
@@ -1304,6 +1306,17 @@ describe('RigidMagneticBox (PRYNX-RMB-01)', () => {
         expect(byName.get('cover_flap')!.foldAngle).toBe(90);
     });
 
+    it('pivot bìa trùng mép CREASE thật, không lệch qua spineGap', () => {
+        const model = generateRigidMagneticBox(make(P));
+        for (const name of ['cover_flap', 'cover_top', 'cover_spine']) {
+            const panel = model.panels.find(p => p.name === name)!;
+            const maxY = Math.max(...panel.outline!.map(point => point.y));
+            expect(panel.pivotEdge).toBeDefined();
+            expect(panel.pivotEdge![0].y).toBeCloseTo(maxY, 5);
+            expect(panel.pivotEdge![1].y).toBeCloseTo(maxY, 5);
+        }
+    });
+
     it('lỗ nam châm tự động: 2 viên khi L >= 180, 1 viên khi L < 180', () => {
         const large = generateRigidMagneticBox(make({ ...P, L: 220 }));
         const tfLarge = large.panels.find(p => p.name === 'tray_front')!;
@@ -1328,6 +1341,33 @@ describe('RigidMagneticBox (PRYNX-RMB-01)', () => {
         expect(split!.sleeve.panels.every(p => p.name.startsWith('cover_'))).toBe(true);
         expect(split!.tray.boundingBox.width).toBeLessThan(model.boundingBox.width);
         expect(split!.sleeve.boundingBox.width).toBeLessThan(model.boundingBox.width);
+    });
+
+    it('split giữ lỗ nam châm và áo bồi 15mm trong artifact từng cụm', () => {
+        const model = generateRigidMagneticBox(make(P));
+        const split = splitRigidMagneticDieline(model)!;
+
+        expect(validateClosedContours(model).allClosed).toBe(true);
+        expect(split.tray.allPaths.length + split.sleeve.allPaths.length).toBe(model.allPaths.length);
+        expect(split.tray.allPaths.filter(path => path.tag === 'CUT')).toHaveLength(20);
+        expect(split.sleeve.allPaths.filter(path => path.tag === 'CUT')).toHaveLength(18);
+        expect(split.tray.allPaths.filter(path => path.tag === 'BLEED')).toHaveLength(0);
+        expect(split.sleeve.allPaths.filter(path => path.tag === 'BLEED')).toHaveLength(8);
+
+        expect(validateClosedContours(split.tray).allClosed).toBe(true);
+        expect(validateClosedContours(split.sleeve).allClosed).toBe(true);
+
+        // Sidecar response đi qua JSON.parse; split không được dựa vào ref JS.
+        const roundTripped = JSON.parse(JSON.stringify(model)) as DielineModel;
+        const roundTripSplit = splitRigidMagneticDieline(roundTripped)!;
+        expect(roundTripSplit.tray.allPaths.length).toBe(split.tray.allPaths.length);
+        expect(roundTripSplit.sleeve.allPaths.length).toBe(split.sleeve.allPaths.length);
+
+        // Export không được thay contour áo bồi thật bằng offset mặc định 3mm.
+        const exportedSleeve = withBleedPaths(split.sleeve);
+        expect(exportedSleeve.allPaths.filter(path => path.tag === 'BLEED')).toHaveLength(8);
+        expect(exportedSleeve.boundingBox.minX).toBeCloseTo(split.sleeve.boundingBox.minX, 5);
+        expect(exportedSleeve.boundingBox.maxX).toBeCloseTo(split.sleeve.boundingBox.maxX, 5);
     });
 
     it('DielineNesting định vị bìa ngoài khớp dưới đáy khay', () => {

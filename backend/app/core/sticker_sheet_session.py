@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from app.utils.cutline_debug_log import log_cutline, CutlineTimer
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 import json
 import logging
@@ -23,6 +24,7 @@ import numpy as np
 from PIL import Image
 
 from app.config import settings
+from app.core.system_memory import plan_worker_count
 from app.workers.sticker_sheet_engine import (
     StickerSheetAnalysis,
     StickerSheetError,
@@ -356,6 +358,28 @@ def _save_session_png(image: Image.Image, path: Path) -> None:
     image.save(path, format="PNG", compress_level=1)
 
 
+def _save_png_task(task: tuple[Image.Image, Path]) -> None:
+    img, path = task
+    _save_session_png(img, path)
+
+
+def _save_session_artifacts_parallel(
+    tasks: list[tuple[Image.Image, Path]],
+) -> None:
+    """Ghi các artifact PNG song song qua ThreadPoolExecutor (nhả GIL trong libpng C).
+
+    PERF (audit 2026-10-01 §PROMOTE.PARALLEL): giảm độ trễ ghi đĩa từ ~1.8s xuống ~0.5s.
+    Gate số worker theo dung lượng RAM máy (Rule #1).
+    """
+    workers, _ = plan_worker_count(kind="artifact_save", per_worker_mb=100, hard_ceiling=4)
+    if workers <= 1 or len(tasks) <= 1:
+        for img, path in tasks:
+            _save_session_png(img, path)
+    else:
+        with ThreadPoolExecutor(max_workers=min(workers, len(tasks))) as executor:
+            list(executor.map(_save_png_task, tasks))
+
+
 def create_session(
     *,
     source_path: str | Path,
@@ -378,18 +402,13 @@ def create_session(
         # cleanup RESULTS_DIR dùng mtime và có thể xóa nguồn session vừa tạo.
         shutil.copyfile(source, session_source)
         np.save(directory / "labels.npy", analysis.labels, allow_pickle=False)
-        _save_session_png(Image.fromarray(analysis.rgba, "RGBA"), directory / "rgba.png")
-        _save_session_png(Image.fromarray(analysis.alpha, "L"), directory / "alpha.png")
-        _save_session_png(
-            Image.fromarray(analysis.uncertainty, "L"),
-            directory / "uncertainty.png",
-        )
 
         preview_size = _preview_size(analysis.width, analysis.height)
         preview_rgba = Image.fromarray(analysis.rgba, "RGBA")
         preview_uncertainty = Image.fromarray(analysis.uncertainty, "L")
         preview_labels = analysis.labels
-        if preview_size != (analysis.width, analysis.height):
+        is_same_size = (preview_size == (analysis.width, analysis.height))
+        if not is_same_size:
             preview_rgba = preview_rgba.resize(preview_size, Image.Resampling.LANCZOS)
             preview_uncertainty = preview_uncertainty.resize(
                 preview_size,
@@ -400,7 +419,21 @@ def create_session(
                 preview_size,
                 interpolation=cv2.INTER_NEAREST,
             )
-        if preview_size == (analysis.width, analysis.height):
+
+        tasks = [
+            (Image.fromarray(analysis.rgba, "RGBA"), directory / "rgba.png"),
+            (Image.fromarray(analysis.alpha, "L"), directory / "alpha.png"),
+            (Image.fromarray(analysis.uncertainty, "L"), directory / "uncertainty.png"),
+            (_encode_label_rgb(preview_labels), directory / "preview_labels.png"),
+        ]
+        if not is_same_size:
+            tasks.extend([
+                (preview_rgba, directory / "preview.png"),
+                (preview_uncertainty, directory / "preview_uncertainty.png"),
+            ])
+        _save_session_artifacts_parallel(tasks)
+
+        if is_same_size:
             # PERF (audit 2026-08-10 §AI-SPEED.4): cùng pixel thì copy file đã
             # encode, không nén lại RGBA/uncertainty lần thứ hai.
             shutil.copyfile(directory / "rgba.png", directory / "preview.png")
@@ -408,16 +441,6 @@ def create_session(
                 directory / "uncertainty.png",
                 directory / "preview_uncertainty.png",
             )
-        else:
-            _save_session_png(preview_rgba, directory / "preview.png")
-            _save_session_png(
-                preview_uncertainty,
-                directory / "preview_uncertainty.png",
-            )
-        _save_session_png(
-            _encode_label_rgb(preview_labels),
-            directory / "preview_labels.png",
-        )
 
         manifest: dict[str, object] = {
             "session_id": session_id,
@@ -708,34 +731,12 @@ def promote_source_session(
         try:
             staging.mkdir(parents=False, exist_ok=False)
             normalized_source = analysis_source.convert("RGBA")
-            _save_session_png(normalized_source, staging / "analysis_source.png")
-            np.save(staging / "labels.npy", analysis.labels, allow_pickle=False)
-            _save_session_png(Image.fromarray(analysis.rgba, "RGBA"), staging / "rgba.png")
-            _save_session_png(Image.fromarray(analysis.alpha, "L"), staging / "alpha.png")
-            _save_session_png(
-                Image.fromarray(analysis.uncertainty, "L"),
-                staging / "uncertainty.png",
-            )
-            if refinement_available:
-                _save_session_png(
-                    Image.fromarray(analysis.raw_alpha, "L"),
-                    staging / "raw_alpha.png",
-                )
-                _save_session_png(
-                    Image.fromarray(analysis.shadow_exclusion, "L"),
-                    staging / "shadow_exclusion.png",
-                )
-                np.save(
-                    staging / "reference_labels.npy",
-                    analysis.labels,
-                    allow_pickle=False,
-                )
-
             preview_size = _preview_size(analysis.width, analysis.height)
             preview_rgba = Image.fromarray(analysis.rgba, "RGBA")
             preview_uncertainty = Image.fromarray(analysis.uncertainty, "L")
             preview_labels = analysis.labels
-            if preview_size != (analysis.width, analysis.height):
+            is_same_size = (preview_size == (analysis.width, analysis.height))
+            if not is_same_size:
                 preview_rgba = preview_rgba.resize(preview_size, Image.Resampling.LANCZOS)
                 preview_uncertainty = preview_uncertainty.resize(
                     preview_size,
@@ -746,22 +747,40 @@ def promote_source_session(
                     preview_size,
                     interpolation=cv2.INTER_NEAREST,
                 )
-            if preview_size == (analysis.width, analysis.height):
+
+            tasks = [
+                (normalized_source, staging / "analysis_source.png"),
+                (Image.fromarray(analysis.rgba, "RGBA"), staging / "rgba.png"),
+                (Image.fromarray(analysis.alpha, "L"), staging / "alpha.png"),
+                (Image.fromarray(analysis.uncertainty, "L"), staging / "uncertainty.png"),
+                (_encode_label_rgb(preview_labels), staging / "preview_labels.png"),
+            ]
+            if refinement_available:
+                tasks.extend([
+                    (Image.fromarray(analysis.raw_alpha, "L"), staging / "raw_alpha.png"),
+                    (Image.fromarray(analysis.shadow_exclusion, "L"), staging / "shadow_exclusion.png"),
+                ])
+            if not is_same_size:
+                tasks.extend([
+                    (preview_rgba, staging / "preview.png"),
+                    (preview_uncertainty, staging / "preview_uncertainty.png"),
+                ])
+            _save_session_artifacts_parallel(tasks)
+
+            np.save(staging / "labels.npy", analysis.labels, allow_pickle=False)
+            if refinement_available:
+                np.save(
+                    staging / "reference_labels.npy",
+                    analysis.labels,
+                    allow_pickle=False,
+                )
+
+            if is_same_size:
                 shutil.copyfile(staging / "rgba.png", staging / "preview.png")
                 shutil.copyfile(
                     staging / "uncertainty.png",
                     staging / "preview_uncertainty.png",
                 )
-            else:
-                _save_session_png(preview_rgba, staging / "preview.png")
-                _save_session_png(
-                    preview_uncertainty,
-                    staging / "preview_uncertainty.png",
-                )
-            _save_session_png(
-                _encode_label_rgb(preview_labels),
-                staging / "preview_labels.png",
-            )
 
             merged_warnings = list(dict.fromkeys([
                 *list(page.manifest.get("warnings", [])),

@@ -26,16 +26,7 @@ function seedJson(storage: MemoryStorage, key: string, value: unknown): void {
 
 describe('stickerOutputSettings', () => {
     it('dùng mặc định an toàn tương thích StickerTool cũ', () => {
-        expect(loadStickerOutputSettings(null)).toEqual({
-            cutMode: 'original',
-            offsetMm: 0,
-            cornerStyle: 'preserve',
-            fillHoles: true,
-            bleedMm: 0,
-            bleedColorType: 'image',
-            solidBleedCmyk: [0, 0, 0, 0],
-            cropToSticker: true,
-        });
+        expect(loadStickerOutputSettings(null)).toEqual(DEFAULT_STICKER_OUTPUT_SETTINGS);
         expect(sanitizeStickerOutputSettings(undefined)).toEqual(DEFAULT_STICKER_OUTPUT_SETTINGS);
     });
 
@@ -51,6 +42,7 @@ describe('stickerOutputSettings', () => {
         seedJson(storage, 'cropToSticker', false);
 
         expect(loadStickerOutputSettings(storage)).toEqual({
+            ...DEFAULT_STICKER_OUTPUT_SETTINGS,
             cutMode: 'alpha',
             offsetMm: 2.5,
             cornerStyle: 'round',
@@ -119,6 +111,7 @@ describe('stickerOutputSettings', () => {
         }, storage);
 
         expect(saved).toEqual({
+            ...DEFAULT_STICKER_OUTPUT_SETTINGS,
             cutMode: 'bleed',
             offsetMm: 10,
             cornerStyle: 'miter',
@@ -133,6 +126,39 @@ describe('stickerOutputSettings', () => {
         expect(storage.getItem('ps_sticker_bleedColorHex')).toBe(JSON.stringify('0,25,100,50'));
         expect(storage.getItem('ps_sticker_removeWhiteBg')).toBe('false');
         expect(storage.getItem('ps_sticker_trimWhiteEdge')).toBe('true');
+    });
+
+    it('chuẩn hóa và lưu thiết lập dao đứt ngoài, kể cả biên từng cạnh', () => {
+        const storage = new MemoryStorage();
+        const settings = saveStickerOutputSettings({
+            thrucutEnabled: true,
+            thrucutShape: 'ellipse',
+            thrucutMarginMm: 4.25,
+            thrucutMarginLinked: false,
+            thrucutMarginTopMm: -2,
+            thrucutMarginRightMm: 60,
+            thrucutSpotName: '  ThruCut Demo  ',
+            thrucutColorHex: '#22c55e',
+            thrucutColorCmyk: [80, 10, 20, 0],
+        }, storage);
+
+        expect(settings).toMatchObject({
+            thrucutEnabled: true,
+            thrucutShape: 'ellipse',
+            thrucutMarginMm: 4.25,
+            thrucutMarginLinked: false,
+            thrucutMarginTopMm: 0,
+            thrucutMarginRightMm: 50,
+            thrucutSpotName: 'ThruCut Demo',
+            thrucutColorHex: '#22C55E',
+            thrucutColorCmyk: [80, 10, 20, 0],
+        });
+        expect(loadStickerOutputSettings(storage)).toMatchObject({
+            thrucutEnabled: true,
+            thrucutShape: 'ellipse',
+            thrucutMarginLinked: false,
+            thrucutColorHex: '#22C55E',
+        });
     });
 
     it('không ném lỗi khi localStorage bị chặn ở cả lúc đọc và ghi', () => {

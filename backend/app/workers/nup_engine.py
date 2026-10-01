@@ -887,11 +887,35 @@ def _run_nup_engine_impl(
 
     target_quantity = settings.get('targetQuantity', 0)
 
-    target_quantities_by_page = settings.get('targetQuantitiesByPage', {})
+    target_quantities_by_page = settings.get('targetQuantitiesByPage') or {}
 
-    # Check if all targets are 0 (Auto-Fill 1 Sheet mode)
+    # Tem bế N-Up: ô SL trống mặc định là một bản mỗi loại. Chỉ công tắc
+    # `autoFill` mới chuyển sang chế độ nhân bản để lấp đầy tờ; giữ fallback
+    # SL=0 cũ cho các công cụ không phải tem bế để không đổi hợp đồng legacy.
+    from app.workers.sticker_nup_policy import is_sticker_nup as _is_sticker_nup
 
-    is_auto_fill = (target_quantity == 0 and not any(v > 0 for v in target_quantities_by_page.values()))
+    _is_sticker_nup_job = _is_sticker_nup(settings)
+    _is_explicit_autofill = bool(settings.get('autoFill') or settings.get('auto_fill'))
+    _is_blank_targets = (
+        int(target_quantity or 0) == 0
+        and not any(int(v or 0) > 0 for v in target_quantities_by_page.values())
+    )
+    _has_explicit_multi_qty = (
+        int(target_quantity or 0) > 1
+        or any(int(v or 0) > 1 for v in target_quantities_by_page.values())
+    )
+    is_auto_fill = (
+        _is_explicit_autofill and not _has_explicit_multi_qty
+    ) or (
+        _is_blank_targets and not _is_sticker_nup_job
+    )
+    # Ý định "Tự lấp đầy" vẫn có hiệu lực khi người dùng nhập SL cụ thể:
+    # solver giữ đủ SL và chỉ nhân bản phần dư của tờ cuối. Cờ này dùng chung
+    # cho cả nhánh homogeneous và offset; đặt ở scope job để không rơi vào
+    # UnboundLocalError khi bài nhiều khuôn không vào homogeneous.
+    _is_autofill_gang = _is_explicit_autofill or (
+        _is_blank_targets and not _is_sticker_nup_job
+    )
 
     def _page_sheet_report_fields(extra_identifier: str = "") -> dict:
         """Build the product-level fields required by the whole-sheet report.
@@ -2032,6 +2056,9 @@ def _run_nup_engine_impl(
                     except (TypeError, ValueError):
                         return 0
                 try:
+                    from app.workers.sticker_nup_policy import effective_nup_quantity, is_sticker_nup
+                    if is_sticker_nup(settings) and not _is_autofill_gang:
+                        return effective_nup_quantity(target_quantity)
                     return max(0, int(target_quantity or 0))
                 except (TypeError, ValueError):
                     return 0
@@ -2056,6 +2083,7 @@ def _run_nup_engine_impl(
                 quantities=(_content_qtys
                             if any(q > 0 for q in _content_qtys) else None),
                 layout_fn=_reuse_master_layout,
+                auto_fill=_is_autofill_gang,
             )
 
             # base_poly cho boong: ellipse chuẩn cho Tròn/Elip, còn lại để None (xấp xỉ chữ nhật).
@@ -2495,6 +2523,7 @@ def _run_nup_engine_impl(
                 page_dims_qty=page_dims_qty,
                 gap=max(gap_x, gap_y),
                 allow_rotation=True,
+                fill_remainder=_is_autofill_gang,
             )
 
             # bp_result gives us the layout for ONE sheet + sheets_needed count

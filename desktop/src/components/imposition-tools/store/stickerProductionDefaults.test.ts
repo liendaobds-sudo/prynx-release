@@ -26,6 +26,20 @@ describe('M72.C — mặc định đơn hàng của Bình tem bế', () => {
     expect(store.getState().targetQuantity).toBe(0);
     expect(store.getState().groupingStrategy).toBe('maximize_area');
   });
+  it('lưu cờ Tự lấp đầy riêng theo từng profile công cụ', () => {
+    const store = createImposerSettingsStore();
+    store.setState({ autoFill: true });
+    store.getState().switchToolProfile('nup', 'sticker_imposer');
+    expect(store.getState().autoFill).toBe(false);
+    store.getState().switchToolProfile('sticker_imposer', 'nup');
+    expect(store.getState().autoFill).toBe(true);
+  });
+  it('profile cũ thiếu cờ Tự lấp đầy không giữ cờ của công cụ trước', () => {
+    const store = createImposerSettingsStore();
+    store.setState({ autoFill: true, toolProfiles: { sticker_imposer: { taskMode: 'nup' } } });
+    store.getState().switchToolProfile('nup', 'sticker_imposer');
+    expect(store.getState().autoFill).toBe(false);
+  });
   it('không đổi default CNC/cắt xén hoặc snapshot global', () => {
     const store = createImposerSettingsStore();
     expect(store.getState().targetQuantity).toBe(0);

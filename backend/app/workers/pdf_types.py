@@ -31,8 +31,8 @@ class Rect:
     __slots__ = ('x0', 'y0', 'x1', 'y1')
 
     def __init__(self, x0, y0=None, x1=None, y1=None):
-        if isinstance(x0, Rect):
-            self.x0, self.y0, self.x1, self.y1 = x0.x0, x0.y0, x0.x1, x0.y1
+        if isinstance(x0, Rect) or (hasattr(x0, 'x0') and hasattr(x0, 'y0') and hasattr(x0, 'x1') and hasattr(x0, 'y1')):
+            self.x0, self.y0, self.x1, self.y1 = float(x0.x0), float(x0.y0), float(x0.x1), float(x0.y1)
         elif isinstance(x0, (tuple, list)):
             self.x0, self.y0, self.x1, self.y1 = float(x0[0]), float(x0[1]), float(x0[2]), float(x0[3])
         else:

@@ -139,6 +139,14 @@ def test_datasource_csv_file_upload(client):
     assert body["record_count"] == 3
 
 
+def test_csv_generate_parser_preserves_duplicate_headers_like_papaparse():
+    """CSV upload giữ cột trùng dưới hậu tố ổn định thay vì ghi đè."""
+    from app.api.routes.vdp import _parse_csv_upload
+
+    rows = _parse_csv_upload(io.BytesIO(b"Name,Name\nA,B\n"), True)
+    assert rows == [{"Name": "A", "Name_1": "B"}]
+
+
 # ─── /api/vdp/datasource/sheets (XLSX) ───────────────────────────────────────
 
 
@@ -202,6 +210,19 @@ def test_datasource_preview_rows_capped_but_record_count_full(client):
     assert body["record_count"] == n
     assert len(body["preview_rows"]) == DATASOURCE_PREVIEW_ROWS
     assert "rows" not in body  # không yêu cầu → không trả full rows
+
+
+def test_datasource_selected_record_returns_one_row_without_changing_total(client):
+    """Preview record >20 lấy đúng dòng được chọn, vẫn giữ tổng số record."""
+    csv_text = "Ten,Ma\n" + "\n".join(f"KH{i},SP{i}" for i in range(1, 26)) + "\n"
+    resp = client.post(
+        "/api/vdp/datasource",
+        data={"kind": "csv", "text": csv_text, "has_header": "true", "record_index": "21"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["record_count"] == 25
+    assert body["preview_rows"] == [{"Ten": "KH21", "Ma": "SP21"}]
 
 
 def test_datasource_include_all_rows_returns_full_dataset(client):

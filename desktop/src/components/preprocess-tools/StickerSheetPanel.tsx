@@ -3,7 +3,7 @@ import { ChevronDown, Redo2, Undo2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { tv } from '../../i18n';
-import { StickerBleedColorControl } from './StickerOutputSettingsPanel';
+import { StickerBleedColorControl, StickerThruCutControl } from './StickerOutputSettingsPanel';
 import {
     useStickerSheetStore,
     resolveStickerSheetAutoSimplifyMm,
@@ -758,6 +758,12 @@ export default function StickerSheetPanel({
                                         disabled={busy || isExporting}
                                         className="mt-3"
                                     />}
+                                    <StickerThruCutControl
+                                        value={state.outputSettings}
+                                        onChange={next => actions.setOutputSettings(tabId, next)}
+                                        disabled={busy || isExporting}
+                                        className="mt-3"
+                                    />
                                 </div>
 
                                 <div>

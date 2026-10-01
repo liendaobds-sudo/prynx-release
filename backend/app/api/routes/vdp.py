@@ -21,6 +21,7 @@ from app.schemas.vdp import (
     VdpJobStatusResponse,
     VdpRequest,
     VdpUploadResponse,
+    validate_vdp_field_contract,
 )
 from app.workers.vdp_engine import VdpCancelledError, run_vdp_engine
 from app.workers.vdp_datasource import (
@@ -157,6 +158,16 @@ def _vdp_is_cancelled(job: dict) -> bool:
     )
 
 
+def _vdp_queue_cancelled_factory(job_id: str, *_args, **_kwargs):
+    """Tạo callback hủy cho thời gian job còn nằm trong hàng đợi scheduler."""
+    def _cancelled() -> bool:
+        with _VDP_JOBS_LOCK:
+            job = vdp_jobs.get(job_id)
+        return job is None or _vdp_is_cancelled(job)
+
+    return _cancelled
+
+
 def _cleanup_vdp_job_files(job_id: str, job: dict, *, include_output: bool) -> None:
     paths = [
         job.get("data_path"),
@@ -216,11 +227,14 @@ def _publish_vdp_output(job_id: str, output_path: str) -> bool:
                 job["completed_at"] = job.get("completed_at") or time.time()
                 output_to_delete = output_path
             else:
-                job["status"] = "completed"
                 job["result"] = output_path
                 job["artifact_lease"] = lease_token
                 job["error"] = None
                 job["completed_at"] = job.get("completed_at") or time.time()
+                # Ghi payload trước, trạng thái terminal sau cùng. GET /status
+                # có thể chạy đồng thời và chỉ được thấy ``completed`` khi
+                # result + lease đã hiện diện đầy đủ.
+                job["status"] = "completed"
 
     if output_to_delete:
         _cleanup_vdp_job_files(
@@ -267,6 +281,23 @@ def _parse_csv_upload(file_obj, has_header: bool) -> List[Dict[str, str]]:
                 header = [str(value or "").strip() for value in next(reader)]
             except StopIteration:
                 return rows
+            # PapaParse (`header:true`) đổi tên cột trùng thành `_1`, `_2`...
+            # trước khi dựng object. Giữ cùng contract để CSV upload generate
+            # không làm rơi cột thứ hai như dict comprehension cũ.
+            unique_header: list[str] = []
+            used: set[str] = set()
+            next_suffix: dict[str, int] = {}
+            for name in header:
+                candidate = name
+                if candidate in used:
+                    suffix = next_suffix.get(name, 1)
+                    while f"{name}_{suffix}" in used:
+                        suffix += 1
+                    candidate = f"{name}_{suffix}"
+                    next_suffix[name] = suffix + 1
+                used.add(candidate)
+                unique_header.append(candidate)
+            header = unique_header
             for raw in reader:
                 if not any(str(value or "").strip() for value in raw):
                     continue
@@ -333,6 +364,12 @@ def _copy_fileobj_limited(file_obj, destination: str, max_bytes: int) -> int:
 def _copy_path_limited(source: str, destination: str, max_bytes: int) -> int:
     with open(source, "rb") as file_obj:
         return _copy_fileobj_limited(file_obj, destination, max_bytes)
+
+
+def _write_bytes(destination: str, content: bytes) -> None:
+    """Ghi bytes trong thread pool để upload lớn không chặn event loop."""
+    with open(destination, "wb") as output:
+        output.write(content)
 
 
 def _is_pdf_path(path: str) -> bool:
@@ -428,7 +465,11 @@ def vdp_background_task(job_id: str, template_path: str, fields: List[VdpField],
             include_output=job.get("status") != "completed",
         )
 
-@scheduled_job("vdp")
+@scheduled_job(
+    "vdp",
+    queue_cancelled_factory=_vdp_queue_cancelled_factory,
+    swallow_queue_cancelled=True,
+)
 def vdp_background_task_spooled(
     job_id: str,
     template_path: str,
@@ -720,12 +761,14 @@ def cancel_vdp_job(job_id: str, license_info: dict = Depends(require_license)):
 
 @router.get("/status/{job_id}", response_model=VdpJobStatusResponse)
 def get_vdp_status(job_id: str, license_info: dict = Depends(require_license)):
-    if job_id not in vdp_jobs:
-        raise HTTPException(status_code=404, detail="Job not found")
-        
-    job = vdp_jobs[job_id]
-    
-    if job['status'] == 'processing':
+    _purge_old_jobs()
+    with _VDP_JOBS_LOCK:
+        job = vdp_jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        status = job.get("status")
+
+    if status == 'processing':
         # Calculate progress from temp files
         tmp_dir = tempfile.gettempdir()
         total_processed = 0
@@ -737,36 +780,50 @@ def get_vdp_status(job_id: str, license_info: dict = Depends(require_license)):
                         total_processed += int(content)
             except (IOError, OSError, UnicodeDecodeError):
                 pass
-        job['processed'] = total_processed
-                
-    published = bool(
-        job.get("status") == "completed" and job.get("artifact_lease")
-    )
-    return {
-        "status": job.get("status"),
-        "processed": job.get("processed", 0),
-        "total": job.get("total", 0),
-        "result": job.get("result") if published else None,
-        "artifact_lease": job.get("artifact_lease") if published else None,
-        "error": job.get("error"),
-        "cancel_requested": bool(job.get("cancel_requested")),
-    }
+        with _VDP_JOBS_LOCK:
+            current = vdp_jobs.get(job_id)
+            if current is not None:
+                current['processed'] = total_processed
+
+    # Snapshot dưới lock để không đọc nửa chừng khi cleanup/publish chạy song song.
+    with _VDP_JOBS_LOCK:
+        current = vdp_jobs.get(job_id)
+        if current is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        published = bool(
+            current.get("status") == "completed"
+            and current.get("result")
+            and current.get("artifact_lease")
+        )
+        return {
+            "status": current.get("status"),
+            "processed": current.get("processed", 0),
+            "total": current.get("total", 0),
+            "result": current.get("result") if published else None,
+            "artifact_lease": current.get("artifact_lease") if published else None,
+            "error": current.get("error"),
+            "cancel_requested": bool(current.get("cancel_requested")),
+        }
 
 @router.get("/download/{job_id}")
 def download_vdp(job_id: str, license_info: dict = Depends(require_license)):
-    if job_id not in vdp_jobs:
-        raise HTTPException(status_code=404, detail="Job not found")
-        
-    job = vdp_jobs[job_id]
-    if job['status'] != 'completed' or not job['result']:
+    _purge_old_jobs()
+    with _VDP_JOBS_LOCK:
+        job = vdp_jobs.get(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Job not found")
+        status = job.get("status")
+        result_path = job.get("result")
+        artifact_lease = job.get("artifact_lease")
+    if status != 'completed' or not result_path or not artifact_lease:
         raise HTTPException(status_code=400, detail="Job is not completed yet")
         
-    if not os.path.exists(job['result']):
+    if not os.path.exists(result_path):
         raise HTTPException(status_code=404, detail="File not found on server")
         
     return FileResponse(
-        path=job['result'],
-        filename=f"VDP_Output_{job['total']}records.pdf",
+        path=result_path,
+        filename=f"VDP_Output_{job.get('total', 0)}records.pdf",
         media_type='application/pdf'
     )
 
@@ -775,13 +832,14 @@ async def upload_file_for_processing(file: UploadFile = File(...), license_info:
     """Upload a PDF file and return its server-side path for backend processing."""
     file_id = uuid.uuid4().hex
     file_path = os.path.join(UPLOAD_DIR, f"{file_id}.pdf")
-    content = await file.read()
+    content = await file.read(MAX_VDP_PAYLOAD_BYTES + 1)
+    if len(content) > MAX_VDP_PAYLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File VDP vượt quá giới hạn 256 MB.")
     # Chặn upload RỖNG/cụt: tránh ghi file 0 byte rồi vỡ với lỗi khó hiểu
     # ("unable to find trailer dictionary") ở các bước đọc PDF sau này.
     if not content:
         raise HTTPException(status_code=400, detail="File rỗng (0 byte) — nội dung tải lên không hợp lệ.")
-    with open(file_path, "wb") as f:
-        f.write(content)
+    await run_in_threadpool(_write_bytes, file_path, content)
     return {"path": os.path.abspath(file_path)}
 
 _SYSTEM_FONTS_CACHE: list[dict[str, str]] | None = None
@@ -857,7 +915,9 @@ def _parse_fields(fields_json: str) -> List[VdpField]:
     """
     try:
         parsed = json.loads(fields_json)
-        return [VdpField(**f) for f in parsed]
+        fields = [VdpField(**f) for f in parsed]
+        validate_vdp_field_contract(fields)
+        return fields
     except HTTPException:
         raise
     except Exception as exc:  # JSONDecodeError hoặc lỗi validate pydantic
@@ -877,9 +937,13 @@ async def _form_or_file_text(value: Optional[str], upload: Optional[UploadFile])
     (form) nếu có; nếu không thì đọc ``upload`` (file). Trả ``None`` khi cả hai trống.
     """
     if value is not None:
+        if len(value.encode("utf-8")) > MAX_VDP_PAYLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="Dữ liệu VDP vượt quá giới hạn 256 MB.")
         return value
     if upload is not None:
-        raw = await upload.read()
+        raw = await upload.read(MAX_VDP_PAYLOAD_BYTES + 1)
+        if len(raw) > MAX_VDP_PAYLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="Dữ liệu VDP vượt quá giới hạn 256 MB.")
         return raw.decode("utf-8", errors="replace")
     return None
 
@@ -900,7 +964,7 @@ async def _read_table_from_source(
 
     if normalized == "csv":
         if file is not None:
-            payload: Any = await file.read()
+            payload: Any = await file.read(MAX_VDP_PAYLOAD_BYTES + 1)
         elif text is not None:
             payload = text
         else:
@@ -914,7 +978,7 @@ async def _read_table_from_source(
                 status_code=400,
                 detail="Thiếu file Excel (.xlsx) để đọc.",
             )
-        payload = await file.read()
+        payload = await file.read(MAX_VDP_PAYLOAD_BYTES + 1)
     elif normalized in ("gsheet", "gsheets", "google-sheets"):
         if not url:
             raise HTTPException(
@@ -928,13 +992,22 @@ async def _read_table_from_source(
             detail=f"Định dạng nguồn dữ liệu không được hỗ trợ: '{kind}'.",
         )
 
+    if isinstance(payload, (bytes, bytearray)) and len(payload) > MAX_VDP_PAYLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="Dữ liệu VDP vượt quá giới hạn 256 MB.")
+
     try:
         # PERF (audit 2026-09-28 §PERF28.02): chỉ chuyển bytes/text đã đọc sang
         # pool thường; parse Excel/CSV và chờ Sheets không chiếm event loop hay
         # heavy slot. Không đưa UploadFile hoặc handle PDFium qua luồng khác.
-        return await run_in_threadpool(
+        table = await run_in_threadpool(
             read_source, normalized, payload, sheet=sheet, has_header=has_header
         )
+        if len(table.rows) > MAX_VDP_ROWS:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Quá nhiều bản ghi (>{MAX_VDP_ROWS}).",
+            )
+        return table
     except DataSourceError as exc:
         raise HTTPException(status_code=400, detail=exc.message)
 
@@ -953,7 +1026,11 @@ def _table_from_rows(
         rows = json.loads(rows_json)
         if not isinstance(rows, list):
             raise ValueError("rows phải là một mảng JSON")
+        if len(rows) > MAX_VDP_ROWS:
+            raise HTTPException(status_code=413, detail=f"Quá nhiều bản ghi (>{MAX_VDP_ROWS}).")
         rows = [dict(r) for r in rows]
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.debug("Invalid rows payload: %s", exc)
         raise HTTPException(
@@ -1022,6 +1099,7 @@ async def read_datasource(
     sheet: Optional[str] = Form(None),
     has_header: bool = Form(True),
     include_all_rows: bool = Form(False),
+    record_index: Optional[int] = Form(None, ge=1),
     license_info: dict = Depends(require_feature("vdp.datamerge")),
 ):
     """Đọc nguồn dữ liệu (csv/xlsx/gsheet) → cột + số record + xem trước (Req 1.1, 1.3).
@@ -1034,10 +1112,13 @@ async def read_datasource(
     ``DataSourceError`` → HTTP 400 với thông báo tiếng Việt.
     """
     table = await _read_table_from_source(kind, file, url, text, sheet, has_header)
+    preview_rows = table.rows[:DATASOURCE_PREVIEW_ROWS]
+    if isinstance(record_index, int):
+        preview_rows = table.rows[record_index - 1:record_index]
     result = {
         "columns": table.columns,
         "record_count": len(table.rows),
-        "preview_rows": table.rows[:DATASOURCE_PREVIEW_ROWS],
+        "preview_rows": preview_rows,
     }
     if include_all_rows:
         result["rows"] = table.rows
@@ -1050,7 +1131,9 @@ async def read_datasource_sheets(
     license_info: dict = Depends(require_feature("vdp.datamerge")),
 ):
     """Liệt kê tên sheet của một file Excel ``.xlsx`` để người dùng chọn (Req 1.3)."""
-    data = await file.read()
+    data = await file.read(MAX_VDP_PAYLOAD_BYTES + 1)
+    if len(data) > MAX_VDP_PAYLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File Excel VDP vượt quá giới hạn 256 MB.")
     try:
         # PERF (audit 2026-09-28 §PERF28.02): mở workbook cũng là việc chặn.
         sheets = await run_in_threadpool(list_xlsx_sheets, data)
@@ -1146,7 +1229,9 @@ async def preview_vdp(
     tmp_template: Optional[str] = None
     resolved_template_path: Optional[str] = None
     if template is not None:
-        template_bytes = await template.read()
+        template_bytes = await template.read(MAX_VDP_PAYLOAD_BYTES + 1)
+        if len(template_bytes) > MAX_VDP_PAYLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="Template VDP vượt quá giới hạn 256 MB.")
         if not template_bytes.startswith(b"%PDF"):
             raise HTTPException(
                 status_code=400, detail="File template tải lên không phải PDF hợp lệ."
@@ -1154,8 +1239,7 @@ async def preview_vdp(
         tmp_template = os.path.join(
             tempfile.gettempdir(), f"vdp_preview_tpl_{uuid.uuid4().hex}.pdf"
         )
-        with open(tmp_template, "wb") as fp:
-            fp.write(template_bytes)
+        await run_in_threadpool(_write_bytes, tmp_template, template_bytes)
         resolved_template_path = tmp_template
     elif template_path:
         real_path = os.path.realpath(template_path)
@@ -1172,13 +1256,18 @@ async def preview_vdp(
         )
 
     try:
-        result = render_record_preview(
+        # PDFium/pikepdf/raster nằm ngoài event loop; worker tự giữ
+        # ``pdfium_guard`` cho đoạn gọi PDFium ngắn.
+        result = await run_in_threadpool(
+            render_record_preview,
             resolved_template_path,
             vdp_fields,
             table.rows,
             requested_index,
             scale=scale,
         )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     finally:
         if tmp_template and os.path.exists(tmp_template):
             try:
@@ -1371,13 +1460,10 @@ def _resolve_vdp_template_file(fid_or_path: str) -> tuple[str, str]:
 def _register_cleaned_template(cleaned_path: str, original_name: str) -> tuple[str, str, str]:
     _purge_cleaned_template_registry()
     filename = os.path.basename(cleaned_path)
-    fid = f"cleaned_{uuid.uuid4().hex[:12]}"
+    # Lease yêu cầu fid là UUID canonical; provisional ``cleaned_<hex>`` trước
+    # đây bị từ chối âm thầm, khiến template biến mất khi cleanup chạy.
+    fid = str(uuid.uuid4())
     lease = None
-    try:
-        from app.core.artifact_lease import create_artifact_lease
-        lease = create_artifact_lease("vdp", cleaned_path, fid=fid)
-    except Exception:
-        pass
 
     try:
         db = SessionLocal()
@@ -1398,10 +1484,27 @@ def _register_cleaned_template(cleaned_path: str, original_name: str) -> tuple[s
     except Exception as exc:
         logger.warning("Không thể lưu DB cho cleaned template (bỏ qua nếu chạy standalone không DB): %s", exc)
 
+    try:
+        lease = create_artifact_lease("vdp", cleaned_path, fid=fid)
+    except Exception as exc:
+        # Không nuốt lỗi lifecycle: registry vẫn cho phép thao tác hiện tại,
+        # nhưng ghi rõ để không tưởng rằng file đã được lease bảo vệ.
+        logger.error("Không tạo được lease cho cleaned template %s: %s", fid, exc)
+
     _VDP_CLEANED_TEMPLATES[fid] = (os.path.abspath(cleaned_path), original_name)
     _VDP_CLEANED_TEMPLATE_CREATED[fid] = time.time()
     url = result_access_url(f"/results/vdp_templates/{filename}")
     return fid, url, lease
+
+
+def _path_is_within_root(path: str, root: str) -> bool:
+    """Kiểm tra scope theo component path, không dùng ``startswith`` chuỗi."""
+    try:
+        candidate = os.path.realpath(os.path.abspath(os.path.normpath(path)))
+        allowed = os.path.realpath(os.path.abspath(os.path.normpath(root)))
+        return os.path.commonpath([candidate, allowed]).casefold() == allowed.casefold()
+    except (OSError, ValueError):
+        return False
 
 
 @router.post("/pick-text-field")
@@ -1594,7 +1697,7 @@ async def get_vdp_font_file(path: str, _license_info: dict = Depends(require_lic
         os.path.normpath(r"C:\Program Files\Common Files\Adobe\Fonts"),
         os.path.normpath(r"C:\Program Files (x86)\Common Files\Adobe\Fonts"),
     ]
-    is_safe = any(norm_path.lower().startswith(p.lower()) for p in safe_prefixes)
+    is_safe = any(_path_is_within_root(norm_path, prefix) for prefix in safe_prefixes)
     if not is_safe:
         raise HTTPException(status_code=403, detail="Đường dẫn font ngoài phạm vi cho phép")
 

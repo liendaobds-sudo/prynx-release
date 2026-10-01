@@ -19,7 +19,7 @@ export const ALGO_PROFILE_KEYS: string[] = [
     // cutType / dieSizeMode / dieOffsetMm: KHÔNG profile — luôn mặc định khi vào tem bế/CNC
     // (user tự chọn 1 Dao nếu cần; không nhớ lần trước).
     'fillBlockGap', 'pontType', 'pontConfig',
-    'gapX', 'gapY', 'targetQuantity', 'targetQuantitiesByPage',
+    'gapX', 'gapY', 'targetQuantity', 'targetQuantitiesByPage', 'autoFill',
     'markType', 'scaleMode', 'signatureMode', 'foliosize', 'interleave',
     'separateCutPage', 'pontsOnCutFile',
     'cncFlipEdge', 'cncDuplexMarks',

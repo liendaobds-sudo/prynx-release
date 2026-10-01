@@ -1244,6 +1244,16 @@ export default function ConvertColorsTool({ tabId, pdfFile, onFileFixed }: Props
                   )}
                 </div>
 
+                {previewResponse.warnings?.some(w => w.includes('CMYK') || w.includes('RGB')) && (
+                  <div className="space-y-1 rounded border border-sky-200 bg-sky-50/80 p-2 text-[10px] text-sky-800 dark:border-sky-800/60 dark:bg-sky-950/30 dark:text-sky-300">
+                    {previewResponse.warnings.filter(w => w.includes('CMYK') || w.includes('RGB')).map((msg, idx) => (
+                      <p key={idx} className="flex items-start gap-1.5 leading-snug">
+                        <span className="font-bold text-sky-600 dark:text-sky-400">ℹ</span>
+                        <span>{msg}</span>
+                      </p>
+                    ))}
+                  </div>
+                )}
                 {previewResponse.warnings[0] && (
                   <p className="sr-only">{previewResponse.warnings[0]}</p>
                 )}

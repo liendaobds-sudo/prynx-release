@@ -137,6 +137,8 @@ export default function GridSettingsSection(props: GridSettingsProps) {
       setBleed: state.setBleed,
       showBleedView: state.showBleedView,
       setShowBleedView: state.setShowBleedView,
+      autoFill: state.autoFill,
+      setAutoFill: state.setAutoFill,
     })),
   );
   const quantityApplies = !(taskMode === "nup" && s.layoutType === "cut_stacks");
@@ -144,6 +146,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
     activeTool,
     s.impositionUnit,
   );
+  const isAutoFill = (taskMode === "nup" || taskMode === "sticker_imposer") && s.autoFill;
   // UIUX (audit 2026-09-09 §HIDE-SHAPE): hình dạng đã được detect tự động và
   // truyền nguyên vẹn qua state/payload cho engine nesting. Ẩn control thủ công
   // ở Sticker/CNC để bớt rối, không xóa dữ liệu detection hay đổi route engine.
@@ -521,6 +524,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                   activeTool,
                   taskMode,
                   gridStrategy,
+                  autoFill: s.autoFill,
                 })}
                 onChange={(e) => setGridStrategy(e.target.value)}
                 className="flex-1 min-w-0 h-8 px-2 appearance-auto border border-slate-300 dark:border-white/20 rounded bg-white dark:bg-zinc-900 text-sm focus:outline-none focus:border-indigo-500 font-medium"
@@ -788,11 +792,53 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                   !quantityApplies
                     // UIUX (audit 2026-07-27 §B-08): bỏ chuỗi unicode-escape → tiếng Việt có dấu qua i18n
                     ? t('imposition.gridSettings:khong_ap_dung_cho_xep_chong', 'Không áp dụng cho Xếp chồng')
+                    : isAutoFill
+                    ? t('imposition.gridSettings:tu_lap_day_placeholder', 'Tự lấp đầy (để trống = đầy tờ)')
                     : (taskMode === 'nup' || taskMode === 'sticker_imposer')
                     ? t('imposition.gridSettings:nhap_sl_moi_loai', 'Trống = 1 mẫu mỗi loại')
                     : t('imposition.gridSettings:chu_thich_0_tu_lap_day', '(0 = tự lấp đầy tờ)')
                 }
               />
+              {/* Nút gạt Tự lấp đầy cho Bình tem bế / N-up nhiều mẫu */}
+              {(taskMode === "nup" || taskMode === "sticker_imposer") && !pageSheetMode && (
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={isAutoFill}
+                  data-testid="toggle-autofill"
+                  onClick={() => {
+                    const next = !s.autoFill;
+                    s.setAutoFill(next);
+                    if (next && targetQuantity === 1) {
+                      setTargetQuantity(0);
+                    }
+                  }}
+                  className={`flex items-center gap-1.5 shrink-0 px-2 h-8 rounded border transition-all text-xs font-semibold select-none cursor-pointer ${
+                    isAutoFill
+                      ? 'bg-indigo-50 border-indigo-300 text-indigo-700 dark:bg-indigo-950/40 dark:border-indigo-500/50 dark:text-indigo-300 shadow-sm'
+                      : 'bg-white border-slate-300 text-slate-600 hover:bg-slate-50 dark:bg-zinc-900 dark:border-white/20 dark:text-zinc-400 dark:hover:bg-zinc-800'
+                  }`}
+                  title={
+                    isAutoFill
+                      ? t('imposition.gridSettings:tat_tu_lap_day_tooltip', 'Đang tự lấp đầy: nếu để trống SL thì lấp kín tờ in; nếu có SL thì tự nhân bản lấp kín tờ cuối cùng. Nhấn để tắt.')
+                      : t('imposition.gridSettings:bat_tu_lap_day_tooltip', 'Bật tự lấp đầy: tự động nhân bản tem để lấp kín tờ in (hoặc lấp kín tờ cuối cùng nếu có số lượng).')
+                  }
+                >
+                  <span
+                    className={`relative inline-flex h-4 w-7 shrink-0 rounded-full border border-transparent transition-colors duration-200 ease-in-out ${
+                      isAutoFill ? 'bg-indigo-600' : 'bg-slate-300 dark:bg-zinc-600'
+                    }`}
+                  >
+                    <span
+                      aria-hidden="true"
+                      className={`pointer-events-none inline-block h-3 w-3 transform rounded-full bg-white shadow transition duration-200 ease-in-out ${
+                        isAutoFill ? 'translate-x-3' : 'translate-x-0'
+                      }`}
+                    />
+                  </span>
+                  <span>{t('imposition.gridSettings:tu_lap_day', 'Tự lấp đầy')}</span>
+                </button>
+              )}
               {sourceTotalPages > 1 && quantityApplies ? (
                 <button
                   onClick={() => setShowPageQuantities(!showPageQuantities)}
@@ -815,9 +861,7 @@ export default function GridSettingsSection(props: GridSettingsProps) {
                     />
                   </svg>
                 </button>
-              ) : (
-                <div className="shrink-0 w-8" />
-              )}
+              ) : null}
             </div>
           </div>
 

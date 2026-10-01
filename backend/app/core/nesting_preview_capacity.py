@@ -188,6 +188,7 @@ def settings_from_preview_request(req: Any) -> dict[str, Any]:
         "taskMode": getattr(req, "task_mode", "nup"),
         "layoutType": getattr(req, "layout_type", None),
         "groupingStrategy": getattr(req, "grouping_strategy", None) or "free_gang",
+        "autoFill": bool(getattr(req, "auto_fill", False)),
         "page_sheet_mode": bool(getattr(req, "page_sheet_mode", False)),
         "sheetWidth": _mm(getattr(req, "sheet_w", 0)),
         "sheetHeight": _mm(getattr(req, "sheet_h", 0)),

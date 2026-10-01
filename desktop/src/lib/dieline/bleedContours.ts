@@ -367,6 +367,12 @@ export function withBleedPaths(
     model: DielineModel,
     bleedMm: number = DEFAULT_DIELINE_BLEED_MM,
 ): DielineModel {
+    // [RIGID-MAGNETIC 2026-10-01 §RMB.6] BLEED của hộp cứng nam châm là
+    // contour áo bồi turn-in 15mm do generator tạo. Không được thay bằng
+    // contour offset mặc định 3mm khi dựng artifact sản xuất/nesting.
+    if (model.params?.boxType === 'rigid_magnetic') {
+        return { ...model, allPaths: [...model.allPaths] };
+    }
     const sourcePaths = model.allPaths.filter((path) => path.tag !== 'BLEED');
     const bleedPaths: PathSegment[] = computeBleedContours(
         { ...model, allPaths: sourcePaths },

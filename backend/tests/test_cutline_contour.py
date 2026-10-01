@@ -24,6 +24,7 @@ from app.workers.cutline_geometry import (
     _vec_normalize,
     _vec_sub,
 )
+from app.workers.sticker_engine import _pdf_cut_stroke_ops
 
 PAGE_H = 200.0
 # Hình vuông kín (gốc top-left, y xuống)
@@ -79,6 +80,20 @@ def test_y_axis_is_flipped():
 def test_too_few_points_is_noop():
     assert build_contour_path_stream([(0, 0), (1, 1)], PAGE_H, "round") == []
     assert build_contour_path_stream([(0, 0), (1, 1)], PAGE_H, "square") == []
+
+
+@pytest.mark.parametrize(
+    ("style", "expected_join", "expected_cap"),
+    [
+        ("round", "1 j", "1 J"),
+        ("alpha_smooth", "1 j", "1 J"),
+        ("preserve", "0 j", "0 J"),
+        ("miter", "0 j", "0 J"),
+    ],
+)
+def test_pdf_cut_stroke_style_matches_preview(style, expected_join, expected_cap):
+    """PDF phải ghi rõ join/cap để không dùng mặc định miter/butt của PDF."""
+    assert _pdf_cut_stroke_ops(style) == (expected_join, expected_cap)
 
 
 def test_bezier_segment_count_matches_vertices():

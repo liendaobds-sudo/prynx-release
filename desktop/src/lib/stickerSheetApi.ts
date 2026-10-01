@@ -168,6 +168,9 @@ export interface StickerCutlinePreviewPath {
     d: string;
     segment_count: number;
     quality?: StickerCutlinePreviewQuality | null;
+    /** Đường ThruCut canonical từ backend (nếu server đã hỗ trợ protocol). */
+    thrucut_d?: string | null;
+    thrucut_segment_count?: number | null;
 }
 
 export interface StickerCutlineBoundingBox {
@@ -212,7 +215,18 @@ export interface StickerCutlinePreviewJob {
     error: string | null;
 }
 
-export interface StickerCutlinePreviewOptions {
+export interface StickerThruCutPreviewOptions {
+    thrucutEnabled?: boolean;
+    thrucutShape?: 'rounded_rect' | 'ellipse' | 'contour_offset';
+    thrucutMarginMm?: number;
+    thrucutMarginTopMm?: number;
+    thrucutMarginBottomMm?: number;
+    thrucutMarginLeftMm?: number;
+    thrucutMarginRightMm?: number;
+    thrucutRadiusMm?: number;
+}
+
+export interface StickerCutlinePreviewOptions extends StickerThruCutPreviewOptions {
     baseRevision: number;
     pageNumber?: number;
     edits: StickerSheetExportEdit[];
@@ -339,6 +353,7 @@ export async function detectStickerSource(
         alphaThreshold?: number;
         pageNumber?: number;
         previewOnly?: boolean;
+        shadowCleanup?: StickerShadowCleanup;
         signal?: AbortSignal;
     } = {},
 ): Promise<StickerSourceDetectionPayload> {
@@ -363,6 +378,7 @@ export async function detectStickerSourceManifest(
         pageNumber?: number;
         previewOnly?: boolean;
         force?: boolean;
+        shadowCleanup?: StickerShadowCleanup;
         signal?: AbortSignal;
     } = {},
 ): Promise<StickerSourceDetection> {
@@ -378,6 +394,7 @@ export async function detectStickerSourceManifest(
                 page_number: options.pageNumber ?? 1,
                 preview_only: options.previewOnly ?? false,
                 force: options.force ?? false,
+                shadow_cleanup: options.shadowCleanup ?? 'auto',
             }),
             signal: options.signal,
         },
@@ -459,6 +476,14 @@ function serializeCutlinePreviewOptions(options: StickerCutlinePreviewOptions) {
         min_detail_area_mm2: options.minDetailAreaMm2,
         cutline_denoise: options.cutlineDenoise,
         cutline_simplify_mm: resolveStickerCutlineSimplifyMm(options.cutlineSimplifyMm),
+        thrucut_enabled: options.thrucutEnabled ?? false,
+        thrucut_shape: options.thrucutShape ?? 'rounded_rect',
+        thrucut_margin_mm: options.thrucutMarginMm ?? 3,
+        thrucut_margin_top_mm: options.thrucutMarginTopMm,
+        thrucut_margin_bottom_mm: options.thrucutMarginBottomMm,
+        thrucut_margin_left_mm: options.thrucutMarginLeftMm,
+        thrucut_margin_right_mm: options.thrucutMarginRightMm,
+        thrucut_radius_mm: options.thrucutRadiusMm ?? 3,
         ...(options.classicWholePage ? {
             classic_whole_page: true,
             classic_force_contour: options.classicForceContour ?? false,
@@ -558,6 +583,17 @@ export async function exportStickerSheet(
         solidBleedCmyk?: readonly [number, number, number, number];
         shapeMode?: 'contour' | 'auto_safe';
         drawCutContour?: boolean;
+        /** [CUTLINE FIX 2026-10-01] Dao đứt ngoài cho chế độ Sticker Sheet. */
+        thrucutEnabled?: boolean;
+        thrucutShape?: 'rounded_rect' | 'ellipse' | 'contour_offset';
+        thrucutMarginMm?: number;
+        thrucutMarginTopMm?: number;
+        thrucutMarginBottomMm?: number;
+        thrucutMarginLeftMm?: number;
+        thrucutMarginRightMm?: number;
+        thrucutRadiusMm?: number;
+        thrucutSpotName?: string;
+        thrucutColorHex?: string;
         preserveExistingCut?: boolean;
         outputFormat?: 'pdf' | 'png_zip';
         cutlineSmoothness?: number;
@@ -611,6 +647,16 @@ export async function exportStickerSheet(
                 solid_bleed_cmyk: options.solidBleedCmyk || [0, 0, 0, 0],
                 shape_mode: options.shapeMode || 'contour',
                 draw_cut_contour: options.drawCutContour ?? true,
+                thrucut_enabled: options.thrucutEnabled ?? false,
+                thrucut_shape: options.thrucutShape || 'rounded_rect',
+                thrucut_margin_mm: options.thrucutMarginMm ?? 3,
+                thrucut_margin_top_mm: options.thrucutMarginTopMm,
+                thrucut_margin_bottom_mm: options.thrucutMarginBottomMm,
+                thrucut_margin_left_mm: options.thrucutMarginLeftMm,
+                thrucut_margin_right_mm: options.thrucutMarginRightMm,
+                thrucut_radius_mm: options.thrucutRadiusMm ?? 3,
+                thrucut_spot_name: options.thrucutSpotName || 'ThruCut',
+                thrucut_color_hex: options.thrucutColorHex || '#00FFFF',
                 preserve_existing_cut: options.preserveExistingCut ?? true,
                 output_format: options.outputFormat || 'pdf',
             }),

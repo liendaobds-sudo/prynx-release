@@ -4,7 +4,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { detectStickerSource, inspectStickerSource } from '../../lib/stickerSheetApi';
-import StickerSheetWorkspace, { StickerCutlineOverlay } from './StickerSheetWorkspace';
+import StickerSheetWorkspace, { buildThrucutSvgPath, StickerCutlineOverlay } from './StickerSheetWorkspace';
 import { useStickerSheetStore } from './stickerSheetStore';
 
 
@@ -411,6 +411,29 @@ describe('StickerSheetWorkspace - tách thao tác view và sửa mask', () => {
         expect(screen.queryByTestId('sticker-bbox-badge-1')).toBeNull();
     });
 
+    it('dùng khổ trang vật lý cho page-box local thay vì mặc định 100 mm', () => {
+        const preview = {
+            page_number: 1,
+            mask_revision: 1,
+            preview_width_px: 210,
+            preview_height_px: 297,
+            paths: [{ instance_id: 1, d: 'M 0 0 L 210 0 L 210 297 L 0 297 Z', segment_count: 4 }],
+            fingerprint: 'p'.repeat(64),
+            segment_count: 4,
+        };
+
+        render(
+            <StickerCutlineOverlay
+                preview={preview}
+                selectedInstanceId={null}
+                pageWidthMm={210}
+                showDimensions
+            />,
+        );
+
+        expect(screen.getByTestId('sticker-bbox-badge-1').textContent).toContain('210.0 × 297.0 mm');
+    });
+
     it('hiển thị kích thước Dao ngoài theo 4 cạnh lề riêng biệt khi unlinked', () => {
         const preview = {
             page_number: 1, mask_revision: 1, preview_width_px: 500, preview_height_px: 500,
@@ -452,6 +475,44 @@ describe('StickerSheetWorkspace - tách thao tác view và sửa mask', () => {
         expect(badge.textContent).toContain('50.0 × 50.0 mm');
         expect(badge.textContent).toContain('Dao ngoài:');
         expect(badge.textContent).toContain('57.0 × 62.0 mm');
+    });
+
+    it('dựng Dao ngoài contour_offset theo hình lõm thay vì rounded bounding box', () => {
+        const preview = {
+            page_number: 1,
+            mask_revision: 1,
+            preview_width_px: 120,
+            preview_height_px: 120,
+            // Chữ L: góc lõm tại (40,40) phải còn trong đường Dao ngoài.
+            paths: [{
+                instance_id: 1,
+                d: 'M 10 10 L 90 10 L 90 40 L 40 40 L 40 90 L 10 90 Z',
+                segment_count: 6,
+            }],
+            fingerprint: 'l'.repeat(64),
+            segment_count: 6,
+        };
+
+        const path = buildThrucutSvgPath(preview, {
+            enabled: true,
+            shape: 'contour_offset',
+            marginMm: 5,
+            radiusMm: 0,
+            color: '#00e5ff',
+            marginPx: 5,
+        });
+
+        expect(path).toBeTruthy();
+        expect(path).not.toContain('M 5.00 5.00 L 95.00 5.00');
+        // Buffer tròn quanh góc lõm tạo các điểm nằm trong khoang (40,40).
+        const coordinates = (path?.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number);
+        const hasConcaveJoin = coordinates.some((value, index) => {
+            if (index % 2 !== 0 || index + 1 >= coordinates.length) return false;
+            const x = value;
+            const y = coordinates[index + 1];
+            return x > 40 && x < 45 && y > 40 && y < 45;
+        });
+        expect(hasConcaveJoin).toBe(true);
     });
 
     it('tự động bóc tách bounding box của nhiều khuôn bế nếu preview chưa có sẵn bounding_boxes', () => {

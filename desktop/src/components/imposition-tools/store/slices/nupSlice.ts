@@ -28,6 +28,8 @@ export interface NupSlice {
     setCutBorder: (v: Partial<CutBorderConfig>) => void;
     groupingStrategy: NonNullable<NupSettings['groupingStrategy']>;
     setGroupingStrategy: (v: NonNullable<NupSettings['groupingStrategy']>) => void;
+    autoFill: boolean;
+    setAutoFill: (v: boolean) => void;
     clusterCombineMode: 'replicate_mixed' | 'zone_per_type' | 'zone_ratio';
     setClusterCombineMode: (v: 'replicate_mixed' | 'zone_per_type' | 'zone_ratio') => void;
     clusterTileW: number;
@@ -90,7 +92,7 @@ export interface NupSlice {
 }
 
 export const NUP_PERSIST_KEYS = [
-    'impositionUnit',
+    'impositionUnit', 'autoFill',
     'layoutType', 'columns', 'rows', 'gridStrategy', 'alternateRotation', 'alternateRotationAlignment', 'groupingStrategy', 'cutBorder',
     'clusterCombineMode',
     'clusterTileW', 'clusterTileH', 'clusterSizingMode', 'clusterCols', 'clusterRows',
@@ -148,6 +150,8 @@ export const createNupSlice: ImposerSlice<NupSlice> = (set) => ({
     })),
     groupingStrategy: 'free_gang',
     setGroupingStrategy: (v) => set({ groupingStrategy: v }),
+    autoFill: false,
+    setAutoFill: (v) => set({ autoFill: v }),
     clusterCombineMode: 'replicate_mixed',
     setClusterCombineMode: (v) => set({ clusterCombineMode: v }),
     clusterTileW: 148,

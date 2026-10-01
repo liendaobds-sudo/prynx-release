@@ -337,6 +337,9 @@ export class RenderCoordinator {
                     requestKey: trace.request.requestKey,
                     groupKey: trace.request.groupKey,
                     ownerId: trace.request.ownerId,
+                    // PERF (audit 2026-10-01 §QUEUE.01): giữ khóa nối với log
+                    // tile-first-pixel và log Rust mà không ghi đường dẫn PDF.
+                    requestId: trace.request.requestId,
                     priority: trace.request.priority,
                     run,
                 });

@@ -663,6 +663,7 @@ def _extract_stickers(
     dpi_y: float | None = None,
     filename_prefix: str = "tem",
     optimize_for_archive: bool = True,
+    use_white_bleed: bool = False,
 ) -> list[Path]:
     output_paths: list[Path] = []
     height, width = labels.shape
@@ -685,6 +686,8 @@ def _extract_stickers(
         crop = rgba[top:bottom, left:right].copy()
         local_mask = labels[top:bottom, left:right] == instance_id
         crop[~local_mask, 3] = 0
+        if use_white_bleed:
+            crop[~local_mask, :3] = 255
         path = directory / f"{filename_prefix}_{sequence:03d}.png"
         Image.fromarray(crop, "RGBA").save(
             path,
@@ -708,6 +711,7 @@ def _prepare_output_pngs(
     output_format: str,
     crop_to_sticker: bool,
     filename_prefix: str = "tem",
+    use_white_bleed: bool = False,
 ) -> tuple[list[Path], int]:
     """Chuẩn bị raster đúng với cách đóng trang PDF mà người dùng chọn."""
     sticker_count = sum(1 for value in np.unique(labels) if value > 0)
@@ -726,12 +730,15 @@ def _prepare_output_pngs(
                 dpi_y,
                 filename_prefix=filename_prefix,
                 optimize_for_archive=(output_format == "png_zip"),
+                use_white_bleed=use_white_bleed,
             ),
             sticker_count,
         )
 
     whole_sheet = rgba.copy()
     whole_sheet[labels == 0, 3] = 0
+    if use_white_bleed:
+        whole_sheet[labels == 0, :3] = 255
     path = directory / f"{filename_prefix}_tam.png"
     Image.fromarray(whole_sheet, "RGBA").save(
         path,
@@ -891,6 +898,7 @@ def _can_preserve_existing_cut(
     crop_to_sticker: bool,
     draw_cut_contour: bool,
     preserve_existing_cut: bool,
+    thrucut_enabled: bool = False,
     cutline_simplify_mm: float = 0.0,
 ) -> bool:
     reference = session.manifest.get("vector_geometry_ref")
@@ -909,6 +917,9 @@ def _can_preserve_existing_cut(
         and corner_style in {"preserve", "original"}
         and not crop_to_sticker
         and draw_cut_contour
+        # [CUTLINE FIX 2026-10-01] PDF nguồn chỉ có CutContour; khi bật dao
+        # đứt ngoài phải rasterize qua StickerEngine để ghi thêm spot ThruCut.
+        and not thrucut_enabled
     )
     if can_preserve and _cutline_simplify_tolerance(cutline_simplify_mm) > 0.0:
         # §SIMPLIFY.1: copy nguyên PDF không thể thực hiện mức giảm node đã chọn.
@@ -1090,6 +1101,16 @@ def _build_cutline_pdf_from_pngs(
     solid_bleed_cmyk: tuple[float, float, float, float],
     shape_mode: str,
     draw_cut_contour: bool,
+    thrucut_enabled: bool = False,
+    thrucut_shape: str = "rounded_rect",
+    thrucut_margin_mm: float = 3.0,
+    thrucut_margin_top_mm: float | None = None,
+    thrucut_margin_bottom_mm: float | None = None,
+    thrucut_margin_left_mm: float | None = None,
+    thrucut_margin_right_mm: float | None = None,
+    thrucut_radius_mm: float = 3.0,
+    thrucut_spot_name: str = "ThruCut",
+    thrucut_color_hex: str = "#00FFFF",
     cutline_smoothness: float = 50.0,
     cutline_fidelity: float = 50.0,
     curve_tension: float = 50.0,
@@ -1211,6 +1232,18 @@ def _build_cutline_pdf_from_pngs(
             min_detail_area_mm2=min_detail_area_mm2,
             cutline_simplify_mm=cutline_simplify_mm,
             alpha_path_overrides=alpha_path_overrides,
+            # [CUTLINE FIX 2026-10-01] Ghi thêm spot ThruCut khi xuất tách tem
+            # hoặc giữ nguyên tấm; cùng contract với Classic StickerTool.
+            thrucut_enabled=thrucut_enabled,
+            thrucut_shape=thrucut_shape,
+            thrucut_margin_mm=thrucut_margin_mm,
+            thrucut_margin_top_mm=thrucut_margin_top_mm,
+            thrucut_margin_bottom_mm=thrucut_margin_bottom_mm,
+            thrucut_margin_left_mm=thrucut_margin_left_mm,
+            thrucut_margin_right_mm=thrucut_margin_right_mm,
+            thrucut_radius_mm=thrucut_radius_mm,
+            thrucut_spot_name=thrucut_spot_name,
+            thrucut_color_hex=thrucut_color_hex,
         )
 
     try:
@@ -1283,6 +1316,16 @@ def export_sticker_sheet_document(
     solid_bleed_cmyk: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0),
     shape_mode: str = "contour",
     draw_cut_contour: bool = True,
+    thrucut_enabled: bool = False,
+    thrucut_shape: str = "rounded_rect",
+    thrucut_margin_mm: float = 3.0,
+    thrucut_margin_top_mm: float | None = None,
+    thrucut_margin_bottom_mm: float | None = None,
+    thrucut_margin_left_mm: float | None = None,
+    thrucut_margin_right_mm: float | None = None,
+    thrucut_radius_mm: float = 3.0,
+    thrucut_spot_name: str = "ThruCut",
+    thrucut_color_hex: str = "#00FFFF",
     preserve_existing_cut: bool = True,
     cutline_smoothness: float = 50.0,
     cutline_fidelity: float = 50.0,
@@ -1371,6 +1414,16 @@ def export_sticker_sheet_document(
                     solid_bleed_cmyk=solid_bleed_cmyk,
                     shape_mode=shape_mode,
                     draw_cut_contour=draw_cut_contour,
+                    thrucut_enabled=thrucut_enabled,
+                    thrucut_shape=thrucut_shape,
+                    thrucut_margin_mm=thrucut_margin_mm,
+                    thrucut_margin_top_mm=thrucut_margin_top_mm,
+                    thrucut_margin_bottom_mm=thrucut_margin_bottom_mm,
+                    thrucut_margin_left_mm=thrucut_margin_left_mm,
+                    thrucut_margin_right_mm=thrucut_margin_right_mm,
+                    thrucut_radius_mm=thrucut_radius_mm,
+                    thrucut_spot_name=thrucut_spot_name,
+                    thrucut_color_hex=thrucut_color_hex,
                     cutline_smoothness=segment_smoothness,
                     cutline_fidelity=segment_fidelity,
                     curve_tension=segment_tension,
@@ -1404,6 +1457,7 @@ def export_sticker_sheet_document(
                     crop_to_sticker=crop_to_sticker,
                     draw_cut_contour=draw_cut_contour,
                     preserve_existing_cut=preserve_existing_cut,
+                    thrucut_enabled=thrucut_enabled,
                     cutline_simplify_mm=page_simplify_mm,
                 )
                 if can_preserve:
@@ -1424,6 +1478,7 @@ def export_sticker_sheet_document(
                 edge_background_override = _flat_edge_background_override(rgba)
                 page_dpi = float(config.get("dpi") or dpi)
                 page_dpi_y = float(config.get("dpi_y") or dpi_y or page_dpi)
+                use_page_white_bleed = white_boundary_ratio(rgba, labels) >= 0.70
                 png_paths, page_sticker_count = _prepare_output_pngs(
                     export_dir,
                     rgba,
@@ -1433,6 +1488,7 @@ def export_sticker_sheet_document(
                     output_format=output_format,
                     crop_to_sticker=crop_to_sticker,
                     filename_prefix=f"trang_{logical_index:03d}_tem",
+                    use_white_bleed=use_page_white_bleed,
                 )
                 sticker_count += page_sticker_count
                 all_png_paths.extend(png_paths)
@@ -1562,6 +1618,16 @@ def export_sticker_sheet(
     solid_bleed_cmyk: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0),
     shape_mode: str = "contour",
     draw_cut_contour: bool = True,
+    thrucut_enabled: bool = False,
+    thrucut_shape: str = "rounded_rect",
+    thrucut_margin_mm: float = 3.0,
+    thrucut_margin_top_mm: float | None = None,
+    thrucut_margin_bottom_mm: float | None = None,
+    thrucut_margin_left_mm: float | None = None,
+    thrucut_margin_right_mm: float | None = None,
+    thrucut_radius_mm: float = 3.0,
+    thrucut_spot_name: str = "ThruCut",
+    thrucut_color_hex: str = "#00FFFF",
     preserve_existing_cut: bool = True,
     cutline_smoothness: float = 50.0,
     cutline_fidelity: float = 50.0,
@@ -1583,6 +1649,7 @@ def export_sticker_sheet(
         crop_to_sticker=crop_to_sticker,
         draw_cut_contour=draw_cut_contour,
         preserve_existing_cut=preserve_existing_cut,
+        thrucut_enabled=thrucut_enabled,
         cutline_simplify_mm=cutline_simplify_mm,
     ):
         output_path = session.directory / f"tem_cutcontour_goc_{uuid.uuid4().hex[:8]}.pdf"
@@ -1616,6 +1683,7 @@ def export_sticker_sheet(
             resolved_dpi_y,
             output_format=output_format,
             crop_to_sticker=crop_to_sticker,
+            use_white_bleed=use_white_bleed,
         )
         if output_format == "png_zip":
             output_path = session.directory / f"tem_tach_{uuid.uuid4().hex[:8]}.zip"
@@ -1783,6 +1851,18 @@ def export_sticker_sheet(
                 min_detail_area_mm2=min_detail_area_mm2,
                 cutline_simplify_mm=cutline_simplify_mm,
                 alpha_path_overrides=alpha_path_overrides,
+                # [CUTLINE FIX 2026-10-01] Giữ đủ tham số Bế 2 dao cho cả
+                # artifact tách từng tem và artifact giữ nguyên tấm.
+                thrucut_enabled=thrucut_enabled,
+                thrucut_shape=thrucut_shape,
+                thrucut_margin_mm=thrucut_margin_mm,
+                thrucut_margin_top_mm=thrucut_margin_top_mm,
+                thrucut_margin_bottom_mm=thrucut_margin_bottom_mm,
+                thrucut_margin_left_mm=thrucut_margin_left_mm,
+                thrucut_margin_right_mm=thrucut_margin_right_mm,
+                thrucut_radius_mm=thrucut_radius_mm,
+                thrucut_spot_name=thrucut_spot_name,
+                thrucut_color_hex=thrucut_color_hex,
             )
 
         try:

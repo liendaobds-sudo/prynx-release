@@ -1,7 +1,3 @@
-import {
-    buildInstantAlphaCutlinePreview,
-    extractAlphaChannel,
-} from '../../lib/fastAlphaCutlineTracer';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import {
@@ -14,6 +10,7 @@ import {
     type StickerCutlinePreview,
     type StickerCutlinePreviewJob,
     type StickerCutlinePreviewOptions,
+    type StickerThruCutPreviewOptions,
     type StickerDetectionStrategy,
     type StickerSourceDetection,
     type StickerSourceInspection,
@@ -55,6 +52,7 @@ interface PreviewSource {
 }
 
 interface PreviewRequest {
+    thrucut: StickerThruCutPreviewOptions;
     key: string;
     /** Vòng đời tài liệu/tab, khác lượt job tăng theo mỗi lần kéo thanh. */
     generation: number;
@@ -106,6 +104,7 @@ export interface ClassicCutlinePreviewState {
 }
 
 interface UseClassicCutlinePreviewOptions {
+    thrucut?: StickerThruCutPreviewOptions;
     enabled: boolean;
     resolveSourceFile: () => Promise<File | null>;
     documentIdentity: string;
@@ -149,7 +148,10 @@ function cancelPreviewJobSilently(sessionId: string, generation: number): void {
     void cancelStickerCutlinePreviewJob(sessionId, generation).catch(() => undefined);
 }
 
-function waitForPreviewJobPoll(signal: AbortSignal): Promise<void> {
+function waitForPreviewJobPoll(signal: AbortSignal, pollCount = 0): Promise<void> {
+    // PERF (audit 2026-10-01 §CUTLINE.POLL.ADAPTIVE): nhịp đầu ngắn (30-50ms) giúp
+    // phát hiện job xong ngay lập tức; các nhịp sau giữ 100ms để tiết kiệm mạng IPC.
+    const delay = pollCount === 0 ? 30 : (pollCount === 1 ? 50 : PREVIEW_JOB_POLL_MS);
     return new Promise((resolve, reject) => {
         if (signal.aborted) {
             reject(new DOMException('Preview đường bế đã bị hủy.', 'AbortError'));
@@ -162,7 +164,7 @@ function waitForPreviewJobPoll(signal: AbortSignal): Promise<void> {
         const timer = window.setTimeout(() => {
             signal.removeEventListener('abort', abort);
             resolve();
-        }, PREVIEW_JOB_POLL_MS);
+        }, delay);
         signal.addEventListener('abort', abort, { once: true });
     });
 }
@@ -379,6 +381,7 @@ export function useClassicCutlinePreview({
     autoSimplify = false,
     forceContour,
     removeWhiteBg,
+    thrucut,
 }: UseClassicCutlinePreviewOptions): ClassicCutlinePreviewState {
     const viewerPagePhysical = useWorkspaceStore(
         workspace => workspace.viewerActivePagePhysical,
@@ -396,97 +399,6 @@ export function useClassicCutlinePreview({
         && resolvedCutMode !== 'alpha'
         && resolvedCutMode !== 'none'
     );
-    const [localAlphaPayload, setLocalAlphaPayload] = useState<{
-        documentIdentity: string;
-        pageNumber: number;
-        alphaData: Uint8Array;
-        width: number;
-        height: number;
-    } | null>(null);
-
-    // Fast-path: trích xuất kênh Alpha tức thì nếu nguồn là file ảnh
-    useEffect(() => {
-        if (!enabled || resolvedCutMode !== 'alpha') {
-            setLocalAlphaPayload(null);
-            return;
-        }
-        let cancelled = false;
-        void (async () => {
-            try {
-                const file = await resolveSourceFile();
-                if (cancelled || !file) return;
-
-                const isImage = file.type.startsWith('image/') || /\.(png|webp|bmp|tif|tiff)$/i.test(file.name);
-                if (isImage && typeof createImageBitmap !== 'undefined') {
-                    const bitmap = await createImageBitmap(file);
-                    if (cancelled) return;
-                    const canvas = document.createElement('canvas');
-                    canvas.width = bitmap.width;
-                    canvas.height = bitmap.height;
-                    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-                    if (ctx) {
-                        ctx.drawImage(bitmap, 0, 0);
-                        const imgData = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
-                        const alphaData = extractAlphaChannel(imgData);
-                        if (!cancelled) {
-                            setLocalAlphaPayload({
-                                documentIdentity,
-                                pageNumber,
-                                alphaData,
-                                width: bitmap.width,
-                                height: bitmap.height,
-                            });
-                        }
-                    }
-                }
-            } catch {
-                // Tiếp tục luồng server preview bình thường
-            }
-        })();
-        return () => {
-            cancelled = true;
-        };
-    }, [documentIdentity, enabled, pageNumber, resolveSourceFile, resolvedCutMode]);
-
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    const _localFastAlphaPreview = useMemo(() => {
-        if (
-            resolvedCutMode !== 'alpha'
-            || !localAlphaPayload
-            || !viewerPagePhysical
-            || viewerPagePhysical.documentIdentity !== documentIdentity
-            || viewerPagePhysical.viewerPage !== pageNumber
-            || (
-                pageInstanceId !== null
-                && viewerPagePhysical.pageInstanceId !== pageInstanceId
-            )
-        ) return null;
-
-        const pageWidthMm = viewerPagePhysical.widthPt * POINT_TO_MM;
-        const pageHeightMm = viewerPagePhysical.heightPt * POINT_TO_MM;
-
-        return buildInstantAlphaCutlinePreview({
-            pageNumber,
-            pageWidthMm,
-            pageHeightMm,
-            alphaData: localAlphaPayload.alphaData,
-            bitmapWidth: localAlphaPayload.width,
-            bitmapHeight: localAlphaPayload.height,
-            offsetMm,
-            cornerStyle: resolvedCornerStyle,
-            cacheKey: `${documentIdentity}|${pageNumber}`,
-        });
-    }, [
-        documentIdentity,
-        localAlphaPayload,
-        offsetMm,
-        pageInstanceId,
-        pageNumber,
-        resolvedCornerStyle,
-        resolvedCutMode,
-        viewerPagePhysical,
-    ]);
-
     const localPageBoxPreview = useMemo(() => {
         if (
             !usesLocalPageBox
@@ -727,7 +639,6 @@ export function useClassicCutlinePreview({
         let disposed = false;
         const controller = new AbortController();
         void (async () => {
-            const tDetect0 = performance.now();
             try {
                 const strategy = previewDetectionStrategy(
                     session.inspection,
@@ -857,7 +768,9 @@ export function useClassicCutlinePreview({
                 curveTension: resolvedCornerStyle === 'round' ? curveTension : 50,
                 cutlineDenoise,
                 cutlineSimplifyMm: resolvedSimplifyMm,
+                thrucut,
             }),
+            thrucut: thrucut ?? {},
             generation: generationRef.current,
             // PERF (audit 2026-09-11 §PREWARM.CANCEL): mỗi slider tick là một
             // lượt mới cho worker; generation của session không đủ phân biệt.
@@ -933,6 +846,7 @@ export function useClassicCutlinePreview({
         resolvedCornerStyle,
         resolvedCutMode,
         resolvedSimplifyMm,
+        thrucut,
         usesLocalPageBox,
     ]);
 
@@ -949,6 +863,7 @@ export function useClassicCutlinePreview({
             generation: requested.jobGeneration,
         };
         const options: StickerCutlinePreviewOptions = {
+            ...requested.thrucut,
             baseRevision: requested.source.manifest.mask_revision ?? 1,
             pageNumber: requested.pageNumber,
             edits: [],
@@ -1082,7 +997,7 @@ export function useClassicCutlinePreview({
                     if (pollCount >= MAX_POLL_COUNT) {
                         throw new Error(i18n.t('preprocess.stickerSheet:classic_preview_timeout', 'Quá thời gian tải xem trước đường bế.'));
                     }
-                    await waitForPreviewJobPoll(controller.signal);
+                    await waitForPreviewJobPoll(controller.signal, pollCount - 1);
                     if (isStale()) return;
                     job = await readStickerCutlinePreviewJob(
                         requested.source.sessionId,

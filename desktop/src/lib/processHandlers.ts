@@ -98,6 +98,7 @@ type ProcessEngineSettings = ProcessingSettings & {
     pontType?: 'none' | 'corner' | '5mm' | 'custom';
     pontConfig?: DieCutSettings['pontConfig'];
     targetQuantity?: number;
+    autoFill?: boolean;
     targetQuantitiesByPage?: Record<number, number>;
     groupingStrategy?: 'free_gang' | 'maximize_area' | 'strict_ratio' | 'cluster_tile' | 'none';
     cncTwoSided?: boolean;
@@ -331,6 +332,7 @@ export async function runProcessEngine(
                         activeTool: isCnc ? 'cnc_imposer' : isDieCut ? 'sticker_imposer' : 'guillotine_imposer',
                         taskMode: normalizedTaskMode,
                         gridStrategy: settings.gridStrategy || 'simple_auto',
+                        autoFill: settings.autoFill,
                     })
                     : 'simple_auto',
                 alternateRotation: effectiveAlternateRotation,
@@ -363,7 +365,13 @@ export async function runProcessEngine(
                     : undefined,
                 detectedShapesByPage: isDieCut || isCnc ? settings.detectedShapesByPage : undefined,
                 detectedShapeParamsByPage: isDieCut || isCnc ? settings.detectedShapeParamsByPage : undefined,
-                targetQuantity: settings.targetQuantity || 0,
+                targetQuantity: (
+                    normalizedTaskMode === 'nup'
+                    && settings.autoFill
+                    && Number(settings.targetQuantity) <= 1
+                    && !Object.values(settings.targetQuantitiesByPage || {}).some((v) => Number(v) > 1)
+                ) ? 0 : (Number(settings.targetQuantity) || 0),
+                autoFill: normalizedTaskMode === 'nup' && !!settings.autoFill,
                 targetQuantitiesByPage: settings.targetQuantitiesByPage || {},
                 // PARITY (audit 2026-08-29 MAP-NEST-04): Tem bế và CNC giữ nguyên
                 // hai intent `free_gang`/`maximize_area`; guillotine chỉ nhận contract cũ.

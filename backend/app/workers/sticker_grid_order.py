@@ -71,9 +71,18 @@ def build_sticker_grid_order(doc, settings, *, logical_page_count=None, repeat_t
     cut_stack = page_sheet and settings.get("layoutType") == "cut_stacks"
     raw_tq = settings.get("targetQuantity")
     raw_tqbp = settings.get("targetQuantitiesByPage") or {}
+    _has_override_gt_1 = any(int(v or 0) > 1 for v in raw_tqbp.values())
     is_auto_fill = (
-        (raw_tq is None or raw_tq == "" or int(raw_tq or 0) == 0)
-        and not any(int(v or 0) > 0 for v in raw_tqbp.values())
+        bool(settings.get("autoFill") or settings.get("auto_fill"))
+        or (
+            page_sheet
+            and (raw_tq is None or raw_tq == "" or int(raw_tq or 0) <= 0)
+            and not any(int(v or 0) > 0 for v in raw_tqbp.values())
+        )
+    )
+    is_blank_qty = (
+        (raw_tq is None or raw_tq == "" or int(raw_tq or 0) <= 1)
+        and not _has_override_gt_1
     )
     quantities = ({i: 1 for i in range(count)} if cut_stack
                   else sticker_order_quantities(range(count), settings))
@@ -217,13 +226,44 @@ def build_sticker_grid_order(doc, settings, *, logical_page_count=None, repeat_t
     if repeat_template:
         quantities = {0: capacity}
         total = capacity
+        ordered = [0 for _ in range(capacity)]
     elif page_sheet and count == 1 and is_auto_fill and not cut_stack:
         quantities = {0: capacity}
         total = capacity
+        ordered = [0 for _ in range(capacity)]
+    elif cut_stack:
+        ordered = [index for sheet in build_cut_stack_sheets(count, capacity, fill_sheet=True) for index in sheet]
+    elif is_auto_fill and capacity > 0:
+        if is_blank_qty:
+            # Case 1: Tự lấp đầy khi để trống số lượng (hoặc mặc định <= 1)
+            # Nhân bản các mẫu trải đều để lấp kín tờ in
+            types_list = [idx for idx, q in quantities.items() if q > 0] or list(range(count))
+            n_types = len(types_list)
+            if n_types > 0:
+                sheets_needed = max(1, math.ceil(n_types / capacity))
+                target_total = sheets_needed * capacity
+                base_count, remainder = divmod(target_total, n_types)
+                seq = []
+                for i, t in enumerate(types_list):
+                    extra = 1 if i < remainder else 0
+                    seq.extend([t] * (base_count + extra))
+                ordered = seq
+            else:
+                ordered = []
+        else:
+            # Case 2: Có số lượng cụ thể, nhân bản tem để lấp kín tờ cuối cùng
+            base_seq = [idx for idx, q in quantities.items() for _ in range(max(0, q))]
+            rem = len(base_seq) % capacity
+            if rem > 0:
+                extra_needed = capacity - rem
+                extra_items = [base_seq[k % len(base_seq)] for k in range(extra_needed)]
+                ordered = base_seq + extra_items
+            else:
+                ordered = base_seq
+    else:
+        ordered = [index for index, quantity in quantities.items() for _ in range(max(0, quantity))]
     placements: dict[int, list[dict[str, Any]]] = {}
     position = 0
-    ordered = ((index for sheet in build_cut_stack_sheets(count,capacity,fill_sheet=True) for index in sheet)
-               if cut_stack else (index for index,quantity in quantities.items() for _ in range(quantity)))
     for index in ordered:
         tw, th = dimensions[index]
         slot = slots[position % capacity]
@@ -263,7 +303,7 @@ def build_sticker_grid_order(doc, settings, *, logical_page_count=None, repeat_t
             "physicalSheetIndex": sheet_index, "runCount": 1, "absPlacement": True,
         })
     counts = Counter(value["src_page_idx"] for values in placements.values() for value in values)
-    if not cut_stack and counts != quantities:
+    if not cut_stack and not is_auto_fill and counts != quantities:
         raise ValueError("Lưới chưa đáp ứng đúng số lượng từng loại.")
     preview = {
         "success": True, "strategyUsed": "cut_stacks" if cut_stack else settings.get("gridStrategy","simple_auto"), "absPlacement": True,
@@ -271,11 +311,11 @@ def build_sticker_grid_order(doc, settings, *, logical_page_count=None, repeat_t
         "totalItems": templates[0]["totalItems"], "capacity":capacity, "overallWidth": width, "overallHeight": height,
         "sheetsNeeded": len(placements), "placedByPage": {str(k): v for k, v in counts.items()},
         "orderSummary": {"templateCount": len(templates), "physicalSheetCount": len(placements),
-                         "requestedCount": (0 if (page_sheet and count == 1 and is_auto_fill) else total), "placedCount": position},
+                         "requestedCount": (0 if (is_auto_fill and is_blank_qty) else total), "placedCount": position},
     }
     layout = {"cells": slots, "totalItems": capacity, "overallWidth": raw["width"],
               "overallHeight": raw["height"], "strategyUsed": settings.get("gridStrategy","simple_auto")}
-    return StickerGridOrder(layout, placements, preview, master, requested_by_page=quantities)
+    return StickerGridOrder(layout, placements, preview, master, requested_by_page=counts if is_auto_fill else quantities)
 
 def uses_sticker_manual_repeat(settings) -> bool:
     return (
@@ -305,8 +345,9 @@ def build_sticker_manual_repeat_order(doc, settings, *, logical_page_count=None)
     if count != doc.page_count and doc.page_count != 1:
         raise ValueError("Các thay đổi trang chưa được áp dụng vào PDF làm việc. Hãy thử lại khi xử lý trang hoàn tất.")
     default = int(settings.get("targetQuantity", 0) or 0)
-    overrides = settings.get("targetQuantitiesByPage") or {}
-    auto_fill = default == 0 and not any(int(v or 0) > 0 for v in overrides.values())
+    auto_fill = bool(settings.get("autoFill") or settings.get("auto_fill")) or (
+        default == 0 and not any(int(v or 0) > 0 for v in overrides.values())
+    )
     placements, runs_by_sheet, templates, requested = {}, {}, [], {}
     from app.workers.sticker_homogeneous import page_has_die
     genuine = ([i for i in range(doc.page_count) if page_has_die(doc[i])]

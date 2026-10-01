@@ -1208,6 +1208,47 @@ describe('LiveTile — cold-open màu chính xác', () => {
         expect(onRenderReady).toHaveBeenCalledTimes(1);
     });
 
+    it('khi trang prefetch đã tải ảnh ở zoom thấp rồi zoom đổi, khi trở thành active phải tải lại ở zoom nét', async () => {
+        let resolveRender1: (source: TileUrlSource) => void = () => {};
+        let resolveRender2: (source: TileUrlSource) => void = () => {};
+        let callCount = 0;
+        const getTileUrl = vi.fn(() => new Promise<TileUrlSource>(resolve => {
+            callCount++;
+            if (callCount === 1) resolveRender1 = resolve;
+            else resolveRender2 = resolve;
+        }));
+        const preloadImage = document.createElement('img');
+        vi.spyOn(globalThis, 'Image').mockImplementation(function () { return preloadImage; });
+        const baseProps = makeProps({
+            getTileUrl,
+            renderOwnerId: 'viewer:prefetch:base:page-2',
+            zoom: 1,
+            renderPriority: viewerPageRenderPriority(true, false, true),
+        });
+        const view = render(<LiveTile {...baseProps} />);
+        await waitFor(() => expect(getTileUrl).toHaveBeenCalledTimes(1));
+
+        await act(async () => {
+            resolveRender1({ url: 'blob:http://localhost/zoom-1', byteLength: 64 });
+            await Promise.resolve();
+        });
+        fireEvent.load(preloadImage);
+        await waitFor(() => expect(view.container.querySelector('img')?.src).toBe('blob:http://localhost/zoom-1'));
+
+        view.rerender(<LiveTile {...baseProps} zoom={2} renderPriority={100} />);
+        await act(async () => { await Promise.resolve(); });
+        expect(getTileUrl).toHaveBeenCalledTimes(1);
+
+        view.rerender(<LiveTile {...baseProps} zoom={2} renderPriority={10} />);
+        await act(async () => { await Promise.resolve(); });
+
+        await waitFor(() => expect(getTileUrl).toHaveBeenCalledTimes(2));
+        expect(getTileUrl).toHaveBeenLastCalledWith(
+            1, 0, 2, 0, 0, 0, 0,
+            expect.objectContaining({ priority: 10 }),
+        );
+    });
+
     it('cold-open xin thẳng PPE target nét, không phát coarse 24 DPI', async () => {
         let requestCount = 0;
         const getTileUrl = vi.fn<GetTileUrl>(async () => ({

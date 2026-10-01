@@ -13,6 +13,9 @@ export default function NestingPanel() {
     const { nestingConfig, nestingResult, sleeveNestingResult, setNestingConfig, params } = useBoxStore();
     const [customSheet, setCustomSheet] = React.useState(false);
     const [orderQty, setOrderQty] = React.useState(1000);
+    // [RIGID-MAGNETIC 2026-10-01 §RMB.1] Hộp cứng nam châm gồm khay
+    // và áo bồi, nên dùng cùng luồng cấu hình hai vật liệu như tray.
+    const isTrayLike = params.boxType === 'tray' || params.boxType === 'rigid_magnetic';
 
     // Check if current sheet matches a preset
     const currentPreset = SHEET_PRESETS.find(
@@ -62,8 +65,8 @@ export default function NestingPanel() {
                 </div>
             </div>
 
-            {/* Chế độ chất liệu — chỉ hiện cho tray */}
-            {params.boxType === 'tray' && (
+            {/* Chế độ chất liệu — tray và hộp cứng nam châm */}
+            {isTrayLike && (
                 <div className="dt-params-section">
                     <label className="dt-section-label">{t('dieline.nesting:chat_lieu_khay_vo')}</label>
                     <div className="dt-glue-side-toggle">
@@ -158,7 +161,7 @@ export default function NestingPanel() {
             </div>
 
             {/* Khổ giấy vỏ bao — chỉ hiện khi split mode */}
-            {params.boxType === 'tray' && nestingConfig.trayNestingMode === 'split' && (
+            {isTrayLike && nestingConfig.trayNestingMode === 'split' && (
                 <div className="dt-params-section">
                     <label className="dt-section-label">{t('dieline.nesting:kho_giay_vo_bao')}</label>
                     <select
@@ -386,7 +389,7 @@ export default function NestingPanel() {
             {nestingResult && (
                 <div className="dt-nesting-result">
                     <label className="dt-section-label">
-                        📊 {params.boxType === 'tray' && nestingConfig.trayNestingMode === 'split'
+                        📊 {isTrayLike && nestingConfig.trayNestingMode === 'split'
                             ? t('dieline.nesting:khay')
                             : t('dieline.nesting:ket_qua_xep_khuon')}
                     </label>
@@ -419,7 +422,7 @@ export default function NestingPanel() {
             )}
 
             {/* Kết quả riêng cho vỏ bao (split mode) */}
-            {sleeveNestingResult && nestingConfig.trayNestingMode === 'split' && (
+            {sleeveNestingResult && isTrayLike && nestingConfig.trayNestingMode === 'split' && (
                 <div className="dt-nesting-result" style={{ borderTop: '1px solid rgba(255,255,255,0.1)', paddingTop: '0.5rem' }}>
                     <label className="dt-section-label">{t('dieline.nesting:vo_bao_kich_thuoc', { w: nestingConfig.sleeveSheet.width, h: nestingConfig.sleeveSheet.height })}</label>
                     <div className="dt-nesting-stats">

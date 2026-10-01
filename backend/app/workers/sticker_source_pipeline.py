@@ -32,7 +32,15 @@ from app.core.sticker_sheet_session import StickerSheetSession
 from app.core.system_memory import read_memory_status_mb, read_memory_tier_mb
 from app.workers.cut_export.cut_layer_extractor import extract_cut_contours
 from app.workers.sticker_artwork_guard import assess_ai_artwork_loss
-from app.workers.sticker_shadow_boundary import recover_soft_shadow_alpha
+from app.workers.sticker_alpha_cleanup import (
+    clean_alpha_exterior_fringe,
+    cleaned_alpha_page_bytes,
+    pad_hidden_color,
+)
+from app.workers.sticker_shadow_boundary import (
+    clean_alpha_dark_shadow_fringe,
+    recover_soft_shadow_alpha,
+)
 from app.workers.sticker_sheet_engine import (
     DEFAULT_ALPHA_THRESHOLD,
     DEFAULT_MODEL,
@@ -421,20 +429,31 @@ def _render_pdf_page(
     source_path: str,
     page_index: int,
     physical_size_mm: tuple[float, float],
+    *,
+    clean_transparent_edges: bool = False,
 ) -> tuple[Image.Image, tuple[float, float]]:
     import pypdfium2 as pdfium
 
     raster_scale_limit = _full_page_raster_scale_limit(source_path, page_index)
+    render_source = source_path
+    render_index = page_index
+    if clean_transparent_edges:
+        # Khử trên lưới pixel PNG gốc trước nội suy. PDF xuất dùng đúng helper
+        # này, nên đường Alpha xem trước không lệch do ngưỡng trên lưới 300 DPI.
+        with pikepdf.Pdf.open(source_path) as source_pdf:
+            cleaned_bytes, _removed = cleaned_alpha_page_bytes(source_pdf.pages[page_index])
+        if cleaned_bytes is not None:
+            render_source, render_index = cleaned_bytes, 0
     with CutlineTimer("PIPELINE", "RENDER_PDF_PAGE", f"file={Path(source_path).name} page={page_index+1}"):
         document = page = None
         try:
             # PERF (audit 2026-09-28 §PERF28.03): khóa cả vòng đời native,
             # không chỉ constructor; tính policy và PIL convert ngoài khóa.
             with pdfium_guard("sticker_source_pipeline_open"):
-                document = pdfium.PdfDocument(source_path)
-                if page_index < 0 or page_index >= len(document):
+                document = pdfium.PdfDocument(render_source)
+                if render_index < 0 or render_index >= len(document):
                     raise StickerSourcePipelineError("Trang PDF cần nhận diện không tồn tại.")
-                page = document[page_index]
+                page = document[render_index]
                 width_pt, height_pt = page.get_size()
             logical_width = max(float(width_pt), 1.0)
             logical_height = max(float(height_pt), 1.0)
@@ -509,12 +528,38 @@ def _analysis_from_alpha(
     *,
     model: StickerSheetModel,
     alpha_threshold: int,
+    shadow_cleanup: str = "auto",
+    clean_transparent_edges: bool = False,
     warning: str | None = None,
 ) -> StickerSheetAnalysis:
     if raw_alpha.shape != (source_image.height, source_image.width):
         raise StickerSourcePipelineError("Mask không khớp kích thước nguồn.")
     post_started = time.perf_counter()
     raw_alpha = np.asarray(raw_alpha, dtype=np.uint8)
+    source_rgb = np.asarray(source_image.convert("RGB"), dtype=np.uint8)
+
+    # QUALITY (feedback 2026-10-01 §PNG.SHADOW-CLEAN): Tự động khử pixel bóng đen mảnh / viền lem tối / bóng đổ
+    # ở rìa kênh Alpha của ảnh PNG/Alpha source nếu chế độ shadow_cleanup không bị tắt ("off").
+    shadow_exclusion = np.zeros(raw_alpha.shape, dtype=np.uint8)
+    fringe_removed = 0
+    hidden_color_changed = 0
+    # Mép Alpha ngoài là quy tắc riêng của đường cắt theo biên trong suốt;
+    # không cho tùy chọn khử bóng tối tắt nhầm việc xóa halo nhiều màu.
+    if clean_transparent_edges:
+        cleaned_alpha, fringe_removed = clean_alpha_exterior_fringe(raw_alpha)
+        if fringe_removed:
+            shadow_exclusion[(raw_alpha > 0) & (cleaned_alpha == 0)] = 255
+            raw_alpha = cleaned_alpha
+    elif shadow_cleanup != "off":
+        cleaned_alpha, removed_shadow_px = clean_alpha_dark_shadow_fringe(source_rgb, raw_alpha)
+        if removed_shadow_px > 0:
+            shadow_exclusion[(raw_alpha > 0) & (cleaned_alpha == 0)] = 255
+            raw_alpha = cleaned_alpha
+            logger.info(
+                "[STICKER-SHADOW] Đã tự động khử %d pixel bóng đen mảnh ở rìa kênh Alpha",
+                removed_shadow_px,
+            )
+
     binary = np.where(raw_alpha >= int(alpha_threshold), 255, 0).astype(np.uint8)
     min_area = max(MIN_COMPONENT_AREA_PX, int(binary.size * MIN_COMPONENT_AREA_RATIO))
     records, raw_labels = _component_records(binary, min_area)
@@ -524,13 +569,29 @@ def _analysis_from_alpha(
             "Không tìm thấy vùng tem đủ lớn. Hãy sửa vùng giữ lại hoặc chọn nhận diện bằng AI."
         )
 
+    # QUALITY (audit 2026-10-01 §PNG.SHADOW-CLEAN): nhãn ở ngưỡng 128 chỉ là
+    # hình học nhận diện. Giữ dải Alpha mềm quanh nhãn để không cắt cụt khử
+    # răng cưa; bóng đã được xóa riêng trong raw_alpha trước khi lập nhãn.
+    support_mask = np.where(labels > 0, 255, 0).astype(np.uint8)
+    # Giữ Alpha thấp trong ruột tem: ngưỡng nhận diện không được biến một mảng
+    # bán trong suốt lớn thành lỗ. Lỗ trong suốt thật vẫn bằng 0 ở raw_alpha.
+    support_contours, _ = cv2.findContours(support_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(support_mask, support_contours, -1, 255, cv2.FILLED)
     support = cv2.dilate(
-        np.where(labels > 0, 255, 0).astype(np.uint8),
+        support_mask,
         cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
         iterations=1,
     ) > 0
     clean_alpha = np.where(support, raw_alpha, 0).astype(np.uint8)
-    source_rgb = np.asarray(source_image.convert("RGB"), dtype=np.uint8)
+    if clean_transparent_edges:
+        # Dựa trên Alpha cuối cùng của preview, không dựa trên raw mask có thể
+        # còn thành phần bán trong suốt rời khỏi thân tem.
+        padded_rgb = pad_hidden_color(source_rgb, clean_alpha)
+        hidden_color_changed = int(np.count_nonzero(np.any(
+            padded_rgb != source_rgb,
+            axis=2,
+        )))
+        source_rgb = padded_rgb
     rgba = np.dstack((source_rgb, clean_alpha)).astype(np.uint8, copy=False)
     uncertainty = np.where(
         (labels > 0)
@@ -553,6 +614,12 @@ def _analysis_from_alpha(
             uncertain_ratio=round(uncertain_ratio, 6),
         ))
     warnings = [warning] if warning else []
+    if fringe_removed:
+        warnings.append("png-alpha-edge-cleaned")
+    if hidden_color_changed:
+        warnings.append("png-transparent-rgb-padded")
+    elif not fringe_removed and np.any(shadow_exclusion):
+        warnings.append("png-dark-shadow-removed")
     if len(instances) == 1:
         warnings.append("Chỉ nhận diện được một tem trong nguồn.")
     return StickerSheetAnalysis(
@@ -567,7 +634,26 @@ def _analysis_from_alpha(
         model_seconds=0.0,
         postprocess_seconds=time.perf_counter() - post_started,
         warnings=warnings,
+        raw_alpha=raw_alpha.copy(),
+        shadow_exclusion=shadow_exclusion,
+        alpha_threshold=int(alpha_threshold),
+        shadow_cleanup=shadow_cleanup,
     )
+
+
+def _source_image_with_clean_alpha(
+    source_image: Image.Image,
+    analysis: StickerSheetAnalysis,
+) -> Image.Image:
+    """Đưa đúng RGBA đã khử halo sang preview/export khi nguồn có Alpha."""
+    if source_image.mode not in ("RGBA", "LA") and "A" not in source_image.getbands():
+        return source_image
+    original = np.asarray(source_image.convert("RGBA"), dtype=np.uint8)
+    if original.shape != analysis.rgba.shape:
+        return source_image
+    if np.array_equal(original, analysis.rgba):
+        return source_image
+    return Image.fromarray(np.asarray(analysis.rgba, dtype=np.uint8), "RGBA")
 
 
 def build_classic_alpha_page_contour(
@@ -2115,6 +2201,7 @@ def _recover_single_composite_background(
             candidate_alpha,
             model=model,
             alpha_threshold=alpha_threshold,
+            shadow_cleanup="off",
         )
     except Exception as exc:
         logger.info(
@@ -2404,6 +2491,7 @@ def _recover_multi_composite_shadow_sheet(
             candidate_alpha,
             model=model,
             alpha_threshold=alpha_threshold,
+            shadow_cleanup="off",
         )
     except (StickerSourcePipelineError, MemoryError, cv2.error, ValueError):
         return None
@@ -2776,6 +2864,7 @@ def detect_sticker_source(
     alpha_threshold: int = DEFAULT_ALPHA_THRESHOLD,
     page_number: int = 1,
     preview_only: bool = False,
+    shadow_cleanup: str = "auto",
 ) -> StickerSourceDetection:
     """Nhận diện một trang/ảnh từ session inspected, không ghi session.
 
@@ -2833,10 +2922,15 @@ def detect_sticker_source(
                 raw_alpha,
                 model=model,
                 alpha_threshold=alpha_threshold,
+                shadow_cleanup=shadow_cleanup,
+                clean_transparent_edges=True,
             )
+            # QUALITY (feedback 2026-10-01 §PNG.SHADOW-CLEAN): Đồng bộ ảnh nguồn với mask đã khử bóng/lem
+            # để preview và export đều dùng nguồn sạch, không bị rò rỉ pixel bóng cũ từ file gốc.
+            clean_source = _source_image_with_clean_alpha(source_image, analysis)
             return StickerSourceDetection(
                 analysis=analysis,
-                source_image=source_image,
+                source_image=clean_source,
                 boundary_source="alpha",
                 strategy_confidence=0.98,
                 needs_review=bool(session.needs_review),
@@ -2933,6 +3027,11 @@ def detect_sticker_source(
         str(session.source_path),
         page_index,
         (float(width_mm), float(height_mm)),
+        clean_transparent_edges=(
+            strategy in ("auto", "alpha")
+            and bool(page_manifest.get("has_alpha"))
+            and (strategy == "alpha" or not page_manifest.get("has_vector"))
+        ),
     )
     if strategy == "page-box":
         # QUALITY (feedback 2026-08-19 §CUTPREVIEW.PAGEBOX1): render chỉ để có
@@ -3141,10 +3240,11 @@ def detect_sticker_source(
             rendered_alpha,
             model=model,
             alpha_threshold=alpha_threshold,
+            shadow_cleanup=shadow_cleanup,
         )
         return StickerSourceDetection(
             analysis=analysis,
-            source_image=source_image,
+            source_image=_source_image_with_clean_alpha(source_image, analysis),
             boundary_source="alpha",
             strategy_confidence=0.96,
             needs_review=True,

@@ -8,6 +8,7 @@ import { tv } from '../../i18n';
 import { mapPointToPlacement } from './placementTransform';
 import { splitTrayDieline } from './trayParts';
 import { splitDoubleTrayDieline } from './DoubleTray';
+import { splitRigidMagneticDieline } from './RigidMagneticBox';
 import { PDFDocument } from 'pdf-lib';
 import {
     addOptionalContentSource,
@@ -138,10 +139,13 @@ export async function buildProductionTrayNestingPdf(
     sleeveResult: NestingResult,
     config: Pick<NestingConfig, 'trayNestingMode'>,
 ): Promise<Blob> {
-    // [DOUBLE-TRAY 2026-07-26] đáy+nắp dùng chung hạ tầng khay+vỏ
-    const parts = model.params.boxType === 'double_tray'
-        ? splitDoubleTrayDieline(model)
-        : splitTrayDieline(model);
+    // [RIGID-MAGNETIC 2026-10-01 §RMB.1] Xuất production theo đúng hai
+    // cụm khay và bìa; không dùng splitter tray/sleeve của hộp giấy.
+    const parts = model.params.boxType === 'rigid_magnetic'
+        ? splitRigidMagneticDieline(model)
+        : model.params.boxType === 'double_tray'
+            ? splitDoubleTrayDieline(model)
+            : splitTrayDieline(model);
     if (!parts) throw new Error('Không tìm thấy đủ khuôn khay và vỏ.');
     assertProductionReady(parts.tray);
     assertProductionReady(parts.sleeve);

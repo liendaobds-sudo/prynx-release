@@ -101,6 +101,18 @@ def test_route_custom_optimal_diecut(flag_on):
     assert route_true_shape(_settings()) is True
 
 
+def test_route_autofill_sticker_nup_uses_legacy_fill_lane(flag_on):
+    """N-Up Tự lấp đầy phải dùng lane có cơ chế nhân bản đủ ô trên tờ."""
+
+    assert route_true_shape(
+        _settings(
+            autoFill=True,
+            targetQuantity=0,
+            targetQuantitiesByPage={"0": 0, "1": 0, "2": 0},
+        )
+    ) is False
+
+
 def test_route_publication_grid_buoc_export_giu_engine_cu(flag_on):
     # B10-6: preview đã chốt provisional/legacy thì export không được solve nesting lại.
     assert route_true_shape(_settings(forceLegacyGrid=True)) is False

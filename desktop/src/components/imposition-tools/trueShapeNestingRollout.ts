@@ -99,8 +99,20 @@ export function resolveGridStrategy(params: {
   activeTool: string;
   taskMode: string;
   gridStrategy: string;
+  autoFill?: boolean | null;
 }): string {
-  const { gridStrategy, enabled, activeTool, taskMode } = params;
+  const { gridStrategy, enabled, activeTool, taskMode, autoFill } = params;
+  // [AUTO-BOTTOM FIX 2026-10-01] N-Up tem bế bật Tự lấp đầy phải đi lane
+  // lưới chung để nhân bản đủ ô. Chuẩn hoá token true-shape cũ còn lưu trong
+  // profile trước khi nó lọt vào request preview/export.
+  if (
+    gridStrategy === TRUE_SHAPE_NESTING_STRATEGY
+    && autoFill === true
+    && activeTool === 'sticker_imposer'
+    && taskMode === 'nup'
+  ) {
+    return DEFAULT_GRID_STRATEGY;
+  }
   if (
     gridStrategy === TRUE_SHAPE_NESTING_STRATEGY &&
     !shouldShowTrueShapeNestingOption({ enabled, activeTool, taskMode })
@@ -378,6 +390,7 @@ export function shouldUseTrueShapeNesting(params: TrueShapeCompatibilityIntent &
   isDieCut?: boolean;
   pageSheetMode?: boolean;
   gridStrategy?: string | null;
+  autoFill?: boolean | null;
   shapesByPage?: Record<number, string> | null;
   targetQuantity?: number | string | null;
   targetQuantitiesByPage?: Record<number, number> | null;
@@ -411,16 +424,35 @@ export function shouldUseTrueShapeNesting(params: TrueShapeCompatibilityIntent &
   if (String(gridStrategy || '').trim() !== DEFAULT_GRID_STRATEGY) return false;
 
   // 1 Tem: Khi chỉ có 1 tem trên 1 tờ hoặc lưới 1x1, KHÔNG bao giờ cần chạy solver nesting nặng
-  const rawTargetQty = Number(params.targetQuantity);
-  const rawCols = Number((params as { columns?: number | string | null }).columns);
-  const rawRows = Number((params as { rows?: number | string | null }).rows);
-  if (rawTargetQty === 1 || (rawCols === 1 && rawRows === 1)) {
+  const isAutoFill = Boolean((params as { autoFill?: boolean | null }).autoFill);
+  // [AUTO-BOTTOM FIX 2026-10-01] True-shape không nhận contract nhân bản của
+  // N-Up tem bế. Tự lấp đầy phải đi lane lưới chung để preview/export cùng
+  // nhân bản các mẫu cho đủ ô trên tờ.
+  const task = String(params.taskMode || 'nup').trim().toLowerCase();
+  const isStickerNup = !isCnc && Boolean(isDieCut)
+    && !pageSheetMode
+    && !['step_repeat', 'sr', 'booklet'].includes(task)
+    && String(layoutType || '').trim() !== 'repeat';
+  if (isAutoFill && isStickerNup) {
     return false;
   }
-  if (params.targetQuantitiesByPage) {
-    const vals = Object.values(params.targetQuantitiesByPage).filter((v) => Number(v) > 0);
-    if (vals.length === 1 && vals[0] === 1) {
+  if (!isAutoFill) {
+    const rawTargetQty = Number(params.targetQuantity);
+    const rawCols = Number((params as { columns?: number | string | null }).columns);
+    const rawRows = Number((params as { rows?: number | string | null }).rows);
+    if (rawCols === 1 && rawRows === 1) {
       return false;
+    }
+    const shapes = params.shapesByPage;
+    const pageCount = shapes ? Object.keys(shapes).length : 1;
+    if (pageCount <= 1 && rawTargetQty === 1) {
+      return false;
+    }
+    if (params.targetQuantitiesByPage) {
+      const vals = Object.values(params.targetQuantitiesByPage).filter((v) => Number(v) > 0);
+      if (vals.length === 1 && vals[0] === 1 && pageCount <= 1) {
+        return false;
+      }
     }
   }
   // Sức chứa <= 1: Nếu kích thước tem chiếm quá lớn so với tờ giấy, không bao giờ chạy solver nặng
@@ -429,11 +461,10 @@ export function shouldUseTrueShapeNesting(params: TrueShapeCompatibilityIntent &
   }
   // PARITY (audit 2026-08-29 §MAP-NEST-03): cùng thứ tự/default với backend guard.
   if (unsupportedTrueShapeReason(params) !== null) return false;
-  const task = String(params.taskMode || 'nup').trim().toLowerCase();
   const nupOneEach = !isCnc && isDieCut && task !== 'step_repeat' && task !== 'sr' && layoutType !== 'repeat';
   return jobHasSpecialShape({
     ...params,
-    targetQuantity: nupOneEach && !(Number(params.targetQuantity) > 0) ? 1 : params.targetQuantity,
+    targetQuantity: !isAutoFill && nupOneEach && !(Number(params.targetQuantity) > 0) ? 1 : params.targetQuantity,
   });
 }
 

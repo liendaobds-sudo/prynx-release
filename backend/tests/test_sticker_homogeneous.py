@@ -508,3 +508,25 @@ def test_page_has_die_full_page_cutcontour_preserved(tmp_path):
 
     assert has_die is True
 
+
+def test_autofill_blank_quantity_keeps_each_type_present():
+    """Tự lấp đầy ô trống vẫn giữ đủ mọi loại tem và phân bổ đủ số ô."""
+    fake_items = [{"x": i, "y": 0, "w": 10.0, "h": 10.0} for i in range(8)]
+    plan = _make_plan(range(13))  # 13 mẫu, 8 ô/tờ -> 2 tờ (tổng 16 ô)
+    layout = sh.build_homogeneous_layout(
+        master_page=None,
+        plan=plan,
+        sheet_usable_w=500.0,
+        sheet_usable_h=400.0,
+        gap_x=0.0,
+        gap_y=0.0,
+        quantities=None,  # auto-fill
+        layout_fn=lambda *_a, **_k: {"items": fake_items},
+    )
+    # Với bố cục đồng nhất, các bản cùng loại nằm liền nhau để dễ gom thành phẩm.
+    sheet0 = [c.src_page_idx for c in layout.cell_contents if c.sheet_index == 0]
+    assert sheet0 == [0, 0, 1, 1, 2, 2, 3, 4], f"Tờ 0 nhận được {sheet0}"
+    sheet1 = [c.src_page_idx for c in layout.cell_contents if c.sheet_index == 1]
+    assert sheet1 == list(range(5, 13)), f"Tờ 1 nhận được {sheet1}"
+    assert {c.src_page_idx for c in layout.cell_contents} == set(range(13))
+

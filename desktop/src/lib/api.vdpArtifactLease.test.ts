@@ -95,4 +95,25 @@ describe('pollVdpJob artifact lease', () => {
       'http://localhost:8321/api/vdp/download/job-download',
     ]);
   });
+
+  it('không kết thúc khi backend mới báo completed nhưng chưa publish lease', async () => {
+    let calls = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      calls += 1;
+      const payload = calls === 1
+        ? { status: 'completed', result: null, artifact_lease: null }
+        : { status: 'completed', result: 'D:\\results\\ready.pdf', artifact_lease: ARTIFACT_LEASE_TOKEN };
+      return new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await pollVdpJob('job-race', vi.fn(), true);
+
+    expect(calls).toBe(2);
+    expect(result.path).toBe('D:\\results\\ready.pdf');
+    expect(result.artifactLease).toBe(ARTIFACT_LEASE_TOKEN);
+  });
 });

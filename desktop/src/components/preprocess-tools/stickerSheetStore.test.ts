@@ -932,7 +932,20 @@ describe('stickerSheetStore — state machine nguồn tem theo tab', () => {
         );
         useStickerSheetStore.getState().finishExport('tab-vector');
 
-        useStickerSheetStore.getState().setOutputSettings('tab-vector', { offsetMm: 1 });
+        useStickerSheetStore.getState().setOutputSettings('tab-vector', {
+            thrucutEnabled: true, cropToSticker: true,
+            thrucutMarginLinked: false, thrucutMarginTopMm: 1.25,
+            thrucutMarginRightMm: 4.5, thrucutColorCmyk: [20, 30, 40, 50],
+        });
+        await useStickerSheetStore.getState().exportFile('tab-vector');
+        expect(exportStickerSheet).toHaveBeenLastCalledWith('f'.repeat(32), expect.objectContaining({
+            thrucutEnabled: true, cropToSticker: true, preserveExistingCut: false,
+            thrucutMarginTopMm: 1.25, thrucutMarginRightMm: 4.5,
+            thrucutColorHex: '20,30,40,50',
+        }));
+        useStickerSheetStore.getState().finishExport('tab-vector');
+
+        useStickerSheetStore.getState().setOutputSettings('tab-vector', { offsetMm: 1, thrucutEnabled: false });
         await useStickerSheetStore.getState().exportFile('tab-vector');
         expect(exportStickerSheet).toHaveBeenLastCalledWith(
             'f'.repeat(32),

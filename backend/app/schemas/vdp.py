@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 from typing import List, Dict, Any, Optional, Literal
 
 # Toán tử so sánh hỗ trợ cho điều kiện ẩn/hiện và bảng rule (Req 2.9)
@@ -25,6 +25,14 @@ class VdpField(BaseModel):
     id: str
     name: str
     type: str # 'qrcode', 'barcode', 'text', 'image'
+    # VDP (audit 2026-10-01 §VDP.01): số trang template 1-based. None giữ tương thích với
+    # cấu hình cũ: field dùng chung cho mọi trang template.
+    pageNum: Optional[int] = Field(
+        default=None,
+        ge=1,
+        strict=True,
+        description="Số trang template (1-based); bỏ trống để áp dụng mọi trang.",
+    )
     x: float
     y: float
     width: float
@@ -80,10 +88,36 @@ class VdpField(BaseModel):
     conditions: Optional[List[VdpFieldCondition]] = None  # điều kiện ẩn/hiện (Req 2.1, 2.2)
     rules: Optional[List[VdpRule]] = None                 # bảng rule first-match (Req 2.5, 2.6)
 
+
+def validate_vdp_field_contract(fields: List[VdpField]) -> None:
+    """VDP (audit 2026-10-01 §VDP.S12): kiểm tra field trước khi chạy worker.
+
+    ``id`` được dùng làm khóa theo dõi field đã được PDFium xử lý. Hai field
+    trùng khóa có thể làm field thứ hai bị bỏ qua âm thầm, nên engine phải
+    dừng trước khi sinh artifact thay vì đoán field nào thắng.
+    """
+    seen: Dict[str, int] = {}
+    for index, field in enumerate(fields):
+        field_id = field.id
+        if not isinstance(field_id, str) or not field_id.strip():
+            raise ValueError(f"VDP field id không hợp lệ tại vị trí {index}")
+        if field_id in seen:
+            raise ValueError(
+                f"VDP field id bị trùng: {field_id!r} "
+                f"(vị trí {seen[field_id]} và {index})"
+            )
+        seen[field_id] = index
+
+
 class VdpRequest(BaseModel):
     file_id: str
     fields: List[VdpField]
     data: List[Dict[str, str]]
+
+    @model_validator(mode="after")
+    def validate_fields(self) -> "VdpRequest":
+        validate_vdp_field_contract(self.fields)
+        return self
 
 
 # ── Response contract ────────────────────────────────────────────────────────

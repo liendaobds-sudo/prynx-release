@@ -2675,7 +2675,9 @@
   },
 
   "imposition.gridPreview": {
-
+    "trang": "Page",
+    "trang_sau": "Next page",
+    "trang_truoc": "Previous page",
     "bo_cuc_va_so_lan_in": "Layout {{n}}/{{total}} · Print {{runs}} sheets",
 
     "tong_hop_don_hang": "{{layouts}} layouts · {{placed}}/{{requested}} labels placed",
@@ -2771,6 +2773,12 @@
   },
 
   "imposition.gridSettings": {
+
+    "tu_lap_day": "Auto-fill",
+
+    "bat_tu_lap_day_tooltip": "Click to automatically replicate and fill the entire sheet.",
+
+    "tat_tu_lap_day_tooltip": "Auto-filling sheet. Click to switch to quantity-based imposition (Blank = one copy per design).",
 
     "nhap_sl_moi_loai": "Blank = one copy per design",
 
@@ -5567,7 +5575,7 @@
   },
 
   "misc.livePageFrame": {
-
+    "live_format_unsupported": "LIVE does not support {{format}} format yet. Please inspect exported PDF.",
     "anh": "image",
 
     "anh_xa": "mapping",
@@ -7323,7 +7331,7 @@
   },
 
   "preprocess.dataMerge": {
-
+    "khong_doc_duoc_ban_ghi_xem_truoc": "Unable to read the preview record.",
     "1_chon_cot": "1. Choose column",
 
     "1_dong_1_trang": "1 row → 1 page",
@@ -13023,11 +13031,9 @@
   },
 
   "workspace.vdpRecordNavigator": {
-
+    "record_preview_unavailable": "Preview unavailable",
     "live_data_on": "👁️ Live data: ON",
-
     "preview_off": "👁️ Preview: OFF"
-
   }
 
 }

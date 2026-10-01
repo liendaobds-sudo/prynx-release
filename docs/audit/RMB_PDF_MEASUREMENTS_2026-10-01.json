@@ -1,0 +1,78 @@
+{
+  "RMB_SINGLE_PROBE_2026-10-01": {
+    "pageMm": [
+      613.9999855555556,
+      483.00001472222226
+    ],
+    "pathBoundsMm": [
+      2.0,
+      17.0,
+      597.0,
+      466.0
+    ],
+    "boundsBySpaceMm": {
+      "/CSCrease": [
+        65.0,
+        55.0,
+        594.0,
+        321.5
+      ],
+      "/CSCut": [
+        5.0,
+        20.0,
+        594.0,
+        463.0
+      ],
+      "/CSBleed": [
+        2.0,
+        17.0,
+        597.0,
+        466.0
+      ]
+    },
+    "offPagePoints": 0,
+    "pathOperationCounts": {
+      "/CSCrease": 14,
+      "/CSCut": 76,
+      "/CSBleed": 140
+    }
+  },
+  "RMB_NESTING_PROBE_2026-10-01": {
+    "pageMm": [
+      1090.0000072222222,
+      790.0000075
+    ],
+    "pathBoundsMm": [
+      29.0,
+      298.0,
+      1310.0,
+      747.0
+    ],
+    "boundsBySpaceMm": {
+      "/CSCrease": [
+        92.0,
+        442.5,
+        1307.0,
+        709.0
+      ],
+      "/CSCut": [
+        32.0,
+        301.0,
+        1307.0,
+        744.0
+      ],
+      "/CSBleed": [
+        29.0,
+        298.0,
+        1310.0,
+        747.0
+      ]
+    },
+    "offPagePoints": 87,
+    "pathOperationCounts": {
+      "/CSCrease": 42,
+      "/CSCut": 228,
+      "/CSBleed": 420
+    }
+  }
+}

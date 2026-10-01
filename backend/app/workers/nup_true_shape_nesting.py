@@ -141,15 +141,24 @@ def _time_budget_ms(layout_intent: str) -> int:
 def is_true_shape_nesting_requested(settings: Mapping[str, Any]) -> bool:
     """Job có yêu cầu nesting theo đường bế hay không.
 
-    Chỉ đọc `gridStrategy`; không đọc cờ rollout. Tách hai việc để nhánh gọi
-    phân biệt được "người dùng có yêu cầu" với "hệ thống có cho phép", nhờ đó khi
-    cờ tắt vẫn báo được lỗi đúng nguyên nhân.
+    Đọc `gridStrategy` như tín hiệu chính; riêng sticker N-Up bật Tự lấp đầy là
+    contract không tương thích nên token cũ được bỏ qua. Không đọc cờ rollout.
+    Tách hai việc để nhánh gọi phân biệt được "người dùng có yêu cầu" với
+    "hệ thống có cho phép", nhờ đó khi cờ tắt vẫn báo được lỗi đúng nguyên nhân.
     """
 
-    return (
-        str(settings.get("gridStrategy") or "").strip()
-        == TRUE_SHAPE_NESTING_STRATEGY
-    )
+    if str(settings.get("gridStrategy") or "").strip() != TRUE_SHAPE_NESTING_STRATEGY:
+        return False
+
+    # [AUTO-BOTTOM FIX 2026-10-01] N-Up tem bế + Tự lấp đầy dùng contract nhân
+    # bản của lane lưới. Chặn token true-shape cũ còn sót trong profile/payload,
+    # nếu không cờ manual sẽ bypass route_true_shape() và export lệch preview.
+    if bool(settings.get("autoFill") or settings.get("auto_fill")):
+        from app.workers.sticker_nup_policy import is_sticker_nup
+        if is_sticker_nup(settings):
+            return False
+
+    return True
 
 
 def _tool_from_settings(settings: Mapping[str, Any]) -> str:
@@ -301,20 +310,31 @@ def route_true_shape(settings: Mapping[str, Any]) -> bool:
         if str(settings.get("cutType") or "").strip().lower() == "one_dao":
             return False  # 1 Dao = cắt chữ nhật (xem rectangle_inking_is_allowed): tiler cũ
 
+        # [AUTO-BOTTOM FIX 2026-10-01] True-shape không nhận contract nhân bản của
+        # N-Up tem bế. Khi bật Tự lấp đầy, phải đi lane lưới chung để solver dùng
+        # cùng một cơ chế nhân bản đầy tờ (kể cả SL trống và SL cụ thể).
+        from app.workers.sticker_nup_policy import is_sticker_nup
+        if bool(settings.get("autoFill") or settings.get("auto_fill")) and is_sticker_nup(settings):
+            return False
+
         # 1 Tem: Khi chỉ có 1 tem trên 1 tờ hoặc lưới 1x1, không bao giờ cần chạy solver nesting nặng
         try:
-            tq = settings.get("targetQuantity")
-            if tq is not None and int(tq) == 1:
-                return False
-            cols = settings.get("columns")
-            rows = settings.get("rows")
-            if cols is not None and rows is not None and int(cols) == 1 and int(rows) == 1:
-                return False
-            tqbp = settings.get("targetQuantitiesByPage")
-            if isinstance(tqbp, Mapping):
-                pos_vals = [int(v) for v in tqbp.values() if int(v or 0) > 0]
-                if len(pos_vals) == 1 and pos_vals[0] == 1:
+            is_af = bool(settings.get("autoFill") or settings.get("auto_fill"))
+            if not is_af:
+                shapes = settings.get("detectedShapesByPage")
+                page_count = len(shapes) if isinstance(shapes, Mapping) else 1
+                tq = settings.get("targetQuantity")
+                if tq is not None and int(tq) == 1 and page_count <= 1:
                     return False
+                cols = settings.get("columns")
+                rows = settings.get("rows")
+                if cols is not None and rows is not None and int(cols) == 1 and int(rows) == 1:
+                    return False
+                tqbp = settings.get("targetQuantitiesByPage")
+                if isinstance(tqbp, Mapping):
+                    pos_vals = [int(v) for v in tqbp.values() if int(v or 0) > 0]
+                    if len(pos_vals) == 1 and pos_vals[0] == 1 and page_count <= 1:
+                        return False
             # Sức chứa <= 1: Nếu kích thước tem chiếm quá lớn so với tờ giấy, không bao giờ chạy solver nặng
             if _is_item_too_large_for_multiple(settings):
                 return False
@@ -872,12 +892,37 @@ def build_true_shape_nesting_job(
         | _page_index_keys(settings.get("detectedShapesByPage"))
         | _page_index_keys(settings.get("detectedShapeParamsByPage"))
     )
-    quantities = (
-        sticker_order_quantities(declared_pages or set(shapes) or {0}, settings)
-        if is_sticker_nup(settings)
-        else _page_quantities(settings, eligible_pages=cnc_front_pages)
+    raw_tq = int(settings.get("targetQuantity") or 0)
+    raw_tqbp = settings.get("targetQuantitiesByPage") or {}
+    has_page_override_gt_1 = any(int(v or 0) > 1 for v in raw_tqbp.values())
+    has_page_override_gt_0 = any(int(v or 0) > 0 for v in raw_tqbp.values())
+
+    _is_autofill_gang = (
+        bool(settings.get("autoFill") or settings.get("auto_fill"))
+        or (
+            not is_sticker_nup(settings)
+            and settings.get("groupingStrategy") == "maximize_area"
+            and raw_tq <= 0
+            and not has_page_override_gt_0
+        )
     )
-    if tool == "sticker_imposer" and int(settings.get("targetQuantity") or 0) > 0 and not quantities:
+
+    if _is_autofill_gang:
+        # Khi bật Tự lấp đầy: nếu không có SL tường minh > 1 (để trống hoặc 0/1) ⇒ lấp đầy 1 tờ
+        _has_explicit_multisheet = raw_tq > 1 or has_page_override_gt_1
+        if is_sticker_nup(settings) and not _has_explicit_multisheet:
+            quantities = {}
+        elif is_sticker_nup(settings):
+            quantities = sticker_order_quantities(declared_pages or set(shapes) or {0}, settings)
+        else:
+            quantities = _page_quantities(settings, eligible_pages=cnc_front_pages)
+    else:
+        # Khi tắt Tự lấp đầy:
+        if is_sticker_nup(settings):
+            quantities = sticker_order_quantities(declared_pages or set(shapes) or {0}, settings)
+        else:
+            quantities = _page_quantities(settings, eligible_pages=cnc_front_pages)
+    if not _is_autofill_gang and tool == "sticker_imposer" and int(settings.get("targetQuantity") or 0) > 0 and not quantities:
         raise ValueError(
             "Không có mẫu nào có số lượng cần giao. Hãy kiểm tra số lượng riêng từng loại."
         )
@@ -2359,7 +2404,11 @@ def _run_step_repeat_export(
             )
 
         with contextlib.ExitStack() as plan_stack:
-            legacy_plan = None
+            # PERF (audit 2026-10-01 §SR-PARALLEL): Thu thập manifest & đánh giá gate trước,
+            # sau đó render song song các tờ in độc lập trên thread pool.
+            prepared_items: list[dict[str, Any]] = []
+            has_grid = False
+
             for design_index, job in enumerate(jobs):
                 # Hủy sau solve phải chặn trước mọi render/commit còn lại.
                 _raise_if_step_repeat_cancelled(cancel_event)
@@ -2384,7 +2433,6 @@ def _run_step_repeat_export(
 
                 nesting_placed = _manifest_placed_count(manifest)
                 nesting_sheets = _manifest_sheet_count(manifest)
-                total_quantity = _job_total_quantity(job)
                 grid_capacity = 0
                 use_grid = False
                 if not manual_nesting:
@@ -2414,95 +2462,174 @@ def _run_step_repeat_export(
                     use_grid = gate_decision == "grid"
 
                 if use_grid:
-                    if legacy_plan is None:
-                        legacy_settings = {
-                            **settings,
-                            # Chặn auto-route quay lại chính hàm này; kế hoạch bên dưới
-                            # phải là đường legacy đã thắng gate.
-                            "forceLegacyGrid": True,
-                            # FIX (audit 2026-08-31 §S&R-REPORT-QTY): giữ nguyên SL
-                            # global/per-page để report dùng đúng đơn hàng. Chính cờ
-                            # này mới chịu trách nhiệm chỉ materialize một tờ/mẫu.
-                            "exportUniqueSheets": True,
-                        }
-                        legacy_settings.pop(SESSION_REFERENCE_SETTING, None)
-                        legacy_settings.pop(QUALITY_GATE_PROOF_FIELD, None)
-                        legacy_plan = plan_stack.enter_context(
-                            nup_sheet_plan(
-                                source_path,
-                                legacy_settings,
-                                job_id=job_id,
-                            )
-                        )
-                    sheet_indices = [
-                        sheet_index
-                        for sheet_index in range(legacy_plan.total_sheets)
-                        if legacy_plan.source_page_for_sheet(sheet_index) == page_index
-                    ]
+                    has_grid = True
+
+                prepared_items.append({
+                    "design_index": design_index,
+                    "job": job,
+                    "page_index": page_index,
+                    "use_grid": use_grid,
+                    "grid_capacity": grid_capacity,
+                    "nesting_placed": nesting_placed,
+                    "nesting_sheets": nesting_sheets,
+                    "stored": stored,
+                    "session": session,
+                })
+
+            legacy_plan = None
+            page_to_sheet_indices: dict[int, list[int]] = {}
+            if has_grid:
+                legacy_settings = {
+                    **settings,
+                    # Chặn auto-route quay lại chính hàm này; kế hoạch bên dưới
+                    # phải là đường legacy đã thắng gate.
+                    "forceLegacyGrid": True,
+                    # FIX (audit 2026-08-31 §S&R-REPORT-QTY): giữ nguyên SL
+                    # global/per-page để report dùng đúng đơn hàng. Chính cờ
+                    # này mới chịu trách nhiệm chỉ materialize một tờ/mẫu.
+                    "exportUniqueSheets": True,
+                }
+                legacy_settings.pop(SESSION_REFERENCE_SETTING, None)
+                legacy_settings.pop(QUALITY_GATE_PROOF_FIELD, None)
+                legacy_plan = plan_stack.enter_context(
+                    nup_sheet_plan(
+                        source_path,
+                        legacy_settings,
+                        job_id=job_id,
+                    )
+                )
+                for sheet_index in range(legacy_plan.total_sheets):
+                    src_page = legacy_plan.source_page_for_sheet(sheet_index)
+                    if src_page is not None:
+                        page_to_sheet_indices.setdefault(src_page, []).append(sheet_index)
+
+            # PERF (audit 2026-10-01 §SR-PARALLEL): Máy yếu mới giảm, máy mạnh full công suất (RULE 1).
+            # Render song song các tờ in S&R độc lập thay vì chạy vòng lặp tuần tự.
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            import threading
+            from app.core.system_memory import plan_worker_count
+
+            max_workers, _worker_reason = plan_worker_count(
+                kind="nup_sr_render",
+                per_worker_mb=512.0,
+                env_override="PRYNX_NUP_WORKERS",
+            )
+            render_workers = max(1, min(max_workers, len(jobs)))
+            logger.info(
+                "[NEST-S&R-RENDER] render_workers=%d (%s) cho %d mẫu",
+                render_workers, _worker_reason, len(jobs),
+            )
+
+            progress_lock = threading.Lock()
+            commit_lock = threading.Lock()
+            completed_count = 0
+
+            def render_one_item(item: dict[str, Any]) -> dict[str, Any]:
+                _raise_if_step_repeat_cancelled(cancel_event)
+                d_idx = item["design_index"]
+                p_idx = item["page_index"]
+                j = item["job"]
+
+                if item["use_grid"]:
+                    sheet_indices = page_to_sheet_indices.get(p_idx, [])
                     if len(sheet_indices) != 1:
                         raise ValueError(
                             "Bình trang phải có đúng một tờ lưới đại diện cho "
-                            f"trang {page_index + 1}, nhận {len(sheet_indices)}."
+                            f"trang {p_idx + 1}, nhận {len(sheet_indices)}."
                         )
-                    temp_path = os.path.join(
+                    t_path = os.path.join(
                         temp_dir,
-                        f"design_{design_index:04d}_grid.pdf",
+                        f"design_{d_idx:04d}_grid.pdf",
                     )
                     _raise_if_step_repeat_cancelled(cancel_event)
+                    assert legacy_plan is not None
                     render_nup_sheet(
                         legacy_plan,
                         sheet_indices[0],
-                        temp_path,
+                        t_path,
                         include_report=True,
                     )
                     _raise_if_step_repeat_cancelled(cancel_event)
-                    temp_paths.append(temp_path)
-                    selected_placed = grid_capacity
-                    selected_sheets = 1
-                    selected_strategy = "lưới"
+                    sel_placed = item["grid_capacity"]
+                    sel_sheets = 1
+                    sel_strategy = "lưới"
                 else:
-                    temp_path = os.path.join(
-                        temp_dir, f"design_{design_index:04d}_nesting.pdf"
+                    t_path = os.path.join(
+                        temp_dir, f"design_{d_idx:04d}_nesting.pdf"
                     )
                     _raise_if_step_repeat_cancelled(cancel_event)
-                    if stored is not None:
+                    st = item["stored"]
+                    ss = item["session"]
+                    if st is not None:
                         render_stored_production_nesting(
-                            stored,
-                            output_path=temp_path,
-                            report_override=_report_override_for_job(job),
+                            st,
+                            output_path=t_path,
+                            report_override=_report_override_for_job(j),
                         )
                     else:
                         render_production_nesting_session(
-                            session,
-                            output_path=temp_path,
-                            report_override=_report_override_for_job(job),
+                            ss,
+                            output_path=t_path,
+                            report_override=_report_override_for_job(j),
                         )
-                        # Commit chỉ sau khi artifact nesting đã đóng thành công và
-                        # job cha vẫn chưa hủy.
                         _raise_if_step_repeat_cancelled(cancel_event)
-                        commit_production_nesting_session(session, store=store)
+                        with commit_lock:
+                            commit_production_nesting_session(ss, store=store)
                     _raise_if_step_repeat_cancelled(cancel_event)
-                    temp_paths.append(temp_path)
-                    selected_placed = nesting_placed
-                    selected_sheets = nesting_sheets
-                    selected_strategy = "theo đường bế"
+                    sel_placed = item["nesting_placed"]
+                    sel_sheets = item["nesting_sheets"]
+                    sel_strategy = "theo đường bế"
 
-                designs.append(
-                    (page_index, int(selected_placed), int(selected_sheets))
-                )
                 logger.debug(
                     "[NEST-GATE] export S&R mẫu %d/%d (trang %d): "
                     "lưới=%d nesting=%d ⇒ %s",
-                    design_index + 1,
+                    d_idx + 1,
                     len(jobs),
-                    page_index + 1,
-                    grid_capacity,
-                    nesting_placed,
-                    selected_strategy,
+                    p_idx + 1,
+                    item["grid_capacity"],
+                    item["nesting_placed"],
+                    sel_strategy,
                 )
-                _write_step_repeat_progress(
-                    job_id, design_index + 1, len(jobs)
-                )
+
+                nonlocal completed_count
+                with progress_lock:
+                    completed_count += 1
+                    _write_step_repeat_progress(
+                        job_id, completed_count, len(jobs)
+                    )
+
+                return {
+                    "design_index": d_idx,
+                    "page_index": p_idx,
+                    "temp_path": t_path,
+                    "selected_placed": sel_placed,
+                    "selected_sheets": sel_sheets,
+                }
+
+            rendered_results: list[dict[str, Any]] = [None] * len(jobs)  # type: ignore
+
+            if render_workers <= 1 or len(jobs) <= 1:
+                for it in prepared_items:
+                    res = render_one_item(it)
+                    rendered_results[res["design_index"]] = res
+            else:
+                with ThreadPoolExecutor(
+                    max_workers=render_workers,
+                    thread_name_prefix="prynx-sr-render",
+                ) as render_executor:
+                    future_to_item = {
+                        render_executor.submit(render_one_item, it): it
+                        for it in prepared_items
+                    }
+                    for fut in as_completed(future_to_item):
+                        res = fut.result()
+                        rendered_results[res["design_index"]] = res
+
+            temp_paths = [r["temp_path"] for r in rendered_results]
+            designs = [
+                (r["page_index"], int(r["selected_placed"]), int(r["selected_sheets"]))
+                for r in rendered_results
+            ]
 
         _raise_if_step_repeat_cancelled(cancel_event)
         _concat_pdf_pages(temp_paths, output_path)

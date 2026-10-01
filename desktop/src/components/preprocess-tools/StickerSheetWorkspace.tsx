@@ -15,7 +15,10 @@ import {
     decodeLabelRgb,
     type StickerMaskWorkerResponse,
 } from '../../workers/stickerMaskProtocol';
-import { useStickerSheetStore, type NormalizedMaskPoint } from './stickerSheetStore';
+import {
+    useStickerSheetStore,
+    type NormalizedMaskPoint,
+} from './stickerSheetStore';
 
 
 interface Props {
@@ -113,11 +116,270 @@ function buildSvgRoundedRect(
     ].join(' ');
 }
 
-function buildThrucutSvgPath(
+type SvgPoint = { x: number; y: number };
+
+const SVG_NUMBER_RE = /[a-zA-Z]|[-+]?(?:\d*\.\d+|\d+\.?)(?:[eE][-+]?\d+)?/g;
+
+function sameSvgPoint(a: SvgPoint, b: SvgPoint): boolean {
+    return Math.abs(a.x - b.x) < 1e-4 && Math.abs(a.y - b.y) < 1e-4;
+}
+
+function appendSvgPoint(points: SvgPoint[], point: SvgPoint): void {
+    if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
+    if (points.length === 0 || !sameSvgPoint(points[points.length - 1], point)) {
+        points.push(point);
+    }
+}
+
+function flattenCubic(
+    points: SvgPoint[],
+    p0: SvgPoint,
+    p1: SvgPoint,
+    p2: SvgPoint,
+    p3: SvgPoint,
+    steps = 10,
+): void {
+    for (let step = 1; step <= steps; step += 1) {
+        const t = step / steps;
+        const mt = 1 - t;
+        appendSvgPoint(points, {
+            x: mt ** 3 * p0.x + 3 * mt ** 2 * t * p1.x + 3 * mt * t ** 2 * p2.x + t ** 3 * p3.x,
+            y: mt ** 3 * p0.y + 3 * mt ** 2 * t * p1.y + 3 * mt * t ** 2 * p2.y + t ** 3 * p3.y,
+        });
+    }
+}
+
+function flattenQuadratic(
+    points: SvgPoint[],
+    p0: SvgPoint,
+    p1: SvgPoint,
+    p2: SvgPoint,
+    steps = 8,
+): void {
+    for (let step = 1; step <= steps; step += 1) {
+        const t = step / steps;
+        const mt = 1 - t;
+        appendSvgPoint(points, {
+            x: mt ** 2 * p0.x + 2 * mt * t * p1.x + t ** 2 * p2.x,
+            y: mt ** 2 * p0.y + 2 * mt * t * p1.y + t ** 2 * p2.y,
+        });
+    }
+}
+
+/**
+ * Hạ Bézier preview xuống polyline để dựng dao ngoài theo contour thật.
+ * Backend dùng buffer contour, nên bounding box không đủ cho hình lõm/chữ L.
+ */
+function flattenSvgPath(d: string): SvgPoint[][] {
+    const tokens = d.match(SVG_NUMBER_RE) ?? [];
+    const polylines: SvgPoint[][] = [];
+    const argsPerCommand: Record<string, number> = { M: 2, L: 2, H: 1, V: 1, C: 6, S: 4, Q: 4, T: 2, A: 7 };
+    let cursor = 0;
+    let command = '';
+    let current: SvgPoint = { x: 0, y: 0 };
+    let subpathStart: SvgPoint = { x: 0, y: 0 };
+    let previousCubicControl: SvgPoint | null = null;
+    let previousQuadraticControl: SvgPoint | null = null;
+    let points: SvgPoint[] = [];
+
+    const finishSubpath = () => {
+        if (points.length >= 3) {
+            if (!sameSvgPoint(points[0], points[points.length - 1])) points.push({ ...points[0] });
+            polylines.push(points);
+        }
+        points = [];
+        previousCubicControl = null;
+        previousQuadraticControl = null;
+    };
+    const readNumbers = (count: number): number[] | null => {
+        if (cursor + count > tokens.length) return null;
+        const values = tokens.slice(cursor, cursor + count);
+        if (values.some(value => /^[a-zA-Z]$/.test(value))) return null;
+        const numbers = values.map(Number);
+        if (numbers.some(value => !Number.isFinite(value))) return null;
+        cursor += count;
+        return numbers;
+    };
+    const point = (x: number, y: number, relative: boolean): SvgPoint => ({
+        x: relative ? current.x + x : x,
+        y: relative ? current.y + y : y,
+    });
+
+    while (cursor < tokens.length) {
+        const token = tokens[cursor];
+        if (/^[a-zA-Z]$/.test(token)) {
+            command = token;
+            cursor += 1;
+            if (command === 'Z' || command === 'z') {
+                appendSvgPoint(points, subpathStart);
+                current = { ...subpathStart };
+                finishSubpath();
+                command = '';
+            }
+        } else if (!command) {
+            cursor += 1;
+            continue;
+        }
+
+        if (!command) continue;
+        const upper = command.toUpperCase();
+        const relative = command !== upper;
+        const arity = argsPerCommand[upper];
+        if (!arity) {
+            command = '';
+            continue;
+        }
+        const values = readNumbers(arity);
+        if (!values) {
+            command = '';
+            continue;
+        }
+
+        if (upper === 'M') {
+            const next = point(values[0], values[1], relative);
+            if (points.length > 0) finishSubpath();
+            current = next;
+            subpathStart = next;
+            appendSvgPoint(points, current);
+            command = relative ? 'l' : 'L';
+        } else if (upper === 'L') {
+            current = point(values[0], values[1], relative);
+            appendSvgPoint(points, current);
+            previousCubicControl = null;
+            previousQuadraticControl = null;
+        } else if (upper === 'H') {
+            current = { x: relative ? current.x + values[0] : values[0], y: current.y };
+            appendSvgPoint(points, current);
+            previousCubicControl = null;
+            previousQuadraticControl = null;
+        } else if (upper === 'V') {
+            current = { x: current.x, y: relative ? current.y + values[0] : values[0] };
+            appendSvgPoint(points, current);
+            previousCubicControl = null;
+            previousQuadraticControl = null;
+        } else if (upper === 'C') {
+            const p1 = point(values[0], values[1], relative);
+            const p2 = point(values[2], values[3], relative);
+            const end = point(values[4], values[5], relative);
+            flattenCubic(points, current, p1, p2, end);
+            current = end;
+            previousCubicControl = p2;
+            previousQuadraticControl = null;
+        } else if (upper === 'S') {
+            const p1 = previousCubicControl
+                ? { x: 2 * current.x - previousCubicControl.x, y: 2 * current.y - previousCubicControl.y }
+                : { ...current };
+            const p2 = point(values[0], values[1], relative);
+            const end = point(values[2], values[3], relative);
+            flattenCubic(points, current, p1, p2, end);
+            current = end;
+            previousCubicControl = p2;
+            previousQuadraticControl = null;
+        } else if (upper === 'Q') {
+            const control: SvgPoint = point(values[0], values[1], relative);
+            const end = point(values[2], values[3], relative);
+            flattenQuadratic(points, current, control, end);
+            current = end;
+            previousQuadraticControl = control;
+            previousCubicControl = null;
+        } else if (upper === 'T') {
+            const control: SvgPoint = previousQuadraticControl
+                ? { x: 2 * current.x - previousQuadraticControl.x, y: 2 * current.y - previousQuadraticControl.y }
+                : { ...current };
+            const end = point(values[0], values[1], relative);
+            flattenQuadratic(points, current, control, end);
+            current = end;
+            previousQuadraticControl = control;
+            previousCubicControl = null;
+        } else if (upper === 'A') {
+            // Các path preview hiện tại dùng Bézier; với cung SVG lạ, giữ endpoint
+            // để contour vẫn đóng và không quay về bbox tổng của trang.
+            current = point(values[5], values[6], relative);
+            appendSvgPoint(points, current);
+            previousCubicControl = null;
+            previousQuadraticControl = null;
+        }
+    }
+    if (points.length > 0) finishSubpath();
+    return polylines;
+}
+
+function polygonSignedArea(points: SvgPoint[]): number {
+    let area = 0;
+    for (let index = 0; index < points.length - 1; index += 1) {
+        area += points[index].x * points[index + 1].y - points[index + 1].x * points[index].y;
+    }
+    return area / 2;
+}
+
+function buildContourOffsetPath(points: SvgPoint[], distance: number): string | null {
+    const closed = points.length > 1 && sameSvgPoint(points[0], points[points.length - 1])
+        ? points.slice(0, -1)
+        : points.slice();
+    if (closed.length < 3 || !Number.isFinite(distance) || distance <= 0) return null;
+    const areaSign = polygonSignedArea([...closed, closed[0]]) >= 0 ? 1 : -1;
+    const offsetPoint = (from: SvgPoint, to: SvgPoint): SvgPoint => {
+        const dx = to.x - from.x;
+        const dy = to.y - from.y;
+        const length = Math.hypot(dx, dy) || 1;
+        return { x: areaSign * dy / length * distance, y: -areaSign * dx / length * distance };
+    };
+    const result: SvgPoint[] = [];
+    for (let index = 0; index < closed.length; index += 1) {
+        const previous = closed[(index + closed.length - 1) % closed.length];
+        const current = closed[index];
+        const next = closed[(index + 1) % closed.length];
+        const previousNormal = offsetPoint(previous, current);
+        const nextNormal = offsetPoint(current, next);
+        const currentPreviousOffset: SvgPoint = {
+            x: current.x + previousNormal.x,
+            y: current.y + previousNormal.y,
+        };
+        const currentNextOffset: SvgPoint = {
+            x: current.x + nextNormal.x,
+            y: current.y + nextNormal.y,
+        };
+        const cross = (current.x - previous.x) * (next.y - current.y)
+            - (current.y - previous.y) * (next.x - current.x);
+        const startAngle = Math.atan2(currentPreviousOffset.y - current.y, currentPreviousOffset.x - current.x);
+        const endAngle = Math.atan2(currentNextOffset.y - current.y, currentNextOffset.x - current.x);
+        if (Math.abs(cross) < 1e-6) {
+            appendSvgPoint(result, currentNextOffset);
+            continue;
+        }
+        let delta = endAngle - startAngle;
+        const sweepDirection = areaSign * (cross >= 0 ? 1 : -1);
+        if (sweepDirection > 0) {
+            while (delta < 0) delta += Math.PI * 2;
+        } else {
+            while (delta > 0) delta -= Math.PI * 2;
+        }
+        if (Math.abs(delta) > Math.PI) delta = sweepDirection * Math.PI;
+        const steps = Math.max(1, Math.ceil(Math.abs(delta) / (Math.PI / 12)));
+        for (let step = 0; step <= steps; step += 1) {
+            const angle = startAngle + delta * (step / steps);
+            appendSvgPoint(result, {
+                x: current.x + Math.cos(angle) * distance,
+                y: current.y + Math.sin(angle) * distance,
+            });
+        }
+    }
+    if (result.length < 3) return null;
+    appendSvgPoint(result, result[0]);
+    return `M ${result.map(point => `${point.x.toFixed(2)} ${point.y.toFixed(2)}`).join(' L ')} Z`;
+}
+
+export function buildThrucutSvgPath(
     preview: StickerCutlinePreview,
     thrucut: ClassicCutlineThrucutPreviewConfig,
 ): string | null {
     if (!thrucut.enabled || !preview.paths || preview.paths.length === 0) return null;
+    // Ưu tiên quỹ đạo backend dựng từ cùng geometry với export để WYSIWYG.
+    // Fallback bên dưới giữ tương thích với API cũ chưa trả trường này.
+    const canonical = preview.paths
+        .map(path => path.thrucut_d)
+        .filter((path): path is string => Boolean(path && path.trim()));
+    if (canonical.length > 0) return canonical.join(' ');
     const bbox = computePathsBoundingBox(preview.paths);
     const box = bbox || {
         minX: 0,
@@ -150,6 +412,22 @@ function buildThrucutSvgPath(
     const radius = thrucut.radiusPx !== undefined
         ? thrucut.radiusPx
         : thrucut.radiusMm * scaleMmToPx;
+
+    if (thrucut.shape === 'contour_offset') {
+        // QUALITY (audit 2026-10-01 §BLEED.CUT.PREVIEW-STROKE): PDF dùng
+        // ``cut_poly.buffer(margin)`` theo contour thật. Không dựng rounded
+        // bounding-box ở đây vì sẽ xoá các góc lõm của tem chữ L/đa giác.
+        const margin = Math.max(0, defaultMarginPx);
+        if (margin <= 0.05) {
+            return preview.paths.map(path => path.d).filter(Boolean).join(' ');
+        }
+        const offsetPaths = preview.paths.flatMap(path => (
+            flattenSvgPath(path.d)
+                .map(polyline => buildContourOffsetPath(polyline, margin))
+                .filter((pathData): pathData is string => Boolean(pathData))
+        ));
+        return offsetPaths.length > 0 ? offsetPaths.join(' ') : null;
+    }
 
     const x0 = box.minX - mLeft;
     const y0 = box.minY - mTop;
@@ -244,16 +522,27 @@ export function StickerCutlineOverlay({
     selectedInstanceId,
     displayZoom = 1,
     thrucut,
+    pageWidthMm,
+    cornerStyle = 'round',
     showDimensions = true,
 }: {
     preview: StickerCutlinePreview;
     selectedInstanceId: number | null;
     displayZoom?: number;
     thrucut?: ClassicCutlineThrucutPreviewConfig | null;
+    /** Khổ trang vật lý để badge local page-box không mặc định sai 100 mm. */
+    pageWidthMm?: number;
+    /** Kiểu góc của CutContour; mặc định round cho preview AI nhiều tem. */
+    cornerStyle?: 'preserve' | 'round' | 'miter';
     showDimensions?: boolean;
 }) {
     const thrucutPath = thrucut?.enabled ? buildThrucutSvgPath(preview, thrucut) : null;
-    const boundingBoxes = useMemo(() => resolveCutlineBoundingBoxes(preview), [preview]);
+    const boundingBoxes = useMemo(
+        () => resolveCutlineBoundingBoxes(preview, pageWidthMm),
+        [pageWidthMm, preview],
+    );
+    const strokeLinecap = cornerStyle === 'round' ? 'round' : 'butt';
+    const strokeLinejoin = cornerStyle === 'round' ? 'round' : 'miter';
 
     return (
         <>
@@ -275,8 +564,8 @@ export function StickerCutlineOverlay({
                             fill="none"
                             stroke={selected ? '#d946ef' : '#7c3aed'}
                             strokeWidth={resolveStickerCutlineStrokeWidth(displayZoom)}
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
+                            strokeLinecap={strokeLinecap}
+                            strokeLinejoin={strokeLinejoin}
                             vectorEffect="non-scaling-stroke"
                         />
                     );
@@ -973,6 +1262,41 @@ export default function StickerSheetWorkspace({
         && state.cutlinePreview.preview_height_px === manifest.preview_height_px
     ) ? state.cutlinePreview : null;
     const hidePixelBoundary = Boolean(cutlinePreview || state.isCutlinePreviewing);
+    const previewPageWidthMm = state.inspection?.physical_width_mm
+        || (state.inspection?.dpi?.[0] && state.inspection.source_width_px
+            ? state.inspection.source_width_px * 25.4 / state.inspection.dpi[0]
+            : undefined);
+    const previewPxPerMm = previewPageWidthMm && previewPageWidthMm > 0
+        ? manifest.preview_width_px / previewPageWidthMm
+        : 1;
+    const thrucutPreview: ClassicCutlineThrucutPreviewConfig | null = state.outputSettings.thrucutEnabled
+        ? {
+            enabled: true,
+            shape: state.outputSettings.thrucutShape,
+            marginMm: state.outputSettings.thrucutMarginMm,
+            marginTopMm: state.outputSettings.thrucutMarginLinked
+                ? state.outputSettings.thrucutMarginMm : state.outputSettings.thrucutMarginTopMm,
+            marginBottomMm: state.outputSettings.thrucutMarginLinked
+                ? state.outputSettings.thrucutMarginMm : state.outputSettings.thrucutMarginBottomMm,
+            marginLeftMm: state.outputSettings.thrucutMarginLinked
+                ? state.outputSettings.thrucutMarginMm : state.outputSettings.thrucutMarginLeftMm,
+            marginRightMm: state.outputSettings.thrucutMarginLinked
+                ? state.outputSettings.thrucutMarginMm : state.outputSettings.thrucutMarginRightMm,
+            radiusMm: state.outputSettings.thrucutRadiusMm,
+            color: state.outputSettings.thrucutColorHex,
+            spotName: state.outputSettings.thrucutSpotName,
+            marginPx: state.outputSettings.thrucutMarginMm * previewPxPerMm,
+            marginTopPx: (state.outputSettings.thrucutMarginLinked
+                ? state.outputSettings.thrucutMarginMm : state.outputSettings.thrucutMarginTopMm) * previewPxPerMm,
+            marginBottomPx: (state.outputSettings.thrucutMarginLinked
+                ? state.outputSettings.thrucutMarginMm : state.outputSettings.thrucutMarginBottomMm) * previewPxPerMm,
+            marginLeftPx: (state.outputSettings.thrucutMarginLinked
+                ? state.outputSettings.thrucutMarginMm : state.outputSettings.thrucutMarginLeftMm) * previewPxPerMm,
+            marginRightPx: (state.outputSettings.thrucutMarginLinked
+                ? state.outputSettings.thrucutMarginMm : state.outputSettings.thrucutMarginRightMm) * previewPxPerMm,
+            radiusPx: state.outputSettings.thrucutRadiusMm * previewPxPerMm,
+        }
+        : null;
     const editCursorClass = brushToolActive && canEditMask && isActive
         ? 'cursor-none'
         : 'cursor-crosshair';
@@ -1003,6 +1327,8 @@ export default function StickerSheetWorkspace({
                         preview={cutlinePreview}
                         selectedInstanceId={state.selectedInstanceId}
                         displayZoom={cutlineDisplayZoom}
+                        thrucut={thrucutPreview}
+                        pageWidthMm={previewPageWidthMm}
                     />
                 ) : null}
                 <canvas
@@ -1089,6 +1415,8 @@ export default function StickerSheetWorkspace({
                                 preview={cutlinePreview}
                                 selectedInstanceId={state.selectedInstanceId}
                                 displayZoom={cutlineDisplayZoom ?? zoom}
+                                thrucut={thrucutPreview}
+                                pageWidthMm={previewPageWidthMm}
                             />
                         ) : null}
                         <canvas

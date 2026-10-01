@@ -120,11 +120,18 @@ export const createWorkspaceSlice: ImposerSlice<WorkspaceSlice> = (set, get) => 
                 for (const k of ALGO_PROFILE_KEYS) {
                     if (restored[k] !== undefined) updates[k] = restored[k];
                 }
+                // [AUTO-FILL PROFILE] Profile cũ tạo trước khi có Tự lấp đầy không có key này;
+                // coi như tắt thay vì giữ cờ của công cụ vừa rời đi.
+                if (restored.autoFill === undefined) updates.autoFill = false;
                 if (updates.taskMode !== undefined) {
                     updates.taskMode = normalizeProfileTaskMode(updates.taskMode, nextTool);
                 }
             } else {
                 // Chưa có profile tool mới → mặc định theo loại, KHÔNG kế thừa taskMode tool cũ
+                // [AUTO-FILL PROFILE] Cờ AutoFill thuộc thuật toán từng công cụ;
+                // profile mới phải tắt để
+                // không mang lựa chọn từ công cụ trước sang (rồi snapshot khi rời đi).
+                updates.autoFill = false;
                 if (nextTool === 'sticker_imposer') {
                     // M72.C: đơn hàng mới cần SL rõ ràng, không ngầm ép mọi mẫu lên một tờ.
                     Object.assign(updates, {
@@ -181,6 +188,9 @@ export const createWorkspaceSlice: ImposerSlice<WorkspaceSlice> = (set, get) => 
         }
         const next = normalizeProfileTaskMode(source, tool) as TaskMode;
         const rememberedUnit = state.toolProfiles[tool]?.impositionUnit;
+        // Profile cũ lưu Record<string, unknown>; chỉ nhận đúng boolean để
+        // không đưa null/giá trị lạ vào state typed của Zustand.
+        const rememberedAutoFill = state.toolProfiles[tool]?.autoFill === true;
         // Profile/preset cũ thiếu key luôn mở ở hành vi cũ an toàn: Từng tem.
         const nextUnit = tool === 'sticker_imposer' && rememberedUnit === 'page_sheet'
             ? 'page_sheet'
@@ -201,6 +211,7 @@ export const createWorkspaceSlice: ImposerSlice<WorkspaceSlice> = (set, get) => 
             : {};
         set((s) => ({
             ...productionDefaults,
+            autoFill: rememberedAutoFill,
             taskMode: next,
             impositionUnit: nextUnit,
             layoutType: nextLayoutType,
@@ -209,6 +220,7 @@ export const createWorkspaceSlice: ImposerSlice<WorkspaceSlice> = (set, get) => 
                 [tool]: {
                     ...(s.toolProfiles[tool] || {}),
                     ...productionDefaults,
+                    autoFill: rememberedAutoFill,
                     taskMode: next,
                     impositionUnit: nextUnit,
                     layoutType: nextLayoutType,

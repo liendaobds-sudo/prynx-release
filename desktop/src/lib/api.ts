@@ -962,7 +962,15 @@ export async function pollVdpJob(jobId: string, onProgress: (msg: string, info?:
           const artifactLease = typeof status.artifact_lease === 'string'
               ? status.artifact_lease
               : null;
-          if (skipDownload) {
+          // Publish có thể chạy song song với poll. Chỉ hoàn tất sau khi cả
+          // path và lease xuất hiện; không tạo tab từ payload nửa chừng.
+          if (!resultPath || !artifactLease) {
+              onProgress(i18nT('lib.api:vdp_dang_dong_goi', 'Đang đóng gói file PDF...'), { stage: 'saving' });
+              await new Promise(r => setTimeout(r, 500));
+              continue;
+          }
+          const nativeRuntime = typeof window !== 'undefined' && !!window.__TAURI_INTERNALS__;
+          if (skipDownload && nativeRuntime) {
               onProgress(i18nT('lib.api:vdp_hoan_tat', 'Hoàn tất tạo file!'), { stage: 'done' }); // UIUX §D-16
               // Return a tiny dummy blob just so the File constructor doesn't fail, 
               // and the absolute path so useTileRenderer can use tile:// native loader.
@@ -1518,6 +1526,8 @@ export async function readVdpDatasource(params: {
   sheet?: string;
   hasHeader?: boolean;
   includeAllRows?: boolean;   // true → backend trả TOÀN BỘ rows (dùng cho generate)
+  recordIndex?: number;       // 1-based → chỉ trả record được chọn trong preview_rows
+  signal?: AbortSignal;
 }): Promise<VdpDatasourceResult> {
   const formData = new FormData();
   formData.append('kind', params.kind);
@@ -1527,10 +1537,12 @@ export async function readVdpDatasource(params: {
   if (params.sheet) formData.append('sheet', params.sheet);
   formData.append('has_header', String(params.hasHeader ?? true));
   if (params.includeAllRows) formData.append('include_all_rows', 'true');
+  if (params.recordIndex !== undefined) formData.append('record_index', String(params.recordIndex));
 
   const res = await authenticatedFetch(`${API_BASE}/api/vdp/datasource`, {
     method: 'POST',
     body: formData,
+    signal: params.signal,
   });
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: 'Lỗi đọc nguồn dữ liệu' }));

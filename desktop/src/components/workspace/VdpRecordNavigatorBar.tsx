@@ -6,6 +6,8 @@ import type { VdpLivePreviewState } from '../../stores/useWorkspaceStore';
 export interface VdpRecordNavigatorBarProps {
     vdpLivePreview?: VdpLivePreviewState | null;
     setVdpLivePreview: (updater: Partial<VdpLivePreviewState> | ((prev: VdpLivePreviewState) => VdpLivePreviewState)) => void;
+    /** Tab sở hữu navigator; khi không truyền sẽ dò từ shell AcrobatViewer. */
+    tabId?: string;
 }
 
 /**
@@ -15,6 +17,7 @@ export interface VdpRecordNavigatorBarProps {
 export const VdpRecordNavigatorBar: React.FC<VdpRecordNavigatorBarProps> = ({
     vdpLivePreview,
     setVdpLivePreview,
+    tabId,
 }) => {
     const { t } = useTranslation();
 
@@ -96,6 +99,15 @@ export const VdpRecordNavigatorBar: React.FC<VdpRecordNavigatorBarProps> = ({
         }));
     }, [setVdpLivePreview]);
 
+    const dispatchIndexChange = useCallback((index: number, source: HTMLElement) => {
+        // LivePageFrame nằm trong shell có data-prynx-tab-id. Dò fallback này
+        // để mọi navigator cũ vẫn phát đúng scope dù caller chưa truyền tabId.
+        const ownerTabId = tabId || source.closest<HTMLElement>('[data-prynx-tab-id]')?.dataset.prynxTabId;
+        window.dispatchEvent(new CustomEvent('vdp-preview-index-change', {
+            detail: { index, tabId: ownerTabId },
+        }));
+    }, [tabId]);
+
     if (!vdpLivePreview || vdpLivePreview.totalRecords <= 0) {
         return null;
     }
@@ -160,7 +172,7 @@ export const VdpRecordNavigatorBar: React.FC<VdpRecordNavigatorBarProps> = ({
                         e.stopPropagation();
                         const next = Math.max(1, vdpLivePreview.recordIndex - 1);
                         setVdpLivePreview((prev: VdpLivePreviewState) => ({ ...prev, recordIndex: next }));
-                        window.dispatchEvent(new CustomEvent('vdp-preview-index-change', { detail: { index: next } }));
+                        dispatchIndexChange(next, e.currentTarget);
                     }}
                     className="h-6 w-6 flex items-center justify-center rounded bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300/80 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-slate-100 transition-colors text-[10px] dark:bg-zinc-800 dark:hover:bg-zinc-700 dark:text-zinc-200 dark:border-zinc-700 dark:disabled:hover:bg-zinc-800 cursor-pointer"
                     title={t('Record trước (phím [)')}
@@ -179,7 +191,7 @@ export const VdpRecordNavigatorBar: React.FC<VdpRecordNavigatorBarProps> = ({
                         onChange={(e) => {
                             const val = Math.max(1, Math.min(vdpLivePreview.totalRecords, Number(e.target.value) || 1));
                             setVdpLivePreview((prev: VdpLivePreviewState) => ({ ...prev, recordIndex: val }));
-                            window.dispatchEvent(new CustomEvent('vdp-preview-index-change', { detail: { index: val } }));
+                            dispatchIndexChange(val, e.currentTarget);
                         }}
                         onClick={(e) => e.stopPropagation()}
                         className="w-12 h-6 text-center bg-white border border-slate-300 rounded text-slate-800 font-bold text-xs focus:outline-none focus:border-teal-500 focus:ring-1 focus:ring-teal-500 dark:bg-zinc-800 dark:border-zinc-600 dark:text-white dark:focus:border-teal-400"
@@ -195,7 +207,7 @@ export const VdpRecordNavigatorBar: React.FC<VdpRecordNavigatorBarProps> = ({
                         e.stopPropagation();
                         const next = Math.min(vdpLivePreview.totalRecords, vdpLivePreview.recordIndex + 1);
                         setVdpLivePreview((prev: VdpLivePreviewState) => ({ ...prev, recordIndex: next }));
-                        window.dispatchEvent(new CustomEvent('vdp-preview-index-change', { detail: { index: next } }));
+                        dispatchIndexChange(next, e.currentTarget);
                     }}
                     className="h-6 w-6 flex items-center justify-center rounded bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300/80 disabled:opacity-30 disabled:cursor-not-allowed disabled:hover:bg-slate-100 transition-colors text-[10px] dark:bg-zinc-800 dark:hover:bg-zinc-700 dark:text-zinc-200 dark:border-zinc-700 dark:disabled:hover:bg-zinc-800 cursor-pointer"
                     title={t('Record sau (phím ])')}
@@ -203,6 +215,16 @@ export const VdpRecordNavigatorBar: React.FC<VdpRecordNavigatorBarProps> = ({
                     ▶
                 </button>
             </div>
+
+            {vdpLivePreview.currentRecord === null && (
+                <span
+                    data-testid="vdp-record-preview-unavailable"
+                    className="text-[10px] text-amber-700 dark:text-amber-300"
+                    title={t('workspace.vdpRecordNavigator:record_preview_unavailable', 'Bản ghi này chưa có trong mẫu xem trước')}
+                >
+                    {t('workspace.vdpRecordNavigator:record_preview_unavailable', 'Chưa có mẫu xem trước')}
+                </span>
+            )}
 
             {vdpLivePreview.sourceTitle && (
                 <span

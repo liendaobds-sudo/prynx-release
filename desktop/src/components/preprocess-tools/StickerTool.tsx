@@ -590,13 +590,27 @@ export default function StickerTool({
         isActive
         && pdfFile
         && canPreviewCutline
+        && !isSuccess
     );
     const resolvePreviewSourceFile = React.useCallback(async () => {
         if (!pdfFile) return null;
         if (preferPdfFile) return pdfFile;
         return (await getWorkingFile.resolveUnprepared()) || pdfFile;
     }, [getWorkingFile, pdfFile, preferPdfFile]);
+    const thrucutPreviewOptions = React.useMemo(() => ({
+        thrucutEnabled,
+        thrucutShape,
+        thrucutMarginMm,
+        thrucutMarginTopMm: thrucutMarginLinked ? thrucutMarginMm : thrucutMarginTopMm,
+        thrucutMarginBottomMm: thrucutMarginLinked ? thrucutMarginMm : thrucutMarginBottomMm,
+        thrucutMarginLeftMm: thrucutMarginLinked ? thrucutMarginMm : thrucutMarginLeftMm,
+        thrucutMarginRightMm: thrucutMarginLinked ? thrucutMarginMm : thrucutMarginRightMm,
+        thrucutRadiusMm,
+    }), [thrucutEnabled, thrucutShape, thrucutMarginMm, thrucutMarginLinked,
+        thrucutMarginTopMm, thrucutMarginBottomMm, thrucutMarginLeftMm,
+        thrucutMarginRightMm, thrucutRadiusMm]);
     const cutlinePreview = useClassicCutlinePreview({
+        thrucut: thrucutPreviewOptions,
         enabled: classicPreviewEnabled,
         resolveSourceFile: resolvePreviewSourceFile,
         documentIdentity: previewDocumentIdentity,
@@ -678,6 +692,7 @@ export default function StickerTool({
             pageInstanceId: previewPageInstanceId,
             documentIdentity: previewDocumentIdentity,
             isUpdating: cutlinePreview.isUpdating,
+            cornerStyle: cornerStyle as 'preserve' | 'round' | 'miter',
             showDimensions,
             thrucut: thrucutEnabled ? {
                 enabled: true,
@@ -704,6 +719,7 @@ export default function StickerTool({
         cutlinePreview.error,
         cutlinePreview.isUpdating,
         cutlinePreview.preview,
+        cornerStyle,
         previewOwnerId,
         previewDocumentIdentity,
         previewPageInstanceId,
@@ -1123,7 +1139,10 @@ export default function StickerTool({
 
     return (
         <div className="flex flex-col gap-4">
-            {showProductTypeSelector && <div
+            {/* UIUX (audit 2026-10-01 §STICKER.POST-EXEC): Sau khi thực thi thành công, ẩn form thiết lập bù xén để tránh chạy lại preview và giao diện tinh gọn */}
+            {!isSuccess && (
+                <>
+                    {showProductTypeSelector && <div
                 role="group"
                 aria-label={tv('Kiểu xử lý bù xén')}
                 className="grid grid-cols-2 gap-1 border-b border-slate-200 pb-1 dark:border-zinc-700 relative z-10"
@@ -2185,6 +2204,9 @@ export default function StickerTool({
                     </span>
                 </div>
             )}
+                </>
+            )}
+
             {warning && (
                 <div
                     role="alert"
@@ -2285,9 +2307,9 @@ export default function StickerTool({
                         onClick={() => {
                             setIsSuccess(false);
                         }}
-                        className="mt-4 w-full text-xs font-bold text-slate-400 hover:text-slate-600 dark:hover:text-zinc-300 py-1 transition-colors"
+                        className="mt-4 w-full py-2 px-3 rounded-lg border border-slate-200 dark:border-zinc-700 text-xs font-bold text-slate-600 hover:bg-slate-50 dark:text-zinc-300 dark:hover:bg-zinc-700/60 transition-colors flex items-center justify-center gap-1.5"
                     >
-                        {t('preprocess.sticker:quay_lai_chinh_sua_bu_xen')}
+                        <span>↺</span> {t('preprocess.sticker:quay_lai_chinh_sua_bu_xen')}
                     </button>
                 </div>
             )}

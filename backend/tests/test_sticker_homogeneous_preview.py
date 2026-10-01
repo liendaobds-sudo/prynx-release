@@ -52,6 +52,7 @@ def test_45_thumbnails_fill_two_28_up_preview_sheets_in_grouped_order(tmp_path):
         is_die_cut=True,
         total_pages=45,
         detected_shapes_by_page={str(i): "CIRCLE_ELLIPSE" for i in range(45)},
+            auto_fill=True,
         detected_shape_params_by_page={
             str(i): ({"inheritedFromPage": 0} if i else {})
             for i in range(45)
@@ -96,6 +97,7 @@ def test_capacity_is_not_confused_with_number_of_source_samples(tmp_path):
         is_die_cut=True,
         total_pages=45,
         detected_shapes_by_page={str(i): "CIRCLE_ELLIPSE" for i in range(45)},
+            auto_fill=True,
         detected_shape_params_by_page={
             str(i): ({"inheritedFromPage": 0} if i else {})
             for i in range(45)
@@ -142,6 +144,7 @@ def test_live_thumbnail_count_can_exceed_physical_preview_pdf(tmp_path):
         is_die_cut=True,
         total_pages=45,
         detected_shapes_by_page={str(i): "CIRCLE_ELLIPSE" for i in range(28)},
+            auto_fill=True,
         detected_shape_params_by_page={
             str(i): ({"inheritedFromPage": 0} if i else {})
             for i in range(28)

@@ -4487,10 +4487,15 @@ def _existing_device_cmyk_output_intent_policy(
         return False, scan, [
             f"[EXISTING_CMYK_OUTPUT_INTENT_AMBIGUOUS] Không đọc được OutputIntent: {exc}"
         ]
-    if intents is None:
-        return False, scan, [
-            "[EXISTING_CMYK_OUTPUT_INTENT_MISSING] File có DeviceCMYK nhưng không có profile nguồn."
-        ]
+    if intents is None or (isinstance(intents, pikepdf.Array) and len(intents) == 0):
+        # COLOR (audit 2026-10-01 §COLOR.UNTAGGED_CMYK): File có DeviceCMYK nhưng không có OutputIntent nguồn
+        # (chuẩn phổ biến của hầu hết file đồ họa/in ấn thực tế xuất từ Corel/AI/Canva).
+        # Giữ nguyên số mực CMYK gốc (Preserve CMYK Numbers) và gắn profile đích thay vì chặn 422.
+        scan.setdefault("warnings", []).append(
+            "File có đối tượng DeviceCMYK nhưng không có OutputIntent nguồn; "
+            "hệ thống giữ nguyên số mực CMYK gốc và gán profile đích."
+        )
+        return False, scan, []
     if not isinstance(intents, pikepdf.Array) or len(intents) != 1:
         return False, scan, [
             "[EXISTING_CMYK_OUTPUT_INTENT_AMBIGUOUS] DeviceCMYK cần đúng một OutputIntent nguồn."
@@ -4697,6 +4702,8 @@ def convert_to_cmyk(
         result["existing_device_cmyk"] = len(
             source_cmyk_scan["occurrences"]
         )
+        if source_cmyk_scan.get("warnings"):
+            result["warnings"].extend(source_cmyk_scan["warnings"])
         if policy_blockers:
             result["supported"] = False
             result["blockers"] = policy_blockers
@@ -4985,6 +4992,10 @@ def convert_to_cmyk(
             result["supported"] = False
             result["blockers"] = list(dict.fromkeys(stats["blockers"]))[:50]
             return result
+        if result["ops"] == 0 and result.get("images", 0) == 0:
+            result["warnings"].append(
+                "Trang này không có đối tượng RGB cần chuyển đổi (đã là CMYK / Gray thuần)."
+            )
         if not preserve_source_output_intent:
             _attach_cmyk_output_intent(pdf, cmyk_profile)
         # COLOR (audit 2026-08-20 §COLOR.04): số ops/images bằng 0 không chứng

@@ -12,6 +12,7 @@ from fastapi import HTTPException
 import pikepdf
 from pydantic import ValidationError
 import pytest
+from PIL import Image
 
 from app.api.routes import pdf_tools, sticker_sheet as routes
 from app.schemas.sticker_sheet import (
@@ -52,6 +53,75 @@ def _path_groups():
         "exterior": [_linear_cubic_segment(a, b) for a, b in zip(points, points[1:] + points[:1])],
         "interiors": [],
     }]
+
+
+def test_sticker_sheet_dual_knife_schema_route_and_worker_contract(tmp_path, monkeypatch):
+    """Bế 2 dao phải đi đủ từ HTTP request xuống StickerEngine."""
+    request = StickerSheetExportRequest(
+        thrucut_enabled=True,
+        thrucut_shape="contour_offset",
+        thrucut_margin_mm=4.0,
+        thrucut_margin_top_mm=2.0,
+        thrucut_margin_bottom_mm=3.0,
+        thrucut_margin_left_mm=4.0,
+        thrucut_margin_right_mm=5.0,
+        thrucut_radius_mm=1.5,
+        thrucut_spot_name="ThruCutSheet",
+        thrucut_color_hex="#22C55E",
+    )
+    assert request.thrucut_enabled is True
+    assert request.thrucut_shape == "contour_offset"
+
+    session = _ready_session(tmp_path, monkeypatch)
+    captured_route = {}
+    output = _minimal_pdf(tmp_path / "result.pdf")
+
+    def export(*_args, **kwargs):
+        captured_route.update(kwargs)
+        return exporter.StickerSheetExportResult(output, "result.pdf", "application/pdf", 1)
+
+    monkeypatch.setattr(routes, "export_sticker_sheet", export)
+    asyncio.run(routes.export_sticker_sheet_endpoint(session.session_id, request))
+    for key in (
+        "thrucut_enabled", "thrucut_shape", "thrucut_margin_mm",
+        "thrucut_margin_top_mm", "thrucut_margin_bottom_mm",
+        "thrucut_margin_left_mm", "thrucut_margin_right_mm",
+        "thrucut_radius_mm", "thrucut_spot_name", "thrucut_color_hex",
+    ):
+        assert captured_route[key] == getattr(request, key)
+
+    source_png = tmp_path / "tem.png"
+    Image.new("RGBA", (8, 8), (255, 0, 0, 255)).save(source_png)
+    captured_engine = {}
+
+    class FakeEngine:
+        def __init__(self, **_kwargs):
+            pass
+
+        def process_pdf(self, **kwargs):
+            captured_engine.update(kwargs)
+            _minimal_pdf(Path(kwargs["output_path"]))
+            return True, {}
+
+    monkeypatch.setattr(exporter, "StickerEngine", FakeEngine)
+    build_dir = tmp_path / "build"
+    build_dir.mkdir()
+    exporter._build_cutline_pdf_from_pngs(
+        [source_png], build_dir, dpi=72, dpi_y=72,
+        offset_mm=0, bleed_mm=0, cut_mode="original", corner_style="preserve",
+        fill_holes=True, crop_to_sticker=True, bleed_color_type="image",
+        solid_bleed_cmyk=(0, 0, 0, 0), shape_mode="contour", draw_cut_contour=False,
+        thrucut_enabled=True, thrucut_shape="contour_offset", thrucut_margin_mm=4.0,
+        thrucut_margin_top_mm=2.0, thrucut_margin_bottom_mm=3.0,
+        thrucut_margin_left_mm=4.0, thrucut_margin_right_mm=5.0,
+        thrucut_radius_mm=1.5, thrucut_spot_name="ThruCutSheet",
+        thrucut_color_hex="#22C55E",
+    )
+    assert captured_engine["thrucut_enabled"] is True
+    assert captured_engine["thrucut_shape"] == "contour_offset"
+    assert captured_engine["thrucut_margin_right_mm"] == 5.0
+    assert captured_engine["thrucut_spot_name"] == "ThruCutSheet"
+    assert captured_engine["thrucut_color_hex"] == "#22C55E"
 
 
 @pytest.mark.parametrize("model", [StickerCutlinePreviewRequest, StickerSheetExportRequest, StickerSheetPageExportRequest])

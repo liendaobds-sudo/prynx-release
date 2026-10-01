@@ -205,4 +205,21 @@ describe('validateParams', () => {
         expect(warnings.some(w => w.includes('W') && w.includes('L'))).toBe(false);
     });
 
+    it('kẹp pocket nam châm vào trong cả vách khay và tai bìa', () => {
+        const { params, warnings, wasClamped } = validateParams(make({
+            boxType: 'rigid_magnetic',
+            D: 10,
+            rigidFlapH: 20,
+            rigidMagnetD: 10,
+            rigidMagnetOffset: 50,
+            rigidMagnetCount: 5,
+        }));
+
+        // Bán kính 5mm, panel ngắn nhất 10mm ⇒ tâm chỉ được cách mép tối đa 5mm.
+        expect(params.rigidMagnetOffset).toBe(5);
+        expect(params.rigidMagnetCount).toBe(2);
+        expect(wasClamped).toBe(true);
+        expect(warnings.some(w => w.includes('pocket'))).toBe(true);
+    });
+
 });

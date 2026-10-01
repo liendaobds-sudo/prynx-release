@@ -592,6 +592,8 @@ body.dt-panel-interacting * {
 /* --- Tab Bar --- */
 .dt-tab-bar {
   display: flex;
+  flex-wrap: wrap;
+  row-gap: 6px;
   align-items: center;
   border-bottom: 1px solid var(--dt-border);
   background: var(--dt-bg-secondary);
@@ -658,6 +660,51 @@ body.dt-panel-interacting * {
   background: var(--dt-bg-tertiary);
   color: var(--dt-text-secondary);
   border-color: var(--dt-border) !important;
+}
+
+/* UIUX (2026-10-01 §DIELINE.OPEN-DESIGN): chọn ứng dụng ngay cạnh nút xuất PDF. */
+.dt-design-open {
+  position: relative;
+  flex-shrink: 0;
+  margin: 4px 0 4px 6px;
+}
+
+.dt-design-open > .dt-export-tab {
+  margin-left: 0;
+  white-space: nowrap;
+}
+
+.dt-design-open-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  min-width: 190px;
+  padding: 4px;
+  border: 1px solid var(--dt-border);
+  border-radius: 6px;
+  background: var(--dt-bg-secondary);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+}
+
+.dt-design-open-menu button {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--dt-text-primary);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.dt-design-open-menu button:hover,
+.dt-design-open-menu button:focus-visible {
+  background: var(--dt-accent-subtle);
+  color: var(--dt-accent);
 }
 
 /* --- Canvas Area --- */

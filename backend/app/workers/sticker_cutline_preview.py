@@ -185,6 +185,14 @@ def _preview_fit_cache_key(
     simplify_height: float,
     source_kind: str,
     preview_size: tuple[int, int] = (0, 0),
+    thrucut_enabled: bool = False,
+    thrucut_shape: str = "rounded_rect",
+    thrucut_margin_mm: float = 3.0,
+    thrucut_margin_top_mm: float | None = None,
+    thrucut_margin_bottom_mm: float | None = None,
+    thrucut_margin_left_mm: float | None = None,
+    thrucut_margin_right_mm: float | None = None,
+    thrucut_radius_mm: float = 3.0,
 ) -> str:
     """Khóa tầng fit/Simplify, tách khỏi contour nền đã chuẩn bị.
 
@@ -214,6 +222,12 @@ def _preview_fit_cache_key(
         "source_kind": str(source_kind),
         "preview_size": preview_size,
         "algorithm": CUTLINE_SIMPLIFY_ALGORITHM,
+        "thrucut": [
+            bool(thrucut_enabled), str(thrucut_shape), float(thrucut_margin_mm),
+            thrucut_margin_top_mm, thrucut_margin_bottom_mm,
+            thrucut_margin_left_mm, thrucut_margin_right_mm,
+            float(thrucut_radius_mm),
+        ],
     }
     return hashlib.sha256(json.dumps(
         payload, sort_keys=True, separators=(",", ":"), allow_nan=False,
@@ -785,6 +799,145 @@ def _ring_svg_path(
     return " ".join(commands)
 
 
+def _canonical_thrucut_svg_path(
+    path_groups: object,
+    *,
+    left_px: int,
+    top_px: int,
+    dpi: float,
+    dpi_y: float,
+    scale_x: float,
+    scale_y: float,
+    shape: str,
+    margin_mm: float,
+    radius_mm: float,
+    margin_top_mm: float | None,
+    margin_bottom_mm: float | None,
+    margin_left_mm: float | None,
+    margin_right_mm: float | None,
+) -> str | None:
+    """Dựng ThruCut SVG từ đúng các cung Bézier đã trả cho CutContour.
+
+    Khoảng cách được đổi trong hệ điểm trước khi dựng hình, sau đó cùng phép
+    scale với CutContour. Vì vậy Preview không phụ thuộc giả định ``width/100``
+    và vẫn khớp khi DPI X/Y hoặc kích thước preview thay đổi.
+    """
+    if not isinstance(path_groups, list):
+        return None
+    source_rings: list[list[tuple[float, float]]] = []
+    for group in path_groups:
+        if not isinstance(group, dict):
+            continue
+        for ring in [group.get("exterior"), *(group.get("interiors") or [])]:
+            if not isinstance(ring, list) or not ring:
+                continue
+            points: list[tuple[float, float]] = []
+            for segment in ring:
+                if not isinstance(segment, (list, tuple)) or len(segment) < 4:
+                    continue
+                try:
+                    p0, p1, p2, p3 = [tuple(float(v) for v in point[:2]) for point in segment[:4]]
+                except (TypeError, ValueError):
+                    continue
+                for step in range(8):
+                    t = step / 8.0
+                    u = 1.0 - t
+                    points.append((
+                        u ** 3 * p0[0] + 3 * u * u * t * p1[0] + 3 * u * t * t * p2[0] + t ** 3 * p3[0],
+                        u ** 3 * p0[1] + 3 * u * u * t * p1[1] + 3 * u * t * t * p2[1] + t ** 3 * p3[1],
+                    ))
+            if len(points) >= 3:
+                source_rings.append(points)
+    if not source_rings:
+        return None
+
+    def transform(point: tuple[float, float]) -> tuple[float, float]:
+        return (
+            (point[0] * dpi / 72.0 + left_px) * scale_x,
+            (point[1] * dpi_y / 72.0 + top_px) * scale_y,
+        )
+
+    resolved_shape = str(shape or "rounded_rect").strip().lower()
+    margin = max(0.0, float(margin_mm)) * 72.0 / 25.4
+    if resolved_shape == "contour_offset":
+        from shapely.geometry import Polygon
+        paths: list[str] = []
+        for source_ring in source_rings:
+            polygon = Polygon(source_ring).buffer(margin)
+            if polygon.is_empty:
+                continue
+            polygons = list(polygon.geoms) if hasattr(polygon, "geoms") else [polygon]
+            for item in polygons:
+                if item.geom_type != "Polygon":
+                    continue
+                rings = [list(item.exterior.coords), *(list(hole.coords) for hole in item.interiors)]
+                for ring in rings:
+                    points = [transform((float(x), float(y))) for x, y in ring]
+                    if points:
+                        paths.append("M " + " L ".join(f"{_number(x)} {_number(y)}" for x, y in points) + " Z")
+        return " ".join(paths) or None
+
+    all_points = [point for ring in source_rings for point in ring]
+    min_x, min_y = min(p[0] for p in all_points), min(p[1] for p in all_points)
+    max_x, max_y = max(p[0] for p in all_points), max(p[1] for p in all_points)
+    top = max(0.0, float(margin_top_mm if margin_top_mm is not None else margin_mm)) * 72.0 / 25.4
+    bottom = max(0.0, float(margin_bottom_mm if margin_bottom_mm is not None else margin_mm)) * 72.0 / 25.4
+    left = max(0.0, float(margin_left_mm if margin_left_mm is not None else margin_mm)) * 72.0 / 25.4
+    right = max(0.0, float(margin_right_mm if margin_right_mm is not None else margin_mm)) * 72.0 / 25.4
+    min_x -= left
+    max_x += right
+    min_y -= top
+    max_y += bottom
+    if resolved_shape == "ellipse":
+        cx, cy = (min_x + max_x) / 2.0, (min_y + max_y) / 2.0
+        rx, ry = (max_x - min_x) / 2.0, (max_y - min_y) / 2.0
+        k = 0.5522847498307936
+        points = [(cx, cy - ry), (cx + rx, cy), (cx, cy + ry), (cx - rx, cy), (cx, cy - ry)]
+        controls = [
+            ((cx + k * rx, cy - ry), (cx + rx, cy - k * ry)),
+            ((cx + rx, cy + k * ry), (cx + k * rx, cy + ry)),
+            ((cx - k * rx, cy + ry), (cx - rx, cy + k * ry)),
+            ((cx - rx, cy - k * ry), (cx - k * rx, cy - ry)),
+        ]
+    else:
+        radius = min(max(0.0, float(radius_mm)) * 72.0 / 25.4, (max_x - min_x) / 2, (max_y - min_y) / 2)
+        k = 0.5522847498307936
+        points = [(min_x + radius, min_y), (max_x - radius, min_y), (max_x, min_y + radius),
+                  (max_x, max_y - radius), (max_x - radius, max_y), (min_x + radius, max_y),
+                  (min_x, max_y - radius), (min_x, min_y + radius), (min_x + radius, min_y)]
+        controls = None
+        if radius > 0:
+            controls = [
+                ((max_x - radius * (1 - k), min_y), (max_x, min_y + radius * (1 - k))),
+                ((max_x, max_y - radius * (1 - k)), (max_x - radius * (1 - k), max_y)),
+                ((min_x + radius * (1 - k), max_y), (min_x, max_y - radius * (1 - k))),
+                ((min_x, min_y + radius * (1 - k)), (min_x + radius * (1 - k), min_y)),
+            ]
+    if resolved_shape == "ellipse":
+        parts = [f"M {_number(transform(points[0])[0])} {_number(transform(points[0])[1])}"]
+        for idx, control in enumerate(controls or []):
+            c1, c2 = transform(control[0]), transform(control[1])
+            end = transform(points[idx + 1])
+            parts.append(f"C {_number(c1[0])} {_number(c1[1])} {_number(c2[0])} {_number(c2[1])} {_number(end[0])} {_number(end[1])}")
+        return " ".join(parts) + " Z"
+    if controls:
+        parts = [f"M {_number(transform(points[0])[0])} {_number(transform(points[0])[1])}"]
+        # 4 straight sides with rounded corner arcs, matching build_thrucut_path_stream.
+        starts = [points[1], points[3], points[5], points[7]]
+        ends = [points[2], points[4], points[6], points[0]]
+        corners = [controls[0], controls[1], controls[2], controls[3]]
+        parts.append(f"L {_number(transform(starts[0])[0])} {_number(transform(starts[0])[1])}")
+        for idx in range(4):
+            c1, c2 = transform(corners[idx][0]), transform(corners[idx][1])
+            end = transform(ends[idx])
+            parts.append(f"C {_number(c1[0])} {_number(c1[1])} {_number(c2[0])} {_number(c2[1])} {_number(end[0])} {_number(end[1])}")
+            if idx < 3:
+                nxt = transform(starts[idx + 1])
+                parts.append(f"L {_number(nxt[0])} {_number(nxt[1])}")
+        return " ".join(parts) + " Z"
+    return None
+
+
 def _aggregate_cutline_quality(items: list[dict[str, object]]) -> dict[str, object]:
     """Gộp số đo từng tem; min/max luôn là số đo xấu nhất cần người dùng thấy."""
     if not items:
@@ -1052,6 +1205,14 @@ def build_sticker_cutline_preview(
     # §CUTJAG.3: None = để cổng tự động theo nguồn biên quyết định.
     cutline_denoise: float | None = None,
     cutline_simplify_mm: float = 0.0,
+    thrucut_enabled: bool = False,
+    thrucut_shape: str = "rounded_rect",
+    thrucut_margin_mm: float = 3.0,
+    thrucut_margin_top_mm: float | None = None,
+    thrucut_margin_bottom_mm: float | None = None,
+    thrucut_margin_left_mm: float | None = None,
+    thrucut_margin_right_mm: float | None = None,
+    thrucut_radius_mm: float = 3.0,
 ) -> dict[str, object]:
     """Trả SVG path theo hệ preview; không ghi hay thay revision của session."""
     check_preview_cancelled()
@@ -1187,7 +1348,14 @@ def build_sticker_cutline_preview(
             if not isinstance(geom_cache, dict) or "entries" not in geom_cache:
                 geom_cache = {"entries": {}}
                 setattr(session, "_cutline_preview_geometry_cache", geom_cache)
+            # PERF (audit 2026-10-01 §BLEED.PERF.GEOMETRY-CACHE): một revision
+            # mới không được giữ Alpha của revision cũ cùng trang trong RAM.
+            for old_key, entry in list(geom_cache["entries"].items()):
+                if entry.get("page_number") == page_number and entry.get("source_key") != source_key:
+                    geom_cache["entries"].pop(old_key, None)
             cached = geom_cache["entries"].get(geometry_key)
+            if cached is not None:
+                _remember_preview(geom_cache["entries"], geometry_key, cached, _preview_cache_limit())
         if isinstance(cached, dict):
             analysis_width = int(cached["analysis_width"])
             analysis_height = int(cached["analysis_height"])
@@ -1275,22 +1443,20 @@ def build_sticker_cutline_preview(
                 prepare_jobs,
             )
 
-            # PERF (audit 2026-08-10 §CUTLINE.LIVE3): chỉ giữ working-set mới nhất
-            # của một session; đổi trang/revision/edit/offset sẽ thay cache, không
-            # tích lũy vô hạn theo số lần kéo slider.
+            # PERF (audit 2026-10-01 §BLEED.PERF.GEOMETRY-CACHE): cùng chính
+            # sách RAM với baseline; máy >=16 GB không bị hard-cap 20 frame.
             with session.operation_lock:
                 geom_cache = getattr(session, "_cutline_preview_geometry_cache", None)
                 if not isinstance(geom_cache, dict) or "entries" not in geom_cache:
                     geom_cache = {"entries": {}}
                     setattr(session, "_cutline_preview_geometry_cache", geom_cache)
-                geom_cache["entries"][geometry_key] = {
+                _remember_preview(geom_cache["entries"], geometry_key, {
+                    "page_number": page_number,
+                    "source_key": source_key,
                     "analysis_width": analysis_width,
                     "analysis_height": analysis_height,
                     "instances": prepared_instances,
-                }
-                if len(geom_cache["entries"]) > 20:
-                    oldest_geom = next(iter(geom_cache["entries"]))
-                    geom_cache["entries"].pop(oldest_geom, None)
+                }, _preview_cache_limit())
 
         scale_x = preview_width / max(1, analysis_width)
         scale_y = preview_height / max(1, analysis_height)
@@ -1320,6 +1486,14 @@ def build_sticker_cutline_preview(
             effective_cutline_fidelity=effective_cutline_fidelity,
             effective_curve_tension=effective_curve_tension,
             source_kind=session.source_kind,
+            thrucut_enabled=thrucut_enabled,
+            thrucut_shape=thrucut_shape,
+            thrucut_margin_mm=thrucut_margin_mm,
+            thrucut_margin_top_mm=thrucut_margin_top_mm,
+            thrucut_margin_bottom_mm=thrucut_margin_bottom_mm,
+            thrucut_margin_left_mm=thrucut_margin_left_mm,
+            thrucut_margin_right_mm=thrucut_margin_right_mm,
+            thrucut_radius_mm=thrucut_radius_mm,
         )
         fit_cache_key = _preview_fit_cache_key(
             **fit_options, cutline_simplify_mm=cutline_simplify_mm,
@@ -1504,6 +1678,29 @@ def build_sticker_cutline_preview(
                 segment_count,
                 quality,
             ) = fitted
+            if thrucut_enabled:
+                try:
+                    canonical_thru = _canonical_thrucut_svg_path(
+                        fingerprint_path.get("path_groups"),
+                        left_px=int(fingerprint_path.get("left", 0)),
+                        top_px=int(fingerprint_path.get("top", 0)),
+                        dpi=dpi_x,
+                        dpi_y=dpi_y_resolved,
+                        scale_x=scale_x,
+                        scale_y=scale_y,
+                        shape=thrucut_shape,
+                        margin_mm=thrucut_margin_mm,
+                        radius_mm=thrucut_radius_mm,
+                        margin_top_mm=thrucut_margin_top_mm,
+                        margin_bottom_mm=thrucut_margin_bottom_mm,
+                        margin_left_mm=thrucut_margin_left_mm,
+                        margin_right_mm=thrucut_margin_right_mm,
+                    )
+                    if canonical_thru:
+                        response_path["thrucut_d"] = canonical_thru
+                        response_path["thrucut_segment_count"] = canonical_thru.count("L") + canonical_thru.count("C")
+                except Exception:
+                    logger.debug("Không dựng được ThruCut preview canonical", exc_info=True)
             response_paths.append(response_path)
             fingerprint_paths.append(fingerprint_path)
             cache_instances.append(cache_instance)
@@ -1527,6 +1724,14 @@ def build_sticker_cutline_preview(
             "requested_cutline_denoise": requested_denoise_value,
             "effective_cutline_denoise": denoise_amount,
             "paths": fingerprint_paths,
+            "thrucut_enabled": bool(thrucut_enabled),
+            "thrucut_shape": str(thrucut_shape),
+            "thrucut_margin_mm": float(thrucut_margin_mm),
+            "thrucut_margin_top_mm": thrucut_margin_top_mm,
+            "thrucut_margin_bottom_mm": thrucut_margin_bottom_mm,
+            "thrucut_margin_left_mm": thrucut_margin_left_mm,
+            "thrucut_margin_right_mm": thrucut_margin_right_mm,
+            "thrucut_radius_mm": float(thrucut_radius_mm),
         }
         if cutline_simplify_mm > 0:
             fingerprint_payload["cutline_simplify_mm"] = cutline_simplify_mm

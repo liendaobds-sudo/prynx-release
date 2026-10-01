@@ -8,7 +8,13 @@
 import { BoxParams } from './types';
 // [HANGING-WINDOW 2026-07-27] Kẹp tham số riêng của hộp treo theo đúng miền
 // mà hangingWindowDims() dùng, để form không hiển thị số đo khác khuôn thật.
-import { HGB_WINDOW_MARGIN_MM, HGB_TAB_H_MIN, HGB_TAB_H_MAX } from './constants';
+import {
+    HGB_WINDOW_MARGIN_MM,
+    HGB_TAB_H_MIN,
+    HGB_TAB_H_MAX,
+    RMB_MAGNET_DEFAULT_D_MM,
+    RMB_MAGNET_DEFAULT_OFFSET_MM,
+} from './constants';
 
 /** Kết quả validation */
 export interface ValidationResult {
@@ -301,6 +307,50 @@ export function validateParams(
             p.lidD = minD;
             wasClamped = true;
             warnings.push(`Thành nắp quá thấp, đã tăng về ${p.lidD}mm`);
+        }
+    }
+
+    // --- 11d. Ràng buộc pocket nam châm hộp cứng --- [RIGID-MAGNETIC 2026-10-01]
+    // Pocket nằm trên vách trước khay (cao D) và tai bìa (cao rigidFlapH).
+    // Tâm lỗ được generator đặt cách mép panel bằng rigidMagnetOffset, nên
+    // phải chừa ít nhất bán kính ở cả hai phía; nếu không lỗ sẽ cắt ra ngoài
+    // vật liệu và bản mẫu không thể gia công đúng.
+    if (p.boxType === 'rigid_magnetic') {
+        if (p.rigidMagnetCount > 2) {
+            p.rigidMagnetCount = 2;
+            wasClamped = true;
+            warnings.push('Hộp cứng nam châm chỉ hỗ trợ tối đa 2 pocket đối ứng — đã giảm số pocket về 2');
+        }
+
+        let magnetD = p.rigidMagnetD > 0 ? p.rigidMagnetD : RMB_MAGNET_DEFAULT_D_MM;
+        if (magnetD > p.D) {
+            p.rigidMagnetD = p.D;
+            magnetD = p.rigidMagnetD;
+            wasClamped = true;
+            warnings.push(`Đường kính nam châm không được vượt chiều sâu vách D=${p.D}mm — đã giảm về Ø${p.rigidMagnetD}mm`);
+        }
+
+        // Generator tự suy tai 25–50mm khi rigidFlapH=0; nếu người dùng
+        // nhập tai ngắn hơn đường kính pocket thì nâng tai lên vừa đủ.
+        const defaultFlapH = Math.min(50, Math.max(25, p.D * 0.6));
+        if (p.rigidFlapH > 0 && p.rigidFlapH < magnetD) {
+            p.rigidFlapH = magnetD;
+            wasClamped = true;
+            warnings.push(`Tai nam châm quá thấp cho pocket Ø${magnetD}mm — đã tăng cao tai lên ${p.rigidFlapH}mm`);
+        }
+
+        const flapH = p.rigidFlapH > 0 ? p.rigidFlapH : defaultFlapH;
+        const radius = magnetD / 2;
+        const minOffset = radius;
+        const maxOffset = Math.min(p.D, flapH) - radius;
+        const requestedOffset = p.rigidMagnetOffset > 0
+            ? p.rigidMagnetOffset
+            : RMB_MAGNET_DEFAULT_OFFSET_MM;
+        const safeOffset = clamp(requestedOffset, minOffset, maxOffset);
+        if (safeOffset !== requestedOffset) {
+            p.rigidMagnetOffset = safeOffset;
+            wasClamped = true;
+            warnings.push(`Khoảng cách tâm pocket phải trong ${minOffset}–${maxOffset}mm để nằm trong panel — đã đưa về ${safeOffset}mm`);
         }
     }
 

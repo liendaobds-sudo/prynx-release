@@ -19,6 +19,7 @@ import { validateClosedContours } from './contourValidator';
 import { svgPlacementTransform } from './placementTransform';
 import { splitTrayDieline } from './trayParts';
 import { splitDoubleTrayDieline } from './DoubleTray';
+import { splitRigidMagneticDieline } from './RigidMagneticBox';
 import { savePdfBlob } from './savePdfBlob';
 
 /** Tolerance cho so sánh điểm (0.01mm) */
@@ -351,10 +352,13 @@ export async function buildTrayNestingPdfBlob(
     sleeveResult: NestingResult,
     config: NestingConfig,
 ): Promise<Blob> {
-    // [DOUBLE-TRAY 2026-07-26] đáy+nắp dùng chung hạ tầng khay+vỏ
-    const parts = model.params.boxType === 'double_tray'
-        ? splitDoubleTrayDieline(model)
-        : splitTrayDieline(model);
+    // [RIGID-MAGNETIC 2026-10-01 §RMB.1] Hộp cứng nam châm cũng là
+    // artifact hai cụm: dùng đúng split tray/bìa trước khi dựng PDF.
+    const parts = model.params.boxType === 'rigid_magnetic'
+        ? splitRigidMagneticDieline(model)
+        : model.params.boxType === 'double_tray'
+            ? splitDoubleTrayDieline(model)
+            : splitTrayDieline(model);
     if (!parts) throw new Error('Không tìm thấy đủ khuôn khay và vỏ.');
     for (const part of [parts.tray, parts.sleeve]) {
         if (!validateClosedContours(part).allClosed) {

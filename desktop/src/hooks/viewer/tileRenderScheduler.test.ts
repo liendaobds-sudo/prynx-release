@@ -19,6 +19,49 @@ function deferred<T>() {
 }
 
 describe('TileRenderScheduler', () => {
+    it('ghi lại độ sâu hàng đợi và thời gian chờ theo request', async () => {
+        const report = vi.fn();
+        const scheduler = new TileRenderScheduler<string>(1, new AppVisibilityStore(false, true), 1, report);
+        const gate = deferred<string>();
+        const first = scheduler.enqueue({
+            requestKey: 'first',
+            groupKey: 'first',
+            ownerId: 'tab-1',
+            requestId: 'req-first',
+            priority: 0,
+            run: () => gate.promise,
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+
+        const second = scheduler.enqueue({
+            requestKey: 'second',
+            groupKey: 'second',
+            ownerId: 'tab-1',
+            requestId: 'req-second',
+            priority: 0,
+            run: async () => 'second',
+        });
+        expect(report).toHaveBeenCalledWith('enqueue', expect.objectContaining({
+            request_id: 'req-second',
+            queue_depth: 1,
+            active_count: 1,
+            max_concurrent: 1,
+        }));
+
+        gate.resolve('first');
+        await expect(first).resolves.toBe('first');
+        await expect(second).resolves.toBe('second');
+        expect(report).toHaveBeenCalledWith('start', expect.objectContaining({
+            request_id: 'req-second',
+            queue_wait_ms: expect.any(Number),
+        }));
+        expect(report).toHaveBeenCalledWith('finish', expect.objectContaining({
+            request_id: 'req-second',
+            active_count: 0,
+        }));
+    });
+
     it('không bắt đầu tile mới khi ứng dụng đang nền và bơm ngay khi hiện lại', async () => {
         const visibility = new AppVisibilityStore(true, true);
         const scheduler = new TileRenderScheduler<string>(1, visibility);
@@ -38,6 +81,46 @@ describe('TileRenderScheduler', () => {
         visibility.setDocumentHidden(false);
         await expect(tile).resolves.toBe('tile');
         expect(run).toHaveBeenCalledTimes(1);
+    });
+
+    it('cho lane tương tác chạy qua occlusion nhưng vẫn giữ lane nền', async () => {
+        // document vẫn visible nhưng cửa sổ bị WebView2 đánh dấu mất focus/occluded.
+        const visibility = new AppVisibilityStore(false, false);
+        const scheduler = new TileRenderScheduler<string>(2, visibility, 1, undefined, true);
+        const backgroundGate = deferred<string>();
+        const order: string[] = [];
+
+        const background = scheduler.enqueue({
+            requestKey: 'background-hidden',
+            groupKey: 'background-hidden',
+            ownerId: 'tab-1',
+            priority: 100,
+            run: async () => {
+                order.push('background');
+                return backgroundGate.promise;
+            },
+        });
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(order).toEqual([]);
+
+        const interactive = scheduler.enqueue({
+            requestKey: 'interactive-hidden',
+            groupKey: 'interactive-hidden',
+            ownerId: 'tab-1',
+            priority: 10,
+            run: async () => {
+                order.push('interactive');
+                return 'interactive';
+            },
+        });
+
+        await expect(interactive).resolves.toBe('interactive');
+        expect(order).toEqual(['interactive']);
+        visibility.setWindowFocused(true);
+        backgroundGate.resolve('background');
+        await expect(background).resolves.toBe('background');
+        expect(order).toEqual(['interactive', 'background']);
     });
 
     it('cho tile đang chạy hoàn tất nhưng giữ tile kế tiếp khi app chuyển nền', async () => {

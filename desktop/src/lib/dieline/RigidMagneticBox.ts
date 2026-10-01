@@ -134,6 +134,7 @@ export function generateRigidMagneticBox(params: BoxParams): DielineModel {
     // Lỗ khoét nam châm trên vách trước khay
     const tfMagnetCY = snap(yTrayBot - magnetOffset);
     const tfMagnetHoles: Point2D[][] = [];
+    const tfMagnetPaths: PathSegment[] = [];
     const tfMagnetCXs = magnetCount === 1
         ? [snap((xTrayL + xTrayR) / 2)]
         : [snap(xTrayL + L / 4), snap(xTrayR - L / 4)];
@@ -141,13 +142,22 @@ export function generateRigidMagneticBox(params: BoxParams): DielineModel {
     for (const cx of tfMagnetCXs) {
         const circ = createCircleSegments(cx, tfMagnetCY, magnetR, 'CUT');
         allPaths.push(...circ);
+        tfMagnetPaths.push(...circ);
         tfMagnetHoles.push(circleToHolePolygon(cx, tfMagnetCY, magnetR));
     }
 
     panels.push({
         name: 'tray_front',
         label: 'Vách trước khay',
-        paths: [creaseTrayFront, cutTF3, cutTF2, cutTF1],
+        // [RIGID-MAGNETIC 2026-10-01 §RMB.2] Giữ các cung CUT của lỗ âm
+        // trong panel để khi tách cụm khay, artifact vẫn chứa đúng lỗ nam châm.
+        paths: [
+            creaseTrayFront,
+            cutTF3,
+            cutTF2,
+            cutTF1,
+            ...tfMagnetPaths,
+        ],
         outline: [pt(xTrayL, yTrayBot), pt(xTrayR, yTrayBot), pt(xTrayR, 0), pt(xTrayL, 0)],
         holes: tfMagnetHoles.length > 0 ? tfMagnetHoles : undefined,
         parent: 'tray_bottom',
@@ -250,6 +260,7 @@ export function generateRigidMagneticBox(params: BoxParams): DielineModel {
     // Lỗ khoét nam châm trên tai nắp bìa
     const flapMagnetCY = snap(yFlapBot + magnetOffset);
     const flapMagnetHoles: Point2D[][] = [];
+    const flapMagnetPaths: PathSegment[] = [];
     const flapMagnetCXs = magnetCount === 1
         ? [snap((coverX0 + coverX1) / 2)]
         : [snap(coverX0 + coverBL / 4), snap(coverX1 - coverBL / 4)];
@@ -257,17 +268,29 @@ export function generateRigidMagneticBox(params: BoxParams): DielineModel {
     for (const cx of flapMagnetCXs) {
         const circ = createCircleSegments(cx, flapMagnetCY, magnetR, 'CUT');
         allPaths.push(...circ);
+        flapMagnetPaths.push(...circ);
         flapMagnetHoles.push(circleToHolePolygon(cx, flapMagnetCY, magnetR));
     }
 
     panels.push({
         name: 'cover_flap',
         label: 'Tai gài nam châm',
-        paths: [cutFlapBot, cutFlapR, creaseFlap, cutFlapL],
+        // [RIGID-MAGNETIC 2026-10-01 §RMB.2] Lỗ trên tai phải đi cùng bìa
+        // sang PDF/nesting, không chỉ tồn tại trong model tổng.
+        paths: [
+            cutFlapBot,
+            cutFlapR,
+            creaseFlap,
+            cutFlapL,
+            ...flapMagnetPaths,
+        ],
         outline: [pt(coverX0, yFlapBot), pt(coverX1, yFlapBot), pt(coverX1, yFlapTop), pt(coverX0, yFlapTop)],
         holes: flapMagnetHoles.length > 0 ? flapMagnetHoles : undefined,
         parent: 'cover_top',
-        pivotEdge: [pt(coverX0, yTopBot), pt(coverX1, yTopBot)],
+        // [RIGID-MAGNETIC 2026-10-01 §RMB.3] Tai gập quanh nếp CREASE
+        // tại mép trên của chính tai; không lấy mép dưới của panel kế bên
+        // vì giữa hai tấm có spineGap.
+        pivotEdge: [pt(coverX0, yFlapTop), pt(coverX1, yFlapTop)],
         foldAngle: 90,
         foldDirection: 1,
         foldPhase: [0.85, 0.98],
@@ -293,7 +316,9 @@ export function generateRigidMagneticBox(params: BoxParams): DielineModel {
         paths: [creaseFlap, cutTopR, creaseTop, cutTopL],
         outline: [pt(coverX0, yTopBot), pt(coverX1, yTopBot), pt(coverX1, yTopTop), pt(coverX0, yTopTop)],
         parent: 'cover_spine',
-        pivotEdge: [pt(coverX0, ySpineBot), pt(coverX1, ySpineBot)],
+        // [RIGID-MAGNETIC 2026-10-01 §RMB.3] Nắp trên nối với gáy tại
+        // creaseTop (mép trên nắp), cách mép dưới gáy bởi spineGap.
+        pivotEdge: [pt(coverX0, yTopTop), pt(coverX1, yTopTop)],
         foldAngle: 90,
         foldDirection: 1,
         foldPhase: [0.65, 0.88],
@@ -319,7 +344,9 @@ export function generateRigidMagneticBox(params: BoxParams): DielineModel {
         paths: [creaseTop, cutSpineR, creaseSpine, cutSpineL],
         outline: [pt(coverX0, ySpineBot), pt(coverX1, ySpineBot), pt(coverX1, ySpineTop), pt(coverX0, ySpineTop)],
         parent: 'cover_bottom',
-        pivotEdge: [pt(coverX0, yCoverBaseBot), pt(coverX1, yCoverBaseBot)],
+        // [RIGID-MAGNETIC 2026-10-01 §RMB.3] Gáy nối với đáy bìa tại
+        // creaseSpine (mép trên gáy), không phải mép dưới đáy bìa.
+        pivotEdge: [pt(coverX0, ySpineTop), pt(coverX1, ySpineTop)],
         foldAngle: 90,
         foldDirection: 1,
         foldPhase: [0.45, 0.70],
@@ -419,10 +446,24 @@ export function splitRigidMagneticDieline(
     model: DielineModel,
 ): { tray: DielineModel; sleeve: DielineModel } | null {
     if (model.params.boxType !== 'rigid_magnetic') return null;
+    // API trả model qua JSON nên `panel.paths` và `allPaths` không còn cùng
+    // object reference. Khóa theo hình học để split chạy giống nhau ở local
+    // engine và sidecar/native response.
+    const pathKey = (path: PathSegment): string => JSON.stringify([
+        path.tag,
+        path.type,
+        path.points,
+        path.controlPoints ?? null,
+    ]);
     const pick = (prefix: 'tray' | 'cover'): DielineModel | null => {
         const panels = model.panels.filter((p) => p.name.startsWith(`${prefix}_`));
         if (panels.length === 0) return null;
-        const paths = panels.flatMap((p) => p.paths);
+        const ownedPathKeys = new Set(panels.flatMap((p) => p.paths).map(pathKey));
+        // Giữ thứ tự allPaths gốc để các cung lỗ và nét chung không bị đổi
+        // thứ tự khi xuất; BLEED áo bồi chỉ thuộc cụm bìa ngoài.
+        const paths = model.allPaths.filter((path) =>
+            ownedPathKeys.has(pathKey(path)) || (prefix === 'cover' && path.tag === 'BLEED'),
+        );
         return {
             ...model,
             panels,

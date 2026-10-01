@@ -65,6 +65,7 @@ import {
 } from './editGeometry';
 import { shouldLoadEditObjectsForFrame } from '../acrobat/thumbnailEditPreview';
 import { formatPageNumber, applyTokens, effectiveLR } from '../../lib/stampFormat';
+import { resolveVdpLiveImagePath, resolveVdpPreviewContent } from '../../lib/vdpLiveContent';
 import { useTranslation } from 'react-i18next';
 import {
     EDIT_OBJECT_FOCUS_EVENT,
@@ -442,19 +443,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
             ...extra,
         });
     }, []);
-    useEffect(() => {
-        const previous = previousRenderPriorityRef.current;
-        previousRenderPriorityRef.current = renderPriority;
-        if (previous < 100 || renderPriority >= 100 || !renderOwnerId) return;
-        // PERF (audit 2026-09-23 §R23.06): prefetch đang chờ mà trang trở thành
-        // active phải được nâng lane ngay trên hàng đợi. Không hủy/dựng lại cùng
-        // bitmap vì request coordinator vẫn có thể coalesce nó.
-        nativeRenderCoordinator.promoteGroup(renderOwnerId, renderGroupKey, renderPriority);
-        traceTileEvent('tile-priority-promote', {
-            previous_priority: previous,
-            priority: renderPriority,
-        });
-    }, [renderGroupKey, renderOwnerId, renderPriority, traceTileEvent]);
+
     const readTileDomRect = useCallback((): Record<string, number> => {
         const rect = tileRef.current?.getBoundingClientRect();
         if (!rect) return {};
@@ -569,6 +558,27 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
     const pendingNextTargetRef = useRef<{ zoom: number; currentParams: string; coarseZoom?: number } | null>(null);
     const lastSurfaceParamsRef = useRef(surfaceParams);
     lastSurfaceParamsRef.current = surfaceParams;
+    const [activePromoteEpoch, setActivePromoteEpoch] = useState(0);
+
+    // NÉT (audit VDP/prefetch 2026-10-01): Nếu trang prefetch đã từng tải ở
+    // zoom thấp (hoặc bị hoãn ở line 933 lúc đổi zoom khi còn ở lane nền),
+    // khi nó trở thành active và ảnh hiện tại chưa đạt độ phân giải target,
+    // bắt buộc phải kích hoạt lại effect để nạp tile nét đúng zoom thực tế.
+    useEffect(() => {
+        const previous = previousRenderPriorityRef.current;
+        previousRenderPriorityRef.current = renderPriority;
+        if (previous < 100 || renderPriority >= 100) return;
+        if (renderOwnerId) {
+            nativeRenderCoordinator.promoteGroup(renderOwnerId, renderGroupKey, renderPriority);
+        }
+        traceTileEvent('tile-priority-promote', {
+            previous_priority: previous,
+            priority: renderPriority,
+        });
+        if (displayedScaleRef.current < zoom - 0.001 || loadedParamsRef.current !== currentParams) {
+            setActivePromoteEpoch(e => e + 1);
+        }
+    }, [currentParams, renderGroupKey, renderOwnerId, renderPriority, traceTileEvent, zoom]);
     const requestedColorRank = accurateOnly || progressiveAccurate ? 2 : 1;
     const initialCacheParamsRef = useRef({
         currentParams,
@@ -929,7 +939,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
 
         // Trang prefetch đã có ảnh thì giữ nguyên; không hạ ảnh sharp cũ xuống coarse.
         // Khi nó thành active, priority đổi và luồng sharp tiếp tục trên ảnh đang hiển thị.
-        if (renderPriorityRef.current >= 100 && hasLoadedOnce.current) {
+        if (renderPriority >= 100 && hasLoadedOnce.current) {
             traceTileEvent('tile-skip-prefetch-loaded');
             return;
         }
@@ -1463,7 +1473,7 @@ export const LiveTile = React.memo(({ fileKey, pageNum, pageInstanceId, zoom, co
             el._loadTile = undefined;
             onVisible(el, true, eager);
         };
-    }, [accurateOnly, cancelAccurateGroup, clipH, clipW, clipX, clipY, coarseZoom, currentParams, eager, fileKey, hasTileUrlBuilder, onVisible, pageNum, progressiveAccurate, readTileDomRect, renderEnabled, renderGroupKey, renderOwnerId, requestedColorRank, rot, surfaceParams, traceSurfacePresentation, traceTileEvent, zoom]);
+    }, [accurateOnly, cancelAccurateGroup, clipH, clipW, clipX, clipY, coarseZoom, currentParams, eager, fileKey, hasTileUrlBuilder, onVisible, pageNum, progressiveAccurate, readTileDomRect, renderEnabled, renderGroupKey, renderOwnerId, requestedColorRank, rot, surfaceParams, traceSurfacePresentation, traceTileEvent, zoom, activePromoteEpoch]);
     
     // Tile đã vào cache sống qua vòng mount của Virtuoso; tile coarse/quá budget
     // vẫn thuộc component và phải thu hồi khi unmount để không rò Blob URL.
@@ -3170,64 +3180,6 @@ const SelectableTextLayer = React.memo(function SelectableTextLayer({
 });
 
 // Props contract is supplied by AcrobatViewer; keep the broad bridge while the shared viewer contract is migrated.
-/**
- * Phân giải nội dung hiển thị thật của VDP field khi đang bật Realtime Live Preview.
- * Hỗ trợ các thẻ {Tên_Cột} phức hợp lẫn map trực tiếp theo field.name / field.fieldName.
- */
-function resolveFieldLiveText(
-    field: VdpToolField,
-    previewState?: VdpLivePreviewState | null,
-): string {
-    const fieldNameStr = typeof field.name === 'string' ? field.name : '';
-    const fieldAliasStr = typeof field.fieldName === 'string' ? field.fieldName : '';
-    const defaultTemplate = field.textContent ?? (fieldNameStr ? `{${fieldNameStr}}` : '');
-    if (!previewState || !previewState.enabled || !previewState.currentRecord) {
-        return defaultTemplate;
-    }
-    const record = previewState.currentRecord;
-
-    // 1. Nếu trường có giá trị khớp chính xác theo field.id (đặc biệt khi có nhiều cụm/con cùng loại)
-    if (field.id && record[field.id] !== undefined && record[field.id] !== null) {
-        const trimmed = defaultTemplate.trim();
-        if (trimmed.startsWith('{') && trimmed.endsWith('}') && trimmed.indexOf('}', 1) === trimmed.length - 1) {
-            return String(record[field.id]);
-        }
-    }
-
-    // 2. Nếu template có chứa placeholder {Key}
-    if (/\{[^}]+\}/.test(defaultTemplate)) {
-        return defaultTemplate.replace(/\{([^}]+)\}/g, (match, rawKey) => {
-            const key = rawKey.split(':')[0].trim();
-            if (record[key] !== undefined && record[key] !== null) {
-                return String(record[key]);
-            }
-            if (field.id && record[field.id] !== undefined && record[field.id] !== null) {
-                return String(record[field.id]);
-            }
-            if (fieldNameStr && record[fieldNameStr] !== undefined && record[fieldNameStr] !== null) {
-                return String(record[fieldNameStr]);
-            }
-            if (fieldAliasStr && record[fieldAliasStr] !== undefined && record[fieldAliasStr] !== null) {
-                return String(record[fieldAliasStr]);
-            }
-            return match;
-        });
-    }
-
-    // 3. Nếu không chứa token {}, tìm trực tiếp theo field.id / fieldNameStr / fieldAliasStr
-    if (field.id && record[field.id] !== undefined && record[field.id] !== null) {
-        return String(record[field.id]);
-    }
-    if (fieldNameStr && record[fieldNameStr] !== undefined && record[fieldNameStr] !== null) {
-        return String(record[fieldNameStr]);
-    }
-    if (fieldAliasStr && record[fieldAliasStr] !== undefined && record[fieldAliasStr] !== null) {
-        return String(record[fieldAliasStr]);
-    }
-
-    return defaultTemplate;
-}
-
 // PERF (audit 2026-09-27 §V27.01): khóa hợp đồng nguồn ở biên caller, kể cả
 // khi các props công cụ cũ bên trong chưa được tách hết khỏi kiểu legacy.
 export interface LivePageFrameSourceProps {
@@ -3924,6 +3876,26 @@ export const LivePageFrame: (props: LivePageFrameSourceProps) => React.ReactNode
 
     // ─── VDP Text Picker: Click-to-Convert text object sang VDP Field ─────────
     const [isVdpPickBusy, setIsVdpPickBusy] = useState(false);
+    type PendingVdpPickCommit = {
+        pickId: string;
+        expectedFid: string;
+        acknowledged: boolean;
+        objectsReady: boolean;
+    };
+    const pendingVdpPickCommitRef = useRef<PendingVdpPickCommit | null>(null);
+
+    // Chỉ mở lại picker sau khi ImpositionTab đã commit file sạch và danh sách
+    // object của file mới đã nạp xong. Nếu mở sớm, lần click kế tiếp dùng drawIndex
+    // của PDF cũ (đã bị renumber sau khi xoá) và backend sẽ tạo PDF sạch từ sai bản.
+    const markVdpPickObjectsReady = (fid: string) => {
+        const pending = pendingVdpPickCommitRef.current;
+        if (!pending || pending.expectedFid !== fid) return;
+        pending.objectsReady = true;
+        if (!pending.acknowledged) return;
+        pendingVdpPickCommitRef.current = null;
+        isVdpPickBusyRef.current = false;
+        setIsVdpPickBusy(false);
+    };
 
     // Thoát chế độ chọn trường VDP khi bấm phím Escape
     useEffect(() => {
@@ -3949,21 +3921,21 @@ export const LivePageFrame: (props: LivePageFrameSourceProps) => React.ReactNode
                 e.preventDefault();
                 setVdpLivePreview((prev: VdpLivePreviewState) => {
                     const nextIdx = Math.max(1, prev.recordIndex - 1);
-                    window.dispatchEvent(new CustomEvent('vdp-preview-index-change', { detail: { index: nextIdx } }));
+                    window.dispatchEvent(new CustomEvent('vdp-preview-index-change', { detail: { index: nextIdx, tabId } }));
                     return { ...prev, recordIndex: nextIdx };
                 });
             } else if (e.key === ']' || (e.altKey && e.key === 'ArrowRight')) {
                 e.preventDefault();
                 setVdpLivePreview((prev: VdpLivePreviewState) => {
                     const nextIdx = Math.min(prev.totalRecords, prev.recordIndex + 1);
-                    window.dispatchEvent(new CustomEvent('vdp-preview-index-change', { detail: { index: nextIdx } }));
+                    window.dispatchEvent(new CustomEvent('vdp-preview-index-change', { detail: { index: nextIdx, tabId } }));
                     return { ...prev, recordIndex: nextIdx };
                 });
             }
         };
         window.addEventListener('keydown', handleRecordKeyDown);
         return () => window.removeEventListener('keydown', handleRecordKeyDown);
-    }, [isVdpMode, vdpLivePreview, isActiveFrame, setVdpLivePreview]);
+    }, [isVdpMode, vdpLivePreview, isActiveFrame, setVdpLivePreview, tabId]);
 
     const handlePickTextObject = async (obj: EditCanvasObj, clusterMemberIds?: string[]) => {
         if (isVdpPickBusyRef.current) return;
@@ -3974,6 +3946,7 @@ export const LivePageFrame: (props: LivePageFrameSourceProps) => React.ReactNode
         }
         isVdpPickBusyRef.current = true;
         setIsVdpPickBusy(true);
+        let pickId: string | null = null;
         try {
             const pageIdx = originalPageNum - 1;
             const memberDrawIndices = clusterMemberIds && clusterMemberIds.length > 0
@@ -3984,6 +3957,21 @@ export const LivePageFrame: (props: LivePageFrameSourceProps) => React.ReactNode
 
             const res = await pickVdpTextField(fidToUse, pageIdx, obj.drawIndex, true, memberDrawIndices);
             if (res.success && res.field) {
+                // Không thêm field nếu backend không tạo được phôi sạch. Nếu vẫn
+                // thêm, field mới sẽ đắp lên chữ gốc và hiển thị thành nhân bản.
+                if (!res.working_fid || !res.working_pdf_url) {
+                    throw new Error('Không tạo được template VDP đã làm sạch');
+                }
+                pickId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+                    ? crypto.randomUUID()
+                    : `vdp-pick-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+                pendingVdpPickCommitRef.current = {
+                    pickId,
+                    expectedFid: res.working_pdf_path || res.working_fid,
+                    acknowledged: false,
+                    objectsReady: false,
+                };
+
                 // 1. Đánh dấu đã bóc tách toàn bộ các ký tự và object hiệu ứng thuộc cụm này
                 const idsToRemove = res.removedDrawIndices && Array.isArray(res.removedDrawIndices)
                     ? res.removedDrawIndices.map((idx: number) => {
@@ -4018,24 +4006,32 @@ export const LivePageFrame: (props: LivePageFrameSourceProps) => React.ReactNode
                 // để người dùng có thể nhấp chọn liên tiếp nhiều trường trên trang mà không cần bấm lại nút.
                 // Khi chọn xong, người dùng chỉ cần bấm nút "Xong" hoặc phím Esc.
 
-                if (res.working_fid && res.working_pdf_url) {
-                    window.dispatchEvent(new CustomEvent('vdp-template-cleaned', {
-                        detail: {
-                            tabId,
-                            sourceFid: fidToUse,
-                            workingFid: res.working_fid,
-                            workingPdfUrl: res.working_pdf_url,
-                            workingPdfPath: res.working_pdf_path,
-                        }
-                    }));
-                }
+                window.dispatchEvent(new CustomEvent('vdp-template-cleaned', {
+                    detail: {
+                        tabId,
+                        pickId,
+                        sourceFid: fidToUse,
+                        workingFid: res.working_fid,
+                        workingPdfUrl: res.working_pdf_url,
+                        workingPdfPath: res.working_pdf_path,
+                        // [VDP LEASE FIX 2026-10-01]: chuyển vé artifact cùng
+                        // template đã làm sạch để tab sở hữu có thể claim ngay.
+                        artifact_lease: res.artifact_lease,
+                    }
+                }));
             }
         } catch (err: any) {
             console.error('Lỗi khi chọn trường VDP:', err);
             toast.error(err.message || 'Lỗi khi trích xuất chữ');
         } finally {
-            isVdpPickBusyRef.current = false;
-            setIsVdpPickBusy(false);
+            // Giữ khóa qua cả bước ImpositionTab commit + nạp object mới. Chỉ
+            // markVdpPickObjectsReady mới mở lại picker sau khi drawIndex đã thuộc
+            // về PDF sạch hiện tại.
+            const pending = pickId ? pendingVdpPickCommitRef.current : null;
+            if (!pending || pending.pickId !== pickId) {
+                isVdpPickBusyRef.current = false;
+                setIsVdpPickBusy(false);
+            }
         }
     };
 
@@ -4053,6 +4049,7 @@ export const LivePageFrame: (props: LivePageFrameSourceProps) => React.ReactNode
         }
         isVdpPickBusyRef.current = true;
         setIsVdpPickBusy(true);
+        let pickId: string | null = null;
         try {
             const pageIdx = originalPageNum - 1;
             const drawIndices: number[] = memberDrawIndices && memberDrawIndices.length > 0
@@ -4088,6 +4085,19 @@ export const LivePageFrame: (props: LivePageFrameSourceProps) => React.ReactNode
             });
 
             if (res.success && res.field) {
+                if (!res.working_fid || !res.working_pdf_url) {
+                    throw new Error('Không tạo được template VDP đã làm sạch');
+                }
+                pickId = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+                    ? crypto.randomUUID()
+                    : `vdp-pick-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+                pendingVdpPickCommitRef.current = {
+                    pickId,
+                    expectedFid: res.working_pdf_path || res.working_fid,
+                    acknowledged: false,
+                    objectsReady: false,
+                };
+
                 // 3. Đánh dấu đã bóc tách toàn bộ các object thành viên
                 const idsToRemove = res.removedDrawIndices && Array.isArray(res.removedDrawIndices)
                     ? res.removedDrawIndices.map((idx: number) => {
@@ -4120,24 +4130,29 @@ export const LivePageFrame: (props: LivePageFrameSourceProps) => React.ReactNode
 
                 // Trường mới đã được thêm và chọn tự động (không spam popup toast)
 
-                if (res.working_fid && res.working_pdf_url) {
-                    window.dispatchEvent(new CustomEvent('vdp-template-cleaned', {
-                        detail: {
-                            tabId,
-                            sourceFid: fidToUse,
-                            workingFid: res.working_fid,
-                            workingPdfUrl: res.working_pdf_url,
-                            workingPdfPath: res.working_pdf_path,
-                        }
-                    }));
-                }
+                window.dispatchEvent(new CustomEvent('vdp-template-cleaned', {
+                    detail: {
+                        tabId,
+                        pickId,
+                        sourceFid: fidToUse,
+                        workingFid: res.working_fid,
+                        workingPdfUrl: res.working_pdf_url,
+                        workingPdfPath: res.working_pdf_path,
+                        // [VDP LEASE FIX 2026-10-01]: chuyển vé artifact cùng
+                        // template đã làm sạch để tab sở hữu có thể claim ngay.
+                        artifact_lease: res.artifact_lease,
+                    }
+                }));
             }
         } catch (err: any) {
             console.error('Lỗi khi chọn trường mã VDP:', err);
             toast.error(err.message || 'Lỗi khi trích xuất mã');
         } finally {
-            isVdpPickBusyRef.current = false;
-            setIsVdpPickBusy(false);
+            const pending = pickId ? pendingVdpPickCommitRef.current : null;
+            if (!pending || pending.pickId !== pickId) {
+                isVdpPickBusyRef.current = false;
+                setIsVdpPickBusy(false);
+            }
         }
     };
 
@@ -4223,6 +4238,10 @@ export const LivePageFrame: (props: LivePageFrameSourceProps) => React.ReactNode
             const detail = (event as CustomEvent)?.detail;
             if (detail?.tabId && tabId && detail.tabId !== tabId) return;
             if (detail?.sourceFid && effectiveFid && detail.sourceFid !== effectiveFid) return;
+            // Picker của chính frame này sẽ chờ ImpositionTab commit rồi để
+            // effect nạp object theo effectiveFid mới. Nếu clear cache ngay tại
+            // đây, effect chạy lại trên PDF cũ và làm object vừa bóc xuất hiện lại.
+            if (detail?.pickId && pendingVdpPickCommitRef.current?.pickId === detail.pickId) return;
             clearEditObjectsCache();
             setPickedTextIds([]);
             setEditObjectsVersion(v => v + 1);
@@ -4230,6 +4249,27 @@ export const LivePageFrame: (props: LivePageFrameSourceProps) => React.ReactNode
         window.addEventListener('vdp-template-cleaned', handleTemplateCleaned);
         return () => window.removeEventListener('vdp-template-cleaned', handleTemplateCleaned);
     }, [tabId, effectiveFid]);
+
+    // ACK sau khi ImpositionTab đã thay file mẫu bằng template sạch. Giữ picker
+    // khóa tiếp cho tới khi /edit/objects của effectiveFid mới trả về (xem
+    // markVdpPickObjectsReady trong effect nạp object bên dưới).
+    useEffect(() => {
+        const handleTemplateCommitResult = (event: Event) => {
+            const detail = (event as CustomEvent)?.detail;
+            const pending = pendingVdpPickCommitRef.current;
+            if (!pending || detail?.tabId !== tabId || detail?.pickId !== pending.pickId) return;
+            if (!detail.success) {
+                pendingVdpPickCommitRef.current = null;
+                isVdpPickBusyRef.current = false;
+                setIsVdpPickBusy(false);
+                return;
+            }
+            pending.acknowledged = true;
+            if (pending.objectsReady) markVdpPickObjectsReady(pending.expectedFid);
+        };
+        window.addEventListener('vdp-template-commit-result', handleTemplateCommitResult);
+        return () => window.removeEventListener('vdp-template-commit-result', handleTemplateCommitResult);
+    }, [tabId]);
 
     // apply/undo/redo sống ở hook cấp Viewer, nên frame cần một tín hiệu chung để
     // bỏ cache và nạp lại danh sách Thành phần từ đúng Live_Document hiện tại.
@@ -4461,6 +4501,7 @@ export const LivePageFrame: (props: LivePageFrameSourceProps) => React.ReactNode
             }
             editCropOriginRef.current = _editCropOriginCache.get(cacheKey) || [0, 0];
             hideEditGhost();
+            markVdpPickObjectsReady(effectiveFid);
             return;
         }
 
@@ -4520,6 +4561,7 @@ export const LivePageFrame: (props: LivePageFrameSourceProps) => React.ReactNode
                     setSelectedObjectIds(prev => (prev.length ? EMPTY_OBJECT_IDS : prev));
                 }
                 hideEditGhost(); // Overlay đã ở vị trí mới → bỏ ghost giữ.
+                markVdpPickObjectsReady(effectiveFid);
             } catch (err) {
                 if (!cancelled) {
                     console.warn(t('misc.livePageFrame:edit_khong_tai_duoc_edit_objects'), err);
@@ -4534,6 +4576,7 @@ export const LivePageFrame: (props: LivePageFrameSourceProps) => React.ReactNode
                         setEditNotice(t('misc.livePageFrame:khong_tai_duoc_danh_sach_doi_tuong_de'));
                     }
                     setTimeout(() => setEditNotice(null), 8000);
+                    markVdpPickObjectsReady(effectiveFid);
                 }
             }
         })();
@@ -8170,7 +8213,11 @@ export const LivePageFrame: (props: LivePageFrameSourceProps) => React.ReactNode
              {vdpFields && vdpFields.length > 0 && pageDim && (() => {
                  const pageWidthPt = pageDim.w;
                  const scale = displayWidth / pageWidthPt;
-                 return vdpFields.filter((f: VdpToolField) => f.pageNum === originalPageNum).map((field: VdpToolField) => {
+                 return vdpFields.filter((f: VdpToolField) => f.pageNum == null || f.pageNum === originalPageNum).map((field: VdpToolField) => {
+                     const liveResolution = resolveVdpPreviewContent(field, vdpLivePreview);
+                     // [VDP LIVE PARITY 2026-10-01]: điều kiện ẩn/hiện phải loại
+                     // cả khung chọn và overlay; backend cũng không vẽ field ẩn.
+                     if (vdpLivePreview?.enabled && !liveResolution.visible) return null;
                      const x0 = ((field.x ?? 0) / 25.4 * 72) * scale;
                      const y0 = ((field.y ?? 0) / 25.4 * 72) * scale;
                      const w = ((field.width ?? 0) / 25.4 * 72) * scale;
@@ -8383,8 +8430,28 @@ export const LivePageFrame: (props: LivePageFrameSourceProps) => React.ReactNode
                                  transform: `rotate(${rot}deg)`, transformOrigin: 'center center',
                              });
 
-                             // Phân giải nội dung live khi đang bật realtime preview
-                             const liveVal = resolveFieldLiveText(field, vdpLivePreview);
+                             // Phân giải cùng thứ tự với backend: điều kiện → rule
+                             // → token nội tuyến → placeholder/định dạng dữ liệu.
+                             const liveVal = liveResolution.content;
+                             const liveImageVal = field.type === 'image'
+                                 ? resolveVdpLiveImagePath(field, liveVal)
+                                 : liveVal;
+                             const liveImageSrc = field.type === 'image'
+                                 && /^[a-zA-Z]:[\\/]/.test(liveImageVal)
+                                 && Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__)
+                                 ? localFileUrl(liveImageVal)
+                                 : liveImageVal;
+
+                             if (liveResolution.unsupportedFormat) {
+                                 return (
+                                     <div className="absolute inset-0 overflow-hidden border border-amber-500 bg-amber-50 text-amber-900 p-1 text-[10px] leading-tight pointer-events-none" role="status">
+                                         {t('misc.livePageFrame:live_format_unsupported', {
+                                             defaultValue: 'LIVE chưa hỗ trợ định dạng {{format}}. Hãy kiểm tra PDF xuất.',
+                                             format: liveResolution.unsupportedFormat,
+                                         })}
+                                     </div>
+                                 );
+                             }
 
                              return (
                              <div
@@ -8398,9 +8465,9 @@ export const LivePageFrame: (props: LivePageFrameSourceProps) => React.ReactNode
                                      />
                                  )}
                                  {field.type === 'image' && (
-                                     vdpLivePreview?.enabled && liveVal && (liveVal.startsWith('http') || liveVal.startsWith('data:image') || liveVal.startsWith('blob:') || liveVal.startsWith('/') || /^[a-zA-Z]:\\/.test(liveVal)) ? (
+                                     vdpLivePreview?.enabled && liveImageSrc && (liveImageSrc.startsWith('http') || liveImageSrc.startsWith('data:image') || liveImageSrc.startsWith('blob:') || liveImageSrc.startsWith('/') || /^[a-zA-Z]:\\/.test(liveImageSrc)) ? (
                                          <img
-                                             src={liveVal}
+                                             src={liveImageSrc}
                                              alt={field.name}
                                              className="w-full h-full object-contain pointer-events-none select-none"
                                              style={{
@@ -8822,6 +8889,7 @@ export const LivePageFrame: (props: LivePageFrameSourceProps) => React.ReactNode
             <VdpRecordNavigatorBar
                 vdpLivePreview={vdpLivePreview}
                 setVdpLivePreview={setVdpLivePreview}
+                tabId={tabId}
             />
         )}
 
