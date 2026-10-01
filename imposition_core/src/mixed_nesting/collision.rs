@@ -62,6 +62,17 @@ pub fn segments_properly_cross(
 ) -> bool {
     let tol_p = tol.linear_mm * distance_mm(p1, p2).max(tol.linear_mm);
     let tol_q = tol.linear_mm * distance_mm(q1, q2).max(tol.linear_mm);
+    segments_cross_with_tolerances(p1, p2, q1, q2, tol_p, tol_q)
+}
+
+fn segments_cross_with_tolerances(
+    p1: PointMm,
+    p2: PointMm,
+    q1: PointMm,
+    q2: PointMm,
+    tol_p: f64,
+    tol_q: f64,
+) -> bool {
     let sign = |value: f64, threshold: f64| -> i32 {
         if value > threshold {
             1
@@ -76,6 +87,69 @@ pub fn segments_properly_cross(
     let d3 = sign(cross_mm2(p1, p2, q1), tol_p);
     let d4 = sign(cross_mm2(p1, p2, q2), tol_p);
     d1 * d2 < 0 && d3 * d4 < 0
+}
+
+/// PERF (audit 2026-10-01 §NEST-PERF-09): cạnh giữ nguyên hướng/toạ độ của vòng
+/// đã transform. Ngưỡng dùng đúng biểu thức cũ, nhưng chỉ tính căn bậc hai một lần
+/// cho mỗi cạnh thay vì lặp lại ở mọi cặp cạnh. Không chia sẻ qua pose hoặc dung sai.
+struct PreparedEdge {
+    from: PointMm,
+    to: PointMm,
+    bounds: BoundsMm,
+    cross_tolerance: f64,
+}
+
+impl PreparedEdge {
+    fn new(from: PointMm, to: PointMm, tol: &Tolerance) -> Self {
+        Self {
+            from,
+            to,
+            bounds: BoundsMm {
+                min_x: from.x.min(to.x),
+                min_y: from.y.min(to.y),
+                max_x: from.x.max(to.x),
+                max_y: from.y.max(to.y),
+            },
+            cross_tolerance: tol.linear_mm * distance_mm(from, to).max(tol.linear_mm),
+        }
+    }
+
+    fn may_touch(&self, other: &Self, tol: &Tolerance) -> bool {
+        // Chỉ loại hai hộp rời hẳn sau khi nới dung sai. Biên chạm và vùng sát
+        // ngưỡng vẫn qua phép cross/sign cũ; AABB không phán quyết chồng contour.
+        bounds_may_touch(&self.bounds, &other.bounds, tol)
+    }
+}
+
+fn any_edges_properly_cross(
+    a: &[PointMm],
+    b: &[PointMm],
+    tol: &Tolerance,
+    mut before_narrow_phase: impl FnMut(),
+) -> bool {
+    let edges_b: Vec<_> = (0..b.len())
+        .map(|index| PreparedEdge::new(b[index], b[(index + 1) % b.len()], tol))
+        .collect();
+    for i in 0..a.len() {
+        let edge_a = PreparedEdge::new(a[i], a[(i + 1) % a.len()], tol);
+        for edge_b in &edges_b {
+            if !edge_a.may_touch(edge_b, tol) {
+                continue;
+            }
+            before_narrow_phase();
+            if segments_cross_with_tolerances(
+                edge_a.from,
+                edge_a.to,
+                edge_b.from,
+                edge_b.to,
+                edge_a.cross_tolerance,
+                edge_b.cross_tolerance,
+            ) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Khoảng cách nhỏ nhất giữa hai đoạn thẳng, mm. `0` khi chúng cắt hoặc chạm nhau.
@@ -162,14 +236,8 @@ pub fn rings_overlap(a: &[PointMm], b: &[PointMm], tol: &Tolerance) -> bool {
     }
 
     // Bước 2 — cạnh cắt ngang thực sự thì chắc chắn chồng.
-    for i in 0..a.len() {
-        let (a1, a2) = (a[i], a[(i + 1) % a.len()]);
-        for j in 0..b.len() {
-            let (b1, b2) = (b[j], b[(j + 1) % b.len()]);
-            if segments_properly_cross(a1, a2, b1, b2, tol) {
-                return true;
-            }
-        }
+    if any_edges_properly_cross(a, b, tol, || {}) {
+        return true;
     }
 
     // Bước 3 — trục phân cách trên các mảnh lồi.
@@ -201,6 +269,10 @@ pub fn rings_overlap(a: &[PointMm], b: &[PointMm], tol: &Tolerance) -> bool {
     }
     false
 }
+
+#[cfg(test)]
+#[path = "collision_prepared_tests.rs"]
+mod prepared_tests;
 
 fn convex_pieces(ring: &[PointMm], already_convex: bool, tol: &Tolerance) -> Vec<Vec<PointMm>> {
     if already_convex {

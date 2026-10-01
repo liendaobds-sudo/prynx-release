@@ -2,7 +2,7 @@
 
 ## Trạng thái
 
-**Đã được duyệt và đã triển khai Lô A + Lô B + Lô C (native prewarm và collision hot path).** Báo cáo này tách đúng thời gian chờ
+**Đã được duyệt và đã triển khai Lô A + Lô B + Lô C + Lô E (native prewarm và collision hot path).** Báo cáo này tách đúng thời gian chờ
 của ca Bình tem bế 13 mẫu khỏi chi phí vẽ preview, đồng thời ghi lại các chốt parity
 đã kiểm sau khi sửa. Các thay đổi parity/pager trước đó được giữ nguyên.
 
@@ -227,6 +227,20 @@ test batch mới bao phủ moving khác nhau, pivot, hủy, ngân sách byte, l�
 ordering, pager, export handoff; chưa nên gộp vào Lô A/B vì có thể làm thay đổi trạng
 thái mà frontend nhìn thấy.
 
+### Lô E — chuẩn bị narrow phase collision — ĐÃ TRIỂN KHAI MỘT ĐIỂM HOT
+
+`imposition_core/src/mixed_nesting/collision.rs` trước đây tính lại endpoint,
+AABB và căn bậc hai của từng cạnh trong mỗi cặp kiểm tra giao nhau. Lô E chuẩn bị
+cạnh một lần cho mỗi vòng, loại sớm cặp AABB chắc chắn tách quá dung sai rồi mới
+chạy đúng công thức dấu/cross cũ. API công khai và thứ tự phán quyết không đổi;
+test đối chiếu công thức cạnh và các ca lồng, lõm, suy biến, sát ranh giới dung sai.
+
+A/B native tích lũy sau Lô C/E, cùng artifact HEAD, grant 1, workers 1: fixture 4 case giảm
+**11.981 s → 9.619 s (-19,7%)**, corpus 13 trang thực tế giảm
+**35.430 s → 30.277 s (-14,5%)**. Cả 13/13 pose digest, placed count và validation
+đều trùng; riêng baseline phase giảm 27.832 ms → 24.181 ms. Đây là tối ưu hot path
+giữ nguyên kết quả, chưa phải thay đổi kiến trúc batch/progressive.
+
 ## Acceptance bắt buộc
 
 - N≥20 cold và warm, cùng source/native hash; báo P50/P95 và từng phase.
@@ -245,7 +259,7 @@ không còn lỗi. Backend `tests/test_nesting_preview_capacity.py` và
 `tests/test_nesting_preview_jobs.py` đạt 59/59; `compileall` đạt. Một test process trong
 `test_nesting_session_handover.py` bị `WinError 5` khi Windows tạo named pipe cho
 `multiprocessing.Queue` trong môi trường này, nên chưa dùng kết quả đó để đánh giá code.
-Native Lô C đã có A/B trên đúng corpus 13 request, nhưng chưa có N≥20 cold/warm,
+Native Lô C/E đã có A/B trên đúng corpus 13 request, nhưng chưa có N≥20 cold/warm,
 RSS process tree, raster Front/CUT hoặc runtime packaged/installer. Vì vậy chưa tuyên
 bố tốc độ installer; bước còn lại là chạy profile production đủ mẫu và restart
 sidecar/dev app để nạp `.pyd` vừa build. Smoke final trên 4 fixture S&R giữ nguyên
