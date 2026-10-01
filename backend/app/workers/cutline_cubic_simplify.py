@@ -121,7 +121,9 @@ def _motion_not_worse(source, candidate, units: float, *, closed: bool = True,
         # cầu cung thay polyline có curvature 0; góc/inflection vẫn được kiểm.
         curvature_names = ()
     for name in curvature_names:
-        if (getattr(after, name) or 0.0) > (getattr(before, name) or 0.0) + _CURVATURE_EPS_PER_MM:
+        b_val = getattr(before, name) or 0.0
+        a_val = getattr(after, name) or 0.0
+        if a_val > b_val * (1.0 + 1e-4) + _CURVATURE_EPS_PER_MM:
             return False
     if global_refit and curvature_names:
         def total_jump(curves):
@@ -553,8 +555,9 @@ def _simplify_cubic_path_groups_impl(
         if not _paths_are_simple(paths):
             return path_groups, stats
         geometry = _geometry(candidate, flat_tolerance)
+        lim1 = min(source_geometry[0].minimum_clearance - 1e-9, 4.0 * (flat_tolerance + _WRITER_POINT_ERROR))
         if (geometry is None or geometry[1] != source_geometry[1]
-                or geometry[0].minimum_clearance <= 4.0 * (flat_tolerance + _WRITER_POINT_ERROR)):
+                or geometry[0].minimum_clearance <= lim1):
             return path_groups, stats
         rounded_source = _rounded_groups(source, offset_x, offset_y, height)
         rounded_candidate = _rounded_groups(candidate, offset_x, offset_y, height)
@@ -562,8 +565,10 @@ def _simplify_cubic_path_groups_impl(
         if not _paths_are_simple(rounded_paths):
             return path_groups, stats
         rounded_geometry = _geometry(rounded_candidate, flat_tolerance)
+        rounded_source_geom = _geometry(rounded_source, flat_tolerance)
+        lim2 = min(rounded_source_geom[0].minimum_clearance - 1e-9 if rounded_source_geom else 4.0 * flat_tolerance, 4.0 * flat_tolerance)
         if (rounded_geometry is None or rounded_geometry[1] != source_geometry[1]
-                or rounded_geometry[0].minimum_clearance <= 4.0 * flat_tolerance):
+                or rounded_geometry[0].minimum_clearance <= lim2):
             return path_groups, stats
         rounded_fair_bound = 0.0
         for source_group, old_group, new_group in zip(source, rounded_source, rounded_candidate):

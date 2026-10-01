@@ -75,7 +75,9 @@ def build_sticker_grid_order(doc, settings, *, logical_page_count=None, repeat_t
     is_auto_fill = (
         bool(settings.get("autoFill") or settings.get("auto_fill"))
         or (
-            (raw_tq is None or raw_tq == "" or int(raw_tq or 0) <= 0)
+            page_sheet
+            and count == 1
+            and (raw_tq is None or raw_tq == "" or int(raw_tq or 0) <= 0)
             and not any(int(v or 0) > 0 for v in raw_tqbp.values())
         )
     )

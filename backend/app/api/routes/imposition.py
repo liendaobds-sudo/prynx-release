@@ -2516,10 +2516,15 @@ def preview_layout(req: PreviewLayoutRequest, license_info: dict = Depends(requi
                 req.is_die_cut and req.imposer_mode != "cnc" and not req.page_sheet_mode
                 and req.task_mode in ("nup", "sticker_imposer") and req.layout_type != "repeat"
             )
+            _is_one_dao_page = (
+                getattr(req, "cut_type", None) == "one_dao"
+                and getattr(req, "die_size_mode", None) == "page"
+            )
             _is_explicit_autofill = (
                 bool(getattr(req, 'auto_fill', False))
                 or (
-                    getattr(req, 'grouping_strategy', None) == "maximize_area"
+                    (not _is_sticker_nup or _is_one_dao_page)
+                    and getattr(req, 'grouping_strategy', None) == "maximize_area"
                     and int(req.target_quantity or 0) <= 0
                     and not any(int(v or 0) > 0 for v in (req.target_quantities_by_page or {}).values())
                 )

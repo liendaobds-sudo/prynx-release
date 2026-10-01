@@ -308,7 +308,9 @@ def _motion_improves(before: FairCurveMetrics, after: FairCurveMetrics) -> bool:
     # qua protected_vertices; không ép G2 xuyên góc hoặc cấm mọi inflection.
     for name in ("maximum_curvature_jump_per_mm", "total_curvature_jump_per_mm",
                  "total_curvature_variation_per_mm", "maximum_abs_curvature_per_mm"):
-        if getattr(after, name) > getattr(before, name) + _CURVATURE_EPS_PER_MM:
+        b_val = getattr(before, name)
+        a_val = getattr(after, name)
+        if a_val > b_val * (1.0 + 1e-4) + _CURVATURE_EPS_PER_MM:
             return False
     return after.maximum_join_angle_degrees <= max(1.0, before.maximum_join_angle_degrees + 0.05)
 

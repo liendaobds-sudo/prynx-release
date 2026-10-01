@@ -10522,7 +10522,7 @@ class StickerEngine:
                     and alpha_path_payload is None
                     and not rectangle_mode
                     and not selection_page_mode
-                    and remove_white_bg
+                    and (remove_white_bg or (page_has_smask and shape_mode == "contour"))
                     and not alpha_source_contour
                     and cut_mode in {"original", "bleed"}
                     and shape_mode in {"auto_safe", "contour"}
@@ -11537,6 +11537,7 @@ class StickerEngine:
                             cut_poly = dieline_poly
                         elif (
                             alpha_source_contour
+                            or raster_alpha_boundary
                             or approved_contour_page
                         ) and preserve_contour:
                             # QUALITY (audit 2026-08-04 §ALPHA.1–2): ưu tiên fit
